@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     "./package.json": "./package.json",
+    "./dsl": "./src/dsl/index.ts",
     "./*": "./src/*.ts"
   },
   "files": [
