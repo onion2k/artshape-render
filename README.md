@@ -55,8 +55,8 @@ import { groupByMesh } from 'artshape-render/assembly/groups';
 const viewer = await Viewer.create(document.getElementById('stage')!);
 const { sketch } = compile(`
 material gold polished
-part petal = leaf(length: 34, width: 15, thickness: 1.1)
-form f { repeat petal around 8 }
+part petal = leaf(length: 34, width: 15, thickness: 1.1, piercings: 3)
+form f { repeat petal around ring(8, radius: 5.5) }
 `);
 viewer.setInstanced(groupByMesh(sketch!.assembly));
 viewer.frameBounds(sketch!.assembly.bounds());
