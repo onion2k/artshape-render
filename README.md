@@ -1,5 +1,7 @@
 # artshape-render
 
+[![Check](https://github.com/onion2k/artshape-render/actions/workflows/check.yml/badge.svg)](https://github.com/onion2k/artshape-render/actions/workflows/check.yml)
+
 A still-life renderer for small made things, and the language that feeds
 it. Parametric parts — plates, wires, revolves, sheets — placed by
 anchors and symmetries, drawn over raw WebGPU with one material model
