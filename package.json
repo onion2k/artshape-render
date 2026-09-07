@@ -1,0 +1,36 @@
+{
+  "name": "artshape-render",
+  "version": "0.1.0",
+  "description": "A still-life renderer for small made things: parametric parts, one material model, raw WebGPU, and a language to place them in.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json",
+    "./*": "./src/*.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:gpu": "vitest run --config vitest.browser.config.ts"
+  },
+  "dependencies": {
+    "earcut": "^3.2.3"
+  },
+  "devDependencies": {
+    "@types/earcut": "^3.0.0",
+    "@vitest/browser": "^3.2.7",
+    "@webgpu/types": "^0.1.72",
+    "jsdom": "^27.0.1",
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^3.2.7"
+  }
+}
