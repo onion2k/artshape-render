@@ -1,0 +1,40 @@
+# The node suite and a typecheck, on every push and pull request.
+#
+# Two consumers pin tags of this repository, so a run here is the last thing
+# between a change and their builds.
+#
+# The GPU suite is deliberately not here. Its tests want a real WebGPU
+# adapter, which on a runner means SwiftShader — measured at some two hundred
+# times slower than a desktop GPU, which the headroom and furnace tests would
+# time out against long before they said anything true. They stay a local
+# gate: `npm run test:gpu` before a rendering change is committed, held to
+# the tracer or to a known answer. The typecheck below still covers their
+# source, so they cannot rot unnoticed.
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # playwright is here for the GPU suite alone, which this job does not run;
+    # without this its install fetches browser binaries nothing will open
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

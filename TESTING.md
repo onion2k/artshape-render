@@ -11,6 +11,14 @@ Chrome, headless, through Vitest's browser mode and Playwright
 WebGPU enabled). `VITE_FRAME_DIR=/some/dir npm run test:gpu` writes the
 frames those tests draw out as PNGs, for looking at.
 
+Every push and pull request runs the typecheck and the node suite on
+GitHub (`.github/workflows/check.yml`). The GPU suite is not in it: a
+runner's only WebGPU adapter is SwiftShader, some two hundred times
+slower than a desktop GPU, which the headroom and furnace tests would
+time out against long before they said anything true. It stays a local
+gate — run it before committing a rendering change. The typecheck covers
+its source either way, so those files cannot rot unnoticed.
+
 ## What's covered
 
 Roughly bottom-up, from the math to the device:
