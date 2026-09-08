@@ -39,11 +39,16 @@ struct Frame {
   viewProj: mat4x4f,
   camPos: vec3f, exposure: f32,
   sunDir: vec3f, maxLod: f32,
-  // roughness and albedo are the look's fallbacks, which the CPU folds into
-  // each placement's own material before it uploads: the shader reads the
-  // instance, not these. They stay in the struct because the layout is fixed
-  // at 128 bytes and lightCount's offset is not worth moving.
-  sunColour: vec3f, roughness: f32,
+  // How far a point light carries: the distance at which it is down to half,
+  // in world units. It used to be a constant of 0.0004 applied to the squared
+  // distance, which is a half-distance of fifty — right for a piece of
+  // jewellery a few centimetres across and hopeless in an arena measured in
+  // metres, where every light was a bright dot with nothing around it.
+  sunColour: vec3f, falloffHalf: f32,
+  // albedo is the look's fallback, folded into each placement's own material
+  // by the CPU before it uploads; the shader reads the instance, not this. It
+  // stays in the struct because the layout is fixed at 128 bytes and
+  // lightCount's offset is not worth moving.
   albedo: vec3f, lightCount: f32,
 };
 /** A point light: where it is, how far it reaches, and what it puts out. */
@@ -126,9 +131,14 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
       let pl = toLight / dist;
       let pndl = max(dot(n, pl), 0.0);
       if (pndl <= 0.0) { continue; }
-      // faded to nothing at the radius, so culling changes no pixel
+      // Two terms, doing two jobs. The first is the window: it takes the
+      // light to nothing exactly at its radius, which is what makes the cull
+      // exact. The second is the fall itself, half at falloffHalf and inverse
+      // square beyond — the radius says how far a light reaches, this says
+      // how it spends the way there.
       let reach = clamp(1.0 - d2 / (p.radius * p.radius), 0.0, 1.0);
-      let atten = reach * reach / (1.0 + d2 * 0.0004);
+      let half = max(frame.falloffHalf, 1.0);
+      let atten = reach * reach / (1.0 + d2 / (half * half));
       let spec = ggx(n, v, pl, ndv, a2, k) * fresnel(f0, max(dot(normalize(pl + v), v), 0.0));
       colour += (spec + f0 * 0.25) * p.colour * p.intensity * pndl * atten;
     }

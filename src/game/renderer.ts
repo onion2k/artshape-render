@@ -73,6 +73,13 @@ export interface Look {
   sunColour: [number, number, number];
   exposure: number;
   /**
+   * How far a point light carries: the distance, in world units, at which it
+   * is down to half. Small makes a bright dot with darkness around it; large
+   * makes a light that washes a room. It is not the light's radius — the
+   * radius is where it stops entirely, this is how it spends the way there.
+   */
+  falloffHalf: number;
+  /**
    * What the frame clears to, before tonemapping. The environment lights the
    * material but is never drawn, so this is the whole of the sky the camera
    * sees past the arena's edge.
@@ -86,6 +93,8 @@ export const DEFAULT_LOOK: Look = {
   sunDir: [0.3, -0.4, 0.86],
   sunColour: [1, 0.97, 0.92],
   exposure: 1,
+  // fifty units, which is what the constant it replaced worked out at
+  falloffHalf: 50,
   background: [0.02, 0.02, 0.024],
 };
 
@@ -428,7 +437,7 @@ export class GameRenderer {
     f.set(this.camera.viewProjection, 0);
     f.set(this.camera.position, 16); f[19] = this.look.exposure;
     f.set(this.look.sunDir, 20); f[23] = this.maxLod;
-    f.set(this.look.sunColour, 24); f[27] = this.look.roughness;
+    f.set(this.look.sunColour, 24); f[27] = this.look.falloffHalf;
     f.set(this.look.albedo, 28); f[31] = this.economy.points === false ? 0 : this.lightCount;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
   }
