@@ -53,8 +53,18 @@ struct Frame {
   // before a single point light is added.
   albedo: vec2f, ambient: f32, lightCount: f32,
 };
-/** A point light: where it is, how far it reaches, and what it puts out. */
-struct Point { position: vec3f, radius: f32, colour: vec3f, intensity: f32 };
+/**
+ * A light: where it is, how far it reaches, what it puts out, and — for a
+ * spotlight — which way it faces and how wide its cone is. A light with no
+ * cone stores an outer edge of -2, which no cosine can be below, so the cone
+ * term folds to one and it throws in every direction as it always did.
+ */
+struct Point {
+  position: vec3f, radius: f32,
+  colour: vec3f, intensity: f32,
+  direction: vec3f, cosOuter: f32,
+  cosInner: f32, _pad: vec3f,
+};
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var envSpecular: texture_cube<f32>;
@@ -141,8 +151,13 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
       let reach = clamp(1.0 - d2 / (p.radius * p.radius), 0.0, 1.0);
       let half = max(frame.falloffHalf, 1.0);
       let atten = reach * reach / (1.0 + d2 / (half * half));
+      // the cone: pl runs from the surface to the light, so the angle to
+      // compare against is the one between the light's own aim and the way
+      // back to the surface
+      let cone = smoothstep(p.cosOuter, p.cosInner, dot(-pl, p.direction));
+      if (cone <= 0.0) { continue; }
       let spec = ggx(n, v, pl, ndv, a2, k) * fresnel(f0, max(dot(normalize(pl + v), v), 0.0));
-      colour += (spec + f0 * 0.25) * p.colour * p.intensity * pndl * atten;
+      colour += (spec + f0 * 0.25) * p.colour * p.intensity * pndl * atten * cone;
     }
   }
 

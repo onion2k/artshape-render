@@ -17,7 +17,42 @@ describe('LightPool', () => {
   it('packs a light the way the shader reads it', () => {
     const pool = new LightPool(4);
     pool.set(0, light(1));
-    expect([...pool.data.slice(0, LIGHT_STRIDE)]).toEqual([1, 2, 3, 11, 0.125, 0.5, 0.875, 1]);
+    expect([...pool.data.slice(0, LIGHT_STRIDE)]).toEqual([
+      1, 2, 3, 11,             // position, radius
+      0.125, 0.5, 0.875, 1,    // colour, intensity
+      0, 0, -1, -2,            // no cone: an outer edge no cosine can reach
+      -1, 0, 0, 0,
+    ]);
+  });
+
+  it('packs a spotlight with its aim normalised and its cone as cosines', () => {
+    const pool = new LightPool(2);
+    pool.set(0, { ...light(1), direction: [0, 0, -4], cone: [60, 90] });
+    const d = [...pool.data.slice(8, 13)];
+    expect(d.slice(0, 3)).toEqual([0, 0, -1]);
+    expect(d[3]).toBeCloseTo(Math.cos(Math.PI / 2), 6);   // outer, 90 degrees
+    expect(d[4]).toBeCloseTo(Math.cos(Math.PI / 3), 6);   // inner, 60
+  });
+
+  it('reads a cone back as the angles it was given', () => {
+    const pool = new LightPool(2);
+    pool.add({ ...light(1), direction: [0, 1, 0], cone: [20, 45] });
+    const back = pool.get(0)!;
+    expect(back.direction).toEqual([0, 1, 0]);
+    expect(back.cone![0]).toBeCloseTo(20, 4);
+    expect(back.cone![1]).toBeCloseTo(45, 4);
+    // and a light with no direction reads back without one
+    pool.add(light(2));
+    expect(pool.get(1)!.direction).toBeUndefined();
+  });
+
+  it('never lets an inner angle exceed its outer', () => {
+    // the smoothstep in the shader needs its edges in order or the cone
+    // inverts, lighting everything except where it is pointed
+    const pool = new LightPool(1);
+    pool.set(0, { ...light(1), direction: [1, 0, 0], cone: [80, 30] });
+    const back = pool.get(0)!;
+    expect(back.cone![0]).toBeLessThanOrEqual(back.cone![1] + 1e-6);
   });
 
   it('counts only up to the highest index written', () => {

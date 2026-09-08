@@ -20,10 +20,30 @@ export interface PointLight {
   radius: number;
   colour: [number, number, number];
   intensity: number;
+  /**
+   * Which way it points. Leave it out for a light that throws in every
+   * direction, which is what every light was before cones existed.
+   */
+  direction?: [number, number, number];
+  /**
+   * The cone, as two half-angles in degrees: full strength within the first,
+   * nothing at all past the second, and a smooth edge between. Ignored
+   * without a direction.
+   */
+  cone?: [number, number];
 }
 
-/** Eight floats a light: position, radius, colour, intensity. */
-export const LIGHT_STRIDE = 8;
+/**
+ * Sixteen floats a light: position and radius, colour and intensity,
+ * direction and the cosine of the outer angle, then the cosine of the inner
+ * and three spare.
+ *
+ * It was eight before spotlights. The extra eight are half of them padding,
+ * which is the price of the shader reading vec4s: an odd number of floats
+ * between the vectors would cost more in alignment rules than the padding
+ * costs in bandwidth.
+ */
+export const LIGHT_STRIDE = 16;
 
 /**
  * A fixed pool of lights, written into one array the renderer uploads whole.
@@ -61,6 +81,20 @@ export class LightPool {
     d[o + 3] = Math.max(light.radius, 1e-4);
     d[o + 4] = light.colour[0]; d[o + 5] = light.colour[1]; d[o + 6] = light.colour[2];
     d[o + 7] = light.intensity;
+    if (light.direction) {
+      const [dx, dy, dz] = light.direction;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      d[o + 8] = dx / len; d[o + 9] = dy / len; d[o + 10] = dz / len;
+      const [inner, outer] = light.cone ?? [180, 180];
+      d[o + 11] = Math.cos((Math.min(outer, 180) * Math.PI) / 180);
+      d[o + 12] = Math.cos((Math.min(inner, outer) * Math.PI) / 180);
+    } else {
+      // A cosine can never be below -1, so an outer edge of -2 admits every
+      // direction and the shader's cone term folds to one without a branch.
+      d[o + 8] = 0; d[o + 9] = 0; d[o + 10] = -1;
+      d[o + 11] = -2; d[o + 12] = -1;
+    }
+    d[o + 13] = 0; d[o + 14] = 0; d[o + 15] = 0;
     if (index >= this.live) this.live = index + 1;
     return true;
   }
@@ -78,11 +112,21 @@ export class LightPool {
     if (index < 0 || index >= this.live) return null;
     const o = index * LIGHT_STRIDE;
     const d = this.data;
-    return {
+    const light: PointLight = {
       position: [d[o], d[o + 1], d[o + 2]],
       radius: d[o + 3],
       colour: [d[o + 4], d[o + 5], d[o + 6]],
       intensity: d[o + 7],
     };
+    if (d[o + 11] > -1.5) {
+      light.direction = [d[o + 8], d[o + 9], d[o + 10]];
+      light.cone = [
+        (Math.acos(clamp(d[o + 12], -1, 1)) * 180) / Math.PI,
+        (Math.acos(clamp(d[o + 11], -1, 1)) * 180) / Math.PI,
+      ];
+    }
+    return light;
   }
 }
+
+const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);

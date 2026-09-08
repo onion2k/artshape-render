@@ -156,6 +156,56 @@ describe('the game renderer', () => {
     expect(again.mean).toBeCloseTo(withPoints.mean, 1);
   });
 
+  it('lights inside a spotlight cone and not outside it', async () => {
+    // Two lights of the same strength over the same arena: one aimed down at
+    // the middle through a narrow cone, one aimed away. The first must show;
+    // the second must leave the frame as dark as no light at all.
+    const dark = new LightPool(4);
+    renderer.setLights(dark);
+    renderer.setEffects(new Float32Array(EFFECT_STRIDE), 0);
+    renderer.frame(view());
+    const unlit = await read();
+
+    const aimed = new LightPool(4);
+    aimed.add({
+      position: [0, 0, 260], radius: 900, colour: [1, 1, 1], intensity: 40,
+      direction: [0, 0, -1], cone: [18, 30],
+    });
+    renderer.setLights(aimed);
+    renderer.frame(view());
+    const lit = await read();
+    expect(lit.mean).toBeGreaterThan(unlit.mean + 1);
+
+    const away = new LightPool(4);
+    away.add({
+      position: [0, 0, 260], radius: 900, colour: [1, 1, 1], intensity: 40,
+      direction: [0, 0, 1], cone: [18, 30],
+    });
+    renderer.setLights(away);
+    renderer.frame(view());
+    const missed = await read();
+    expect(missed.mean).toBeCloseTo(unlit.mean, 1);
+  });
+
+  it('lights everything when a light has no cone, as it always did', async () => {
+    const omni = new LightPool(4);
+    omni.add({ position: [0, 0, 260], radius: 900, colour: [1, 1, 1], intensity: 40 });
+    renderer.setLights(omni);
+    renderer.frame(view());
+    const all = await read();
+
+    // the same light with a cone wide enough to be no cone at all
+    const wide = new LightPool(4);
+    wide.add({
+      position: [0, 0, 260], radius: 900, colour: [1, 1, 1], intensity: 40,
+      direction: [0, 0, -1], cone: [180, 180],
+    });
+    renderer.setLights(wide);
+    renderer.frame(view());
+    const opened = await read();
+    expect(opened.mean).toBeCloseTo(all.mean, 1);
+  });
+
   it('keeps the static half and draws the same frame as redrawing it', async () => {
     const pool = new LightPool(64);
     renderer.setLights(pool);
