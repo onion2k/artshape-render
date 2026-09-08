@@ -187,6 +187,40 @@ describe('the game renderer', () => {
     expect(missed.mean).toBeCloseTo(unlit.mean, 1);
   });
 
+  it('reads every light at the same stride, not just the first', async () => {
+    // The one that matters. A struct whose size the shader and the CPU
+    // disagree about still draws: light zero is right and everything after it
+    // reads the tail of its predecessor, which looks like a scene that is
+    // simply lit oddly. So: the same light drawn first, and drawn eighth
+    // behind seven that put out nothing, must give the same frame.
+    const dead = (i: number) => ({
+      position: [i * 37, i * -23, 40] as [number, number, number],
+      radius: 500, colour: [0, 0, 0] as [number, number, number], intensity: 0,
+      direction: [0, 0, -1] as [number, number, number], cone: [4, 9] as [number, number],
+    });
+    const real = {
+      position: [40, -30, 300] as [number, number, number],
+      radius: 1200, colour: [1, 0.8, 0.5] as [number, number, number], intensity: 30,
+      direction: [0, 0, -1] as [number, number, number], cone: [20, 34] as [number, number],
+    };
+
+    const first = new LightPool(16);
+    first.add(real);
+    renderer.setLights(first);
+    renderer.frame(view());
+    const alone = await read();
+
+    const eighth = new LightPool(16);
+    for (let i = 0; i < 7; i++) eighth.add(dead(i));
+    eighth.add(real);
+    renderer.setLights(eighth);
+    renderer.frame(view());
+    const behind = await read();
+
+    expect(behind.mean).toBeCloseTo(alone.mean, 1);
+    expect(behind.colours).toBeGreaterThan(50);
+  });
+
   it('lights everything when a light has no cone, as it always did', async () => {
     const omni = new LightPool(4);
     omni.add({ position: [0, 0, 260], radius: 900, colour: [1, 1, 1], intensity: 40 });

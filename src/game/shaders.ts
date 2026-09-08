@@ -63,7 +63,13 @@ struct Point {
   position: vec3f, radius: f32,
   colour: vec3f, intensity: f32,
   direction: vec3f, cosOuter: f32,
-  cosInner: f32, _pad: vec3f,
+  // Three separate f32s and not a vec3f. A vec3f aligns to sixteen bytes, so
+  // written as one it would sit at offset 64 rather than 52 and make this
+  // struct eighty bytes against the sixteen floats the CPU writes — every
+  // light after the first would read the tail of the one before it. Which is
+  // exactly what happened, and what it looked like was a truck with one
+  // working headlight.
+  cosInner: f32, _pad0: f32, _pad1: f32, _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
