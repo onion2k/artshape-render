@@ -1,6 +1,6 @@
 {
   "name": "artshape-render",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A still-life renderer for small made things: parametric parts, one material model, raw WebGPU, and a language to place them in.",
   "license": "MIT",
   "type": "module",
