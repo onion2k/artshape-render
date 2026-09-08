@@ -67,6 +67,20 @@ the probe after it. The shadows test used to stop after sixty frames if
 nothing was pending at that moment, which on a busy GPU was the middle
 of the full bake — it failed about half of full runs and never alone.
 
+- **The game path** (`src/game/__tests__`) — the light pool's packing and
+  its fixed-capacity behaviour, and that the scene shader's variants are
+  module constants rather than uniforms, which is the thing the next
+  person to add a rung will get wrong. On a real device: that it draws at
+  all, that more lights make a brighter frame, that the radius cull gives
+  the same picture as no cull, that the ladder's cuts are reversible, that
+  the kept static frame matches redrawing it, and that a group can be
+  moved and its live count changed without rebuilding it.
+
+  These are pixel checks rather than timings, deliberately. Six separate
+  faults in the spike that produced this renderer's design had no symptom
+  except a plausible number, and every one was caught by rendering it and
+  asking whether the image changed.
+
 ## What's not covered, and why
 
 `src/render/viewer.ts` — the canvas, the orbit, the frame loop and the

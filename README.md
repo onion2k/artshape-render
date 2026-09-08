@@ -13,6 +13,15 @@ where a chess game had already vendored a copy of it. Nothing here knows
 about jewellery, chess, or a page: no editor, no catalogue of examples,
 no DOM beyond the canvas the viewer is given.
 
+**It holds two renderers over one core.** `render/` draws a still life —
+one piece, beautifully, redrawn only when something changes. `game/`
+draws every frame, for something with hundreds of things moving in it.
+They share the device layer, the geometry, the parts, the language and
+the calibration; they share no shading, because sharing it was measured
+and found to cost more than the duplication. The name still says
+*render* because two projects pin this repository by URL and renaming it
+would cost them something for nothing.
+
 ## What it does
 
 - **Four ways to make a mesh** — a plate from a 2D outline, a sweep of a
@@ -82,11 +91,54 @@ deliberate — where the sketches live is the application's business.
     src/assembly/   placements, grouping by mesh, body counting
     src/render/     the renderer, the tracer, the bakes, materials, the viewer
     src/dsl/        the language: lexer, parser, evaluator, builtins
+    src/game/       the other renderer: forward, every frame, many lights
+
+## The game path
+
+For a fixed or slowly-moving camera with a lot happening in front of it —
+an arena, a board, a side-on level. Its shape was decided by measurement
+in a [spike](https://github.com/onion2k/arena-spike), not by taste:
+
+```ts
+import { GameRenderer } from 'artshape-render/game/renderer';
+import { LightPool } from 'artshape-render/game/lights';
+
+const game = new GameRenderer(gpu, 512);
+await game.ready;
+game.setEnvironment(env.specular, env.brdf, env.mips);
+game.setStatic(arenaGroups);      // the parts of the scene that do not move
+game.setDynamic(droneGroups);     // a fixed pool; `move` writes into it
+game.setLights(pool);             // hundreds of them, no shadows
+game.frame(context.getCurrentTexture().createView(), 'keep');
+```
+
+What the measurements settled, so nobody has to re-argue it:
+
+- **Forward, not deferred.** A plain loop carries three to five hundred
+  point lights before it wants tiles or clusters — 0.018 ms a light at
+  1080p — which is more than an arena needs.
+- **No culling, no LOD.** Eight thousand movers at nearly five million
+  triangles cost under three milliseconds.
+- **Effects get their own stage.** Additive layers through a shader that
+  only fades and tints cost a third of what they cost through a material.
+- **`move` writes matrices and touches nothing else.** The still-life
+  path's `moveAll` re-measures bounds, lights, probe and shadows after
+  every move, which costs 1.4 ms a frame at eight thousand placements
+  and is right for a piece being dragged.
+- **`'keep'` holds the static half's colour and depth** rather than
+  redrawing it — worth almost all of a heavy arena's cost, and worth
+  nothing if the lights that reach it move, because then it is stale.
+
+Everything the ladder can give up is a shader permutation rather than a
+uniform. A branch the compiler cannot fold leaves the code resident, and
+residency is most of what a shader costs: gating the still life's table
+reflection behind a uniform saved nothing measurable, where compiling it
+out saved five milliseconds a megapixel.
 
 ## Checking it
 
-    npm test          880 tests, node
-    npm run test:gpu  28 tests, headless Chrome with a real device
+    npm test          893 tests, node
+    npm run test:gpu  37 tests, headless Chrome with a real device
     npm run typecheck
 
 The GPU suite runs in the machine's own Chrome through Vitest's browser
