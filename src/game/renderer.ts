@@ -38,7 +38,20 @@ export interface GameGroup {
   matrices: Float32Array;
   /** How many placements are live, from the first. Left out, all of them. */
   count?: number;
+  /**
+   * Colour and roughness per placement, four floats each, as `tint` writes
+   * them. Left out, every placement takes the group's own `albedo` and
+   * `roughness`, or failing those the look's.
+   */
+  materials?: Float32Array;
+  /** The whole group's colour, when the placements do not differ. */
+  albedo?: [number, number, number];
+  /** The whole group's roughness. 0 is a mirror, 1 is chalk. */
+  roughness?: number;
 }
+
+/** Four floats a placement: colour and roughness, as the shader reads them. */
+export const MATERIAL_STRIDE = 4;
 
 /** How a frame is put together. */
 export type FrameMode =
@@ -48,7 +61,9 @@ export type FrameMode =
   | 'keep';
 
 export interface Look {
+  /** What a group that names no colour of its own is given. */
   albedo: [number, number, number];
+  /** What a group that names no roughness of its own is given. */
   roughness: number;
   /** Toward the light, not along it. */
   sunDir: [number, number, number];
@@ -77,6 +92,7 @@ interface Uploaded {
   normal: GPUBuffer;
   index: GPUBuffer;
   instance: GPUBuffer;
+  material: GPUBuffer;
   indexCount: number;
   capacity: number;
   count: number;
@@ -158,6 +174,15 @@ export class GameRenderer {
       arrayStride: 64, stepMode: 'instance',
       attributes: [4, 5, 6, 7].map((loc, k) => ({ shaderLocation: loc, offset: k * 16, format: 'float32x4' as GPUVertexFormat })),
     };
+    // Material rides in its own instance buffer rather than alongside the
+    // matrix, so that moving a thing and recolouring it stay separate writes.
+    // A game moves everything every frame and recolours a handful of things
+    // when they are hit; one write of sixteen floats a placement is cheap
+    // where one of twenty, every frame, is a quarter more traffic for nothing.
+    const material: GPUVertexBufferLayout = {
+      arrayStride: 16, stepMode: 'instance',
+      attributes: [{ shaderLocation: 8, offset: 0, format: 'float32x4' as GPUVertexFormat }],
+    };
     // Every permutation is built up front. There are four, they compile in
     // parallel with each other, and a ladder that had to wait for a compile
     // before it could step would step too late to matter.
@@ -178,6 +203,7 @@ export class GameRenderer {
             { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
             { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
             instance,
+            material,
           ],
         },
         fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
@@ -250,11 +276,17 @@ export class GameRenderer {
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
       device.queue.writeBuffer(instance, 0, g.matrices as Float32Array<ArrayBuffer>);
+      const material = device.createBuffer({
+        label: 'materials', size: Math.max(16, capacity * 16),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(material, 0, this.materialsFor(g, capacity));
       return {
         position: bufferFrom(device, g.mesh.positions, GPUBufferUsage.VERTEX, 'positions'),
         normal: bufferFrom(device, g.mesh.normals, GPUBufferUsage.VERTEX, 'normals'),
         index: bufferFrom(device, g.mesh.indices, GPUBufferUsage.INDEX, 'indices'),
         instance,
+        material,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -262,8 +294,25 @@ export class GameRenderer {
     });
   }
 
+  /** A group's per-placement material, filled from whatever it named. */
+  private materialsFor(g: GameGroup, capacity: number): Float32Array<ArrayBuffer> {
+    if (g.materials) {
+      const out = new Float32Array(Math.max(4, capacity * MATERIAL_STRIDE));
+      out.set(g.materials.subarray(0, out.length));
+      return out;
+    }
+    const [r, gr, b] = g.albedo ?? this.look.albedo;
+    const rough = g.roughness ?? this.look.roughness;
+    const out = new Float32Array(Math.max(4, capacity * MATERIAL_STRIDE));
+    for (let i = 0; i < out.length; i += MATERIAL_STRIDE) out.set([r, gr, b, rough], i);
+    return out;
+  }
+
   private static release(groups: Uploaded[]) {
-    for (const g of groups) { g.position.destroy(); g.normal.destroy(); g.index.destroy(); g.instance.destroy(); }
+    for (const g of groups) {
+      g.position.destroy(); g.normal.destroy(); g.index.destroy();
+      g.instance.destroy(); g.material.destroy();
+    }
   }
 
   /** The arena: what does not move. Setting it makes any kept frame stale. */
@@ -296,6 +345,20 @@ export class GameRenderer {
     if (!g) return;
     this.ctx.device.queue.writeBuffer(g.instance, 0, matrices as Float32Array<ArrayBuffer>, 0, Math.min(matrices.length, g.capacity * 16));
     if (count !== undefined) g.count = Math.max(0, Math.min(count, g.capacity));
+  }
+
+  /**
+   * Write one dynamic group's colours and roughnesses, four floats a
+   * placement, without touching where anything is. This is how a thing
+   * flashes when it is hit.
+   */
+  tint(group: number, materials: Float32Array) {
+    const g = this.dynamicGroups[group];
+    if (!g) return;
+    this.ctx.device.queue.writeBuffer(
+      g.material, 0, materials as Float32Array<ArrayBuffer>,
+      0, Math.min(materials.length, g.capacity * MATERIAL_STRIDE),
+    );
   }
 
   /** The live lights for this frame. */
@@ -362,6 +425,7 @@ export class GameRenderer {
       pass.setVertexBuffer(0, g.position);
       pass.setVertexBuffer(1, g.normal);
       pass.setVertexBuffer(2, g.instance);
+      pass.setVertexBuffer(3, g.material);
       pass.setIndexBuffer(g.index, 'uint32');
       pass.drawIndexed(g.indexCount, g.count);
     }

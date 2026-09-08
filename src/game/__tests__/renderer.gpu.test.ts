@@ -186,6 +186,36 @@ describe('the game renderer', () => {
     expect(back.mean).toBeCloseTo(all.mean, 1);
   });
 
+  it('colours each placement from its own material, not one for the scene', async () => {
+    // The look carries a fallback; a group that names a colour overrides it,
+    // and `tint` overrides that per placement without moving anything. A demo
+    // wanting a gold player among silver enemies found this missing.
+    const groups = build(DRONES);
+    const capacity = groups[0].matrices.length / 16;
+    renderer.setLights(new LightPool(4));
+    renderer.setEffects(new Float32Array(4), 0);
+
+    renderer.setDynamic([{ ...groups[0], albedo: [0.02, 0.02, 0.02], roughness: 0.9 }]);
+    renderer.frame(view());
+    const dull = await read();
+
+    renderer.setDynamic([{ ...groups[0], albedo: [1, 0.78, 0.34], roughness: 0.15 }]);
+    renderer.frame(view());
+    const gold = await read();
+    expect(gold.mean).toBeGreaterThan(dull.mean + 1);
+
+    // half the pool dulled again, in place: the picture must land between them
+    const mixed = new Float32Array(capacity * 4);
+    for (let i = 0; i < capacity; i++) {
+      mixed.set(i < capacity / 2 ? [0.02, 0.02, 0.02, 0.9] : [1, 0.78, 0.34, 0.15], i * 4);
+    }
+    renderer.tint(0, mixed);
+    renderer.frame(view());
+    const half = await read();
+    expect(half.mean).toBeLessThan(gold.mean);
+    expect(half.mean).toBeGreaterThan(dull.mean);
+  });
+
   it('brightens with each effect layer, and dims as the ladder takes them away', async () => {
     renderer.setDynamic(build(DRONES));
     renderer.setEffects(new Float32Array([0, 0, 0.9, 1]), 0);

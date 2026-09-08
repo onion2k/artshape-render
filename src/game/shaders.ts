@@ -39,6 +39,10 @@ struct Frame {
   viewProj: mat4x4f,
   camPos: vec3f, exposure: f32,
   sunDir: vec3f, maxLod: f32,
+  // roughness and albedo are the look's fallbacks, which the CPU folds into
+  // each placement's own material before it uploads: the shader reads the
+  // instance, not these. They stay in the struct because the layout is fixed
+  // at 128 bytes and lightCount's offset is not worth moving.
   sunColour: vec3f, roughness: f32,
   albedo: vec3f, lightCount: f32,
 };
@@ -55,11 +59,17 @@ struct VsOut {
   @builtin(position) pos: vec4f,
   @location(0) world: vec3f,
   @location(1) normal: vec3f,
+  @location(2) albedo: vec3f,
+  @location(3) roughness: f32,
 };
 
 @vertex fn vsMain(
   @location(0) position: vec3f, @location(1) normal: vec3f,
   @location(4) m0: vec4f, @location(5) m1: vec4f, @location(6) m2: vec4f, @location(7) m3: vec4f,
+  // colour and roughness per placement, in their own instance buffer so that
+  // moving a thing and recolouring it are separate writes: a game moves
+  // everything every frame and recolours a few things occasionally
+  @location(8) material: vec4f,
 ) -> VsOut {
   let model = mat4x4f(m0, m1, m2, m3);
   let world = model * vec4f(position, 1.0);
@@ -67,6 +77,8 @@ struct VsOut {
   out.pos = frame.viewProj * world;
   out.world = world.xyz;
   out.normal = (model * vec4f(normal, 0.0)).xyz;
+  out.albedo = material.rgb;
+  out.roughness = material.a;
   return out;
 }
 
@@ -89,8 +101,10 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let n = normalize(in.normal);
   let v = normalize(frame.camPos - in.world);
   let ndv = max(dot(n, v), 1e-4);
-  let rough = clamp(frame.roughness, 0.03, 1.0);
-  let f0 = frame.albedo;
+  // a roughness of zero is a mirror with no width to its highlight, which
+  // sparkles into aliasing; 0.03 is as sharp as is worth drawing
+  let rough = clamp(in.roughness, 0.03, 1.0);
+  let f0 = in.albedo;
   let a = rough * rough;
   let a2 = a * a;
   let k = a * 0.5;
