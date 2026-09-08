@@ -80,6 +80,13 @@ export interface Look {
    */
   falloffHalf: number;
   /**
+   * How much the environment contributes. It lights every surface everywhere
+   * with no light in the scene at all, so it sets the floor the point lights
+   * are added on top of: 1 is a lit room, 0.2 a dark one where the only thing
+   * you see by is what is burning.
+   */
+  ambient: number;
+  /**
    * What the frame clears to, before tonemapping. The environment lights the
    * material but is never drawn, so this is the whole of the sky the camera
    * sees past the arena's edge.
@@ -95,6 +102,7 @@ export const DEFAULT_LOOK: Look = {
   exposure: 1,
   // fifty units, which is what the constant it replaced worked out at
   falloffHalf: 50,
+  ambient: 1,
   background: [0.02, 0.02, 0.024],
 };
 
@@ -438,7 +446,9 @@ export class GameRenderer {
     f.set(this.camera.position, 16); f[19] = this.look.exposure;
     f.set(this.look.sunDir, 20); f[23] = this.maxLod;
     f.set(this.look.sunColour, 24); f[27] = this.look.falloffHalf;
-    f.set(this.look.albedo, 28); f[31] = this.economy.points === false ? 0 : this.lightCount;
+    f[28] = this.look.albedo[0]; f[29] = this.look.albedo[1];
+    f[30] = this.look.ambient;
+    f[31] = this.economy.points === false ? 0 : this.lightCount;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
   }
 

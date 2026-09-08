@@ -48,8 +48,10 @@ struct Frame {
   // albedo is the look's fallback, folded into each placement's own material
   // by the CPU before it uploads; the shader reads the instance, not this. It
   // stays in the struct because the layout is fixed at 128 bytes and
-  // lightCount's offset is not worth moving.
-  albedo: vec3f, lightCount: f32,
+  // lightCount's offset is not worth moving. The ambient term scales what
+  // the environment contributes, which is everything a scene is lit by
+  // before a single point light is added.
+  albedo: vec2f, ambient: f32, lightCount: f32,
 };
 /** A point light: where it is, how far it reaches, and what it puts out. */
 struct Point { position: vec3f, radius: f32, colour: vec3f, intensity: f32 };
@@ -148,7 +150,7 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let r = reflect(-v, n);
   let pre = textureSampleLevel(envSpecular, samp, r, rough * frame.maxLod).rgb;
   let ab = textureSampleLevel(envBrdf, samp, vec2f(ndv, rough), 0.0).rg;
-  colour += pre * (f0 * ab.x + ab.y);
+  colour += pre * (f0 * ab.x + ab.y) * frame.ambient;
 
   return vec4f(colour * frame.exposure, 1.0);
 }
