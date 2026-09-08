@@ -12,7 +12,7 @@ import { createDevice, type Gpu } from '../../gpu/context';
 import { bakeEnvironment } from '../../render/env';
 import { compile } from '../../dsl/index';
 import { groupByMesh } from '../../assembly/groups';
-import { GameRenderer, type GameGroup } from '../renderer';
+import { EFFECT_STRIDE, GameRenderer, type GameGroup } from '../renderer';
 import { LightPool } from '../lights';
 
 const SIZE = 256;
@@ -193,7 +193,7 @@ describe('the game renderer', () => {
     const groups = build(DRONES);
     const capacity = groups[0].matrices.length / 16;
     renderer.setLights(new LightPool(4));
-    renderer.setEffects(new Float32Array(4), 0);
+    renderer.setEffects(new Float32Array(EFFECT_STRIDE), 0);
 
     renderer.setDynamic([{ ...groups[0], albedo: [0.02, 0.02, 0.02], roughness: 0.9 }]);
     renderer.frame(view());
@@ -218,12 +218,12 @@ describe('the game renderer', () => {
 
   it('brightens with each effect layer, and dims as the ladder takes them away', async () => {
     renderer.setDynamic(build(DRONES));
-    renderer.setEffects(new Float32Array([0, 0, 0.9, 1]), 0);
+    renderer.setEffects(new Float32Array(EFFECT_STRIDE), 0);
     renderer.frame(view());
     const none = await read();
 
-    const quads = new Float32Array(8 * 4);
-    for (let i = 0; i < 8; i++) { quads.set([0, 0, 0.9, 0.5], i * 4); }
+    const quads = new Float32Array(8 * EFFECT_STRIDE);
+    for (let i = 0; i < 8; i++) { quads.set([0, 0, 0.9, 0.5, 1, 0.7, 0.35, 1], i * EFFECT_STRIDE); }
     renderer.setEffects(quads, 8);
     renderer.frame(view());
     const eight = await read();

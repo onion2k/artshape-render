@@ -158,30 +158,49 @@ export function sceneSource({ cullLights = true, points = true }: SceneVariant =
  * is worth about three times its own weight.
  */
 export const EFFECT_WGSL = `
-struct Effect { colour: vec3f, _pad: f32 };
+/**
+ * A global tint over the whole batch, for a ladder that wants to fade them,
+ * and the viewport's aspect — a quad square in clip space is an ellipse on a
+ * wide screen, and a glow has to be round.
+ */
+struct Effect { tint: vec3f, aspect: f32 };
+/**
+ * One layer: where its middle is in clip space, how big, how bright, what
+ * colour, and how hard its edge is. Colour is per quad rather than per batch
+ * so that a white muzzle flash, a cyan trail and an orange explosion are one
+ * draw — the first game built on this needed all three in the same frame.
+ */
+struct Quad { centre: vec2f, size: f32, brightness: f32, colour: vec3f, sharp: f32 };
 @group(0) @binding(0) var<uniform> fx: Effect;
-@group(0) @binding(1) var<storage, read> quads: array<vec4f>;
+@group(0) @binding(1) var<storage, read> quads: array<Quad>;
 
-struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f, @location(1) tint: f32 };
+struct Out {
+  @builtin(position) pos: vec4f,
+  @location(0) uv: vec2f,
+  @location(1) tint: vec3f,
+  @location(2) sharp: f32,
+};
 
 @vertex fn vsMain(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Out {
   var corners = array<vec2f, 6>(
     vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
     vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
   );
-  // xy centre in clip space, z half-size, w brightness
   let q = quads[i];
   let p = corners[v];
   var out: Out;
-  out.pos = vec4f(q.xy + p * q.z, 0.0, 1.0);
+  out.pos = vec4f(q.centre + p * q.size * vec2f(1.0 / max(fx.aspect, 1e-3), 1.0), 0.0, 1.0);
   out.uv = p;
-  out.tint = q.w;
+  out.tint = q.colour * q.brightness;
+  out.sharp = max(q.sharp, 0.05);
   return out;
 }
 
 @fragment fn fsMain(in: Out) -> @location(0) vec4f {
-  let a = smoothstep(1.0, 0.0, length(in.uv)) * in.tint;
-  return vec4f(fx.colour * a, a);
+  // sharp = 1 is the plain fade; higher pulls the light into a hot core
+  let a = pow(smoothstep(1.0, 0.0, length(in.uv)), in.sharp);
+  let c = fx.tint * in.tint * a;
+  return vec4f(c, a);
 }
 `;
 

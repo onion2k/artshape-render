@@ -53,6 +53,9 @@ export interface GameGroup {
 /** Four floats a placement: colour and roughness, as the shader reads them. */
 export const MATERIAL_STRIDE = 4;
 
+/** Floats an effect layer: centre xy, half-size, brightness, colour rgb, sharpness. */
+export const EFFECT_STRIDE = 8;
+
 /** How a frame is put together. */
 export type FrameMode =
   /** Draw everything every frame. Right when the arena is light, or its lighting moves. */
@@ -69,6 +72,12 @@ export interface Look {
   sunDir: [number, number, number];
   sunColour: [number, number, number];
   exposure: number;
+  /**
+   * What the frame clears to, before tonemapping. The environment lights the
+   * material but is never drawn, so this is the whole of the sky the camera
+   * sees past the arena's edge.
+   */
+  background: [number, number, number];
 }
 
 export const DEFAULT_LOOK: Look = {
@@ -77,6 +86,7 @@ export const DEFAULT_LOOK: Look = {
   sunDir: [0.3, -0.4, 0.86],
   sunColour: [1, 0.97, 0.92],
   exposure: 1,
+  background: [0.02, 0.02, 0.024],
 };
 
 /** What the ladder may give up, cheapest loss first. */
@@ -122,6 +132,8 @@ export class GameRenderer {
   private quadBuffer: GPUBuffer;
   private sampler: GPUSampler;
   private maxLod = 0;
+  /** Tint rgb and the viewport aspect the effect shader rounds its glows by. */
+  private effectUniform = new Float32Array([1, 1, 1, 1]);
   private lightCount = 0;
 
   private colour: GPUTexture | null = null;
@@ -144,8 +156,8 @@ export class GameRenderer {
     this.frameBuffer = device.createBuffer({ label: 'game frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = emptyBuffer(device, Math.max(1, lightCapacity) * LIGHT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'point lights');
     this.effectBuffer = device.createBuffer({ label: 'effect', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(this.effectBuffer, 0, new Float32Array([1, 0.7, 0.35, 0]));
-    this.quadBuffer = emptyBuffer(device, Math.max(1, effectCapacity) * 16, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'effect quads');
+    device.queue.writeBuffer(this.effectBuffer, 0, this.effectUniform);
+    this.quadBuffer = emptyBuffer(device, Math.max(1, effectCapacity) * EFFECT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'effect quads');
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' });
 
     this.sceneLayout = device.createBindGroupLayout({
@@ -161,7 +173,8 @@ export class GameRenderer {
     this.effectLayout = device.createBindGroupLayout({
       label: 'game effects',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        // the vertex stage reads the aspect out of it, the fragment the tint
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
@@ -370,15 +383,22 @@ export class GameRenderer {
   }
 
   /**
-   * The effect layers for this frame, as clip-space quads: centre x and y,
-   * half-size, and brightness. They are additive and depth-tested, so the
-   * order among them does not matter.
+   * The effect layers for this frame, `EFFECT_STRIDE` floats each: centre x
+   * and y in clip space, half-size, brightness, colour, and how hard the edge
+   * falls off. They are additive and depth-tested but never depth-writing, so
+   * the order among them does not matter.
    */
   setEffects(quads: Float32Array<ArrayBuffer>, count: number) {
     this.effectQuads = Math.min(count, this.effectCapacity);
-    if (this.effectQuads) this.ctx.device.queue.writeBuffer(this.quadBuffer, 0, quads, 0, this.effectQuads * 4);
+    if (this.effectQuads) this.ctx.device.queue.writeBuffer(this.quadBuffer, 0, quads, 0, this.effectQuads * EFFECT_STRIDE);
   }
   private effectQuads = 0;
+
+  /** A tint over every effect layer at once. White leaves them as they are. */
+  setEffectTint(colour: [number, number, number]) {
+    this.effectUniform.set(colour, 0);
+    this.ctx.device.queue.writeBuffer(this.effectBuffer, 0, this.effectUniform);
+  }
 
   resize(width: number, height: number) {
     width = Math.max(1, Math.floor(width));
@@ -386,6 +406,8 @@ export class GameRenderer {
     if (width === this.width && height === this.height) return;
     this.width = width; this.height = height;
     this.camera.aspect = width / height;
+    this.effectUniform[3] = width / height;
+    this.ctx.device.queue.writeBuffer(this.effectBuffer, 0, this.effectUniform);
     const { device } = this.ctx;
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth]) t?.destroy();
     const both = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
@@ -409,6 +431,11 @@ export class GameRenderer {
     f.set(this.look.sunColour, 24); f[27] = this.look.roughness;
     f.set(this.look.albedo, 28); f[31] = this.economy.points === false ? 0 : this.lightCount;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
+  }
+
+  private get clearValue(): GPUColor {
+    const [r, g, b] = this.look.background;
+    return { r, g, b, a: 1 };
   }
 
   private get scenePipeline() {
@@ -436,7 +463,7 @@ export class GameRenderer {
     if (!this.keptColour || !this.keptDepth) return;
     const pass = encoder.beginRenderPass({
       label: 'game static',
-      colorAttachments: [{ view: this.keptColour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.02, g: 0.02, b: 0.024, a: 1 } }],
+      colorAttachments: [{ view: this.keptColour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.clearValue }],
       depthStencilAttachment: { view: this.keptDepth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
     this.draw(pass, this.staticGroups);
@@ -469,7 +496,7 @@ export class GameRenderer {
         view: colourView,
         loadOp: mode === 'keep' ? 'load' : 'clear',
         storeOp: 'store',
-        clearValue: { r: 0.02, g: 0.02, b: 0.024, a: 1 },
+        clearValue: this.clearValue,
       }],
       depthStencilAttachment: {
         view: depthView,
