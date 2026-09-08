@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { server } from '@vitest/browser/context';
 import { createDevice, type Gpu } from '../../gpu/context';
 import { Renderer, type InstanceGroup } from '../renderer';
+import { economyAt } from '../calibrate';
 import { compile } from '../../dsl/index';
 import { sketches } from './fixtures';
 import { groupByMesh } from '../../assembly/groups';
@@ -313,6 +314,39 @@ describe('the renderer, headless', () => {
       expect(f.colours).toBeGreaterThan(1);
     }
     renderer.setDebug(0);
+  });
+
+  it('draws the same piece with the table reflected and with it given up', async () => {
+    // The ladder's reflection rung is a shader permutation, not a uniform: a
+    // uniform branch around it saved nothing measurable, and compiling it out
+    // saves about six milliseconds a megapixel. So the cheap variant is a
+    // different pipeline, and this is what says it draws at all — `seen` is
+    // where a NaN once turned every frame black, and the fallback path
+    // through it is the one nothing else exercises.
+    renderer.setTable('walnut');
+    const shot = async (reflection: boolean) => {
+      renderer.setEconomy({ ...economyAt(0), reflection });
+      for (let i = 0; i < 300 && renderer.pending; i++) {
+        renderer.render(view);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      renderer.requestRender();
+      renderer.render(view);
+      return Frame.read(gpu, target);
+    };
+    const full = await shot(true);
+    const flat = await shot(false);
+    for (const f of [full, flat]) {
+      // the piece is there and lit, not a black frame and not the background
+      expect(f.sum(SIZE / 2, SIZE / 2)).toBeGreaterThan(f.sum(2, 2) + 60);
+      expect(f.colours).toBeGreaterThan(20);
+    }
+    // and the two agree closely: the fallback is the probe's reading of the
+    // same table, so giving it up moves the picture rather than losing it
+    const mid = (f: typeof full) => f.sum(SIZE / 2, SIZE / 2);
+    expect(Math.abs(mid(full) - mid(flat))).toBeLessThan(mid(full) * 0.5);
+    renderer.setEconomy(economyAt(0));
+    renderer.setTable('matte');
   });
 
   it('traces a sample once the view is still, having loaded the tracer only now', async () => {

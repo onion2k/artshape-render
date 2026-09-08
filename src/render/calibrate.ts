@@ -113,19 +113,34 @@ export const verdicts = {
  * What a frame can give up, in order, once the internal scale has reached
  * its floor and the frame is still too slow. Each rung is a saving the
  * measurements put a number on: the supersample is four times the pixels of
- * a final frame at rest; the soft shadows' taps are close to half of what a
- * pixel costs on a set of gold and enamel (14.9 ms/Mpx with the key, 8.5
- * without); the contact pass is one more pass over every triangle; and the
- * detail, last, is the triangles themselves, which a page has to rebuild
- * the scene to change.
+ * a final frame at rest; the table met exactly in a glossy face is 3.9
+ * ms/Mpx and falls back to the probe's own reading of it, the gentlest loss
+ * for the money on this list; the soft shadows' taps are 4.7 ms/Mpx, close
+ * to half of what a pixel costs on a set of gold and enamel (14.9 ms/Mpx
+ * with the key, 8.5 without); the contact pass is one more pass over every
+ * triangle; and the detail, last, is the triangles themselves, which a page
+ * has to rebuild the scene to change.
+ *
+ * The two middle figures were measured in September 2026 by cutting each out
+ * of the shader and drawing a screen-filling slab: 11.5 ms/Mpx stock, 7.6
+ * without the reflection, 2.9 without the shadow filter as well. Two
+ * features were three quarters of the frame, and neither is the material.
  */
-export const RUNGS = ['supersample', 'shadows', 'contact', 'detail'] as const;
+export const RUNGS = ['supersample', 'reflection', 'shadows', 'contact', 'detail'] as const;
 export type Rung = (typeof RUNGS)[number];
 
 /** What the renderer is asked to spend, given how many rungs have been taken. */
 export interface Economy {
   /** Whether a final frame at rest may supersample. */
   supersample: boolean;
+  /**
+   * Whether a glossy face meets the table exactly, by a ray, or takes the
+   * probe's reading of it. Off, the reflected table's edge sits where the
+   * probe's parallax puts it rather than where it is — which is what every
+   * reflection did before the table was made geometry, and a smaller loss
+   * than the number it saves suggests.
+   */
+  reflection: boolean;
   /** The soft shadows' taps, as a fraction of the full count. */
   shadowTaps: number;
   /** Whether the contact occlusion is drawn. */
@@ -137,9 +152,10 @@ export interface Economy {
 export function economyAt(rung: number): Economy {
   return {
     supersample: rung < 1,
-    shadowTaps: rung < 2 ? 1 : 0.25,
-    contact: rung < 3,
-    detail: rung < 4 ? 1 : 0.7,
+    reflection: rung < 2,
+    shadowTaps: rung < 3 ? 1 : 0.25,
+    contact: rung < 4,
+    detail: rung < 5 ? 1 : 0.7,
   };
 }
 

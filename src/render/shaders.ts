@@ -51,7 +51,7 @@ struct Frame {
   rigCount: f32,
   // the soft shadows' taps as a fraction of the full count: 1 as designed,
   // less on a machine that cannot afford them (the rig array below is
-  // aligned to sixteen bytes, so this sits in what would have been padding)
+  // aligned to sixteen bytes, so these sit in what would have been padding)
   shadowTaps: f32,
   rig: array<RigLight, 3>,
 };
@@ -1641,6 +1641,21 @@ fn tableLit(world: vec3f, local: vec2f, v: vec3f, contact: f32, foot: f32, expos
 }
 `;
 
+/**
+ * How the piece is shaded, as source for one permutation of it.
+ *
+ * `reflectTable` decides whether a glossy face runs a ray to the table and
+ * shades it there, or takes the probe's blurred reading instead. It is a
+ * module constant so the compiler folds it and drops the code entirely: a
+ * uniform in its place was measured saving nothing at all, where compiling
+ * it out saves about six milliseconds a megapixel on a screen of gold.
+ * Everything that varies per frame stays a uniform; only what the ladder
+ * gives up for the session belongs here.
+ */
+export function pbrSource({ reflectTable = true }: { reflectTable?: boolean } = {}): string {
+  return `const REFLECT_TABLE: bool = ${reflectTable};\n` + PBR_WGSL;
+}
+
 export const PBR_WGSL = `
 ${FRAME_STRUCT}
 ${COMMON}
@@ -1676,7 +1691,12 @@ fn seen(dir: vec3f, lod: f32, p: vec3f) -> vec3f {
   // what every reflective surface in the frame reads — so a single ray that
   // was never a direction turns the whole picture black, piece and table
   // alike. Found on a chess set: silver on walnut, and nothing on the screen.
-  if (frame.probeOn < 0.5 || !(dir.z < -1e-4)) { return read; }
+  // REFLECT_TABLE is a module constant, not a uniform, and that is the whole
+  // point: a uniform branch around this saved nothing measurable, because the
+  // code is resident whether or not it runs. Compiled out, it is worth about
+  // six milliseconds a megapixel. The fallback is the probe's own reading,
+  // which is what every reflection was before the table became geometry.
+  if (!REFLECT_TABLE || frame.probeOn < 0.5 || !(dir.z < -1e-4)) { return read; }
   let roughness = lod / max(frame.maxLod, 1.0);
   let sharp = 1.0 - smoothstep(0.3, 0.7, roughness);
   if (sharp <= 0.0) { return read; }

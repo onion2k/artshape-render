@@ -35,7 +35,7 @@ import { bakeOcclusion, orthoFromDirection, type Occlusion } from './occlusion';
 import { PostChain, inverseTonemap, type Film } from './post';
 import type { PathTracer } from './tracer';
 import type { SceneRequest, SceneResponse } from './scene.worker';
-import { ANCHOR_WGSL, GROUND_WGSL, PBR_WGSL, PREPASS_WGSL } from './shaders';
+import { ANCHOR_WGSL, GROUND_WGSL, PREPASS_WGSL, pbrSource } from './shaders';
 
 const BACKGROUND: [number, number, number] = [0.043, 0.047, 0.055];
 /** The studio preset's mean radiance over the sphere; a loaded photograph is scaled to match it. */
@@ -304,6 +304,9 @@ export class Renderer {
   private groundLayout: GPUBindGroupLayout;
   private prepassPipeline!: GPURenderPipeline;
   private pbrPipeline!: GPURenderPipeline;
+  /** The two permutations the reflection rung chooses between; see `pbrSource`. */
+  private pbrFull: GPURenderPipeline | null = null;
+  private pbrFlat: GPURenderPipeline | null = null;
   private groundPipeline!: GPURenderPipeline;
   private anchorPipeline!: GPURenderPipeline;
   private sampler: GPUSampler;
@@ -670,12 +673,18 @@ export class Renderer {
       this.probeFrames.push(device.createBuffer({ label: `probe face ${i}`, size: FRAME_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
     }
 
-    const pbr = shader(device, PBR_WGSL, 'pbr');
-    const pbrPipelineDesc = (ms: GPUMultisampleState): GPURenderPipelineDescriptor => ({
+    // Two permutations, because the ladder's reflection rung is a compile-time
+    // constant rather than a uniform: a uniform branch around the table
+    // reflection was measured saving nothing, and compiling it out saves
+    // about six milliseconds a megapixel. They compile in parallel with
+    // everything else, so the second costs no wall-clock at startup.
+    const pbr = shader(device, pbrSource({ reflectTable: true }), 'pbr');
+    const pbrFlat = shader(device, pbrSource({ reflectTable: false }), 'pbr, table by the probe');
+    const pbrPipelineDesc = (ms: GPUMultisampleState, module = pbr): GPURenderPipelineDescriptor => ({
       label: 'pbr',
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.materialLayout] }),
       vertex: {
-        module: pbr, entryPoint: 'vsMain',
+        module, entryPoint: 'vsMain',
         buffers: [
           { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
           { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
@@ -687,13 +696,22 @@ export class Renderer {
           { arrayStride: 8, attributes: [{ shaderLocation: 10, offset: 0, format: 'float32x2' }] },
         ],
       },
-      fragment: { module: pbr, entryPoint: 'fsMain', targets: [target] },
+      fragment: { module, entryPoint: 'fsMain', targets: [target] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       // the prepass has written depth; only the visible surface passes here
       depthStencil: { format: this.post.depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
       multisample: ms,
     });
-    later(device.createRenderPipelineAsync(pbrPipelineDesc(multisample)), (p) => { this.pbrPipeline = p; });
+    later(device.createRenderPipelineAsync(pbrPipelineDesc(multisample)), (p) => {
+      this.pbrFull = p;
+      if (this.economy.reflection) this.pbrPipeline = p;
+    });
+    later(device.createRenderPipelineAsync({ ...pbrPipelineDesc(multisample, pbrFlat), label: 'pbr, table by the probe' }), (p) => {
+      this.pbrFlat = p;
+      if (!this.economy.reflection) this.pbrPipeline = p;
+    });
+    // the probe is baked rarely and is what the cheap variant falls back to
+    // reading, so it keeps the full shader whatever the ladder is doing
     later(device.createRenderPipelineAsync({ ...pbrPipelineDesc({ count: 1 }), label: 'pbr probe' }), (p) => { this.pbrProbePipeline = p; });
 
     const ground = shader(device, GROUND_WGSL, 'ground');
@@ -2053,6 +2071,11 @@ export class Renderer {
   setEconomy(e: Economy): Economy {
     const was = this.economy;
     this.economy = e;
+    // the reflection rung is a different shader, not a different uniform
+    if (e.reflection !== was.reflection || !this.pbrPipeline) {
+      const wanted = e.reflection ? this.pbrFull : this.pbrFlat;
+      if (wanted) this.pbrPipeline = wanted;
+    }
     if (e.supersample !== was.supersample) this.applySize(); else this.dirty = true;
     return was;
   }

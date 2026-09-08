@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FULL_BUDGETS, Ladder, RUNGS, SLOW_MS_PER_MPX, TIERS, VERDICT_TTL, budgetsFor, median, slownessOf, startingScale, tierFor, verdicts } from '../calibrate';
+import { FULL_BUDGETS, Ladder, RUNGS, economyAt, SLOW_MS_PER_MPX, TIERS, VERDICT_TTL, budgetsFor, median, slownessOf, startingScale, tierFor, verdicts } from '../calibrate';
 
 class MemoryStorage implements Storage {
   private map = new Map<string, string>();
@@ -112,6 +112,28 @@ describe('verdicts', () => {
   });
 });
 
+describe('rungs', () => {
+  it('gives up the supersample, then the reflected table, then the shadow filter', () => {
+    expect([...RUNGS]).toEqual(['supersample', 'reflection', 'shadows', 'contact', 'detail']);
+    // cheapest loss for the money first, and every rung strictly cheaper than the last
+    expect(economyAt(0)).toEqual({ supersample: true, reflection: true, shadowTaps: 1, contact: true, detail: 1 });
+    expect(economyAt(RUNGS.length)).toEqual({ supersample: false, reflection: false, shadowTaps: 0.25, contact: false, detail: 0.7 });
+  });
+
+  it('never turns something back on as it goes down', () => {
+    let last = economyAt(0);
+    for (let r = 1; r <= RUNGS.length; r++) {
+      const next = economyAt(r);
+      expect(Number(next.supersample)).toBeLessThanOrEqual(Number(last.supersample));
+      expect(Number(next.reflection)).toBeLessThanOrEqual(Number(last.reflection));
+      expect(next.shadowTaps).toBeLessThanOrEqual(last.shadowTaps);
+      expect(Number(next.contact)).toBeLessThanOrEqual(Number(last.contact));
+      expect(next.detail).toBeLessThanOrEqual(last.detail);
+      last = next;
+    }
+  });
+});
+
 describe('Ladder', () => {
   const { FLOOR, RESET, FULL_FOR } = Ladder;
 
@@ -132,20 +154,26 @@ describe('Ladder', () => {
     expect(l.slower(0, 2)).toBe('rung');
     expect(l.rung).toBe(1);
     expect(l.scale).toBe(RESET);
-    expect(l.economy).toEqual({ supersample: false, shadowTaps: 1, contact: true, detail: 1 });
+    expect(l.economy).toEqual({ supersample: false, reflection: true, shadowTaps: 1, contact: true, detail: 1 });
     l.scale = FLOOR;
     l.slower(1000, 2);
-    expect(l.economy.shadowTaps).toBe(0.25);
+    // the table met by a ray goes before the shadow filter: it saves nearly
+    // as much and falls back to the probe's reading rather than to nothing
+    expect(l.economy.reflection).toBe(false);
+    expect(l.economy.shadowTaps).toBe(1);
     l.scale = FLOOR;
     l.slower(2000, 2);
+    expect(l.economy.shadowTaps).toBe(0.25);
+    l.scale = FLOOR;
+    l.slower(3000, 2);
     expect(l.economy.contact).toBe(false);
     l.scale = FLOOR;
-    expect(l.slower(3000, 2)).toBe('rung');
+    expect(l.slower(4000, 2)).toBe('rung');
     expect(l.economy.detail).toBe(0.7);
     expect(l.rung).toBe(RUNGS.length);
     l.scale = FLOOR;
     // the bottom: nothing more to give
-    expect(l.slower(4000, 2)).toBeNull();
+    expect(l.slower(5000, 2)).toBeNull();
   });
 
   it('comes back up through the scale to full before it gives a rung back', () => {
