@@ -137,3 +137,15 @@ on screen.
   than producing `NaN`. Don't place a camera (real or in a test) directly
   above or below its target on the Z axis; it's also why `Orbit` clamps its
   polar angle away from the poles.
+
+## Shadows on the game path
+
+`src/game/__tests__/shadows.gpu.test.ts` puts a box over a floor and reads
+the floor in the box's shadow against the floor beside it: darker under the
+sun's map, darker under a spotlight's, back to the same when the map is
+taken away, a flat floor that does not shadow itself, and the flat picture
+when the ladder rung is off. The matrices the maps are rendered with are
+checked on the CPU in `shadows.test.ts` — every corner of the fitted box
+inside the clip volume, depth linear for the sun and perspective for a spot,
+the cone just inside a spot's map. The DSL builds plates about their centre:
+a test that places one from a corner is measuring the wrong thing.
