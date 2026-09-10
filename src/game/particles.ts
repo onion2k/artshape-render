@@ -223,6 +223,9 @@ export class Particles {
    * frame, which measured at 0.84ms for a pool holding a few hundred.
    */
   private bursts: { start: number; until: number }[] = [];
+  /** The cursor before it wraps, so the run's length is a subtraction and
+   *  a ring that has been lapped reads as full rather than as the remainder. */
+  private emitted = 0;
   private emitPipe!: GPUComputePipeline;
   private updatePipe!: GPUComputePipeline;
   private drawPipe!: GPURenderPipeline;
@@ -311,8 +314,9 @@ export class Particles {
     d[o + 12] = e.life; d[o + 13] = e.size; d[o + 14] = e.growth ?? 0; d[o + 15] = e.floor ?? -1e9;
     d[o + 16] = e.gravity ?? 1; d[o + 17] = this.cursor; d[o + 18] = e.lifeSpread ?? 0; d[o + 19] = this.seed++;
     d[o + 20] = 0; d[o + 21] = 0; d[o + 22] = 0; d[o + 23] = 0;
-    this.bursts.push({ start: this.cursor, until: this.time + e.life * (1 + (e.lifeSpread ?? 0)) + 0.05 });
-    this.cursor = (this.cursor + count) % this.capacity;
+    this.bursts.push({ start: this.emitted, until: this.time + e.life * (1 + (e.lifeSpread ?? 0)) + 0.05 });
+    this.emitted += count;
+    this.cursor = this.emitted % this.capacity;
     this.pendingCount++;
     return true;
   }
@@ -339,9 +343,12 @@ export class Particles {
     // the live run of the ring, from the oldest burst that may still have
     // a particle in it to the cursor; a full ring is the whole ring
     while (this.bursts.length && this.bursts[0].until < this.time) this.bursts.shift();
-    const start = this.bursts.length ? this.bursts[0].start : this.cursor;
-    let count = this.bursts.length ? (this.cursor - start + this.capacity) % this.capacity : 0;
-    if (this.bursts.length && count === 0) count = this.capacity;
+    // From the oldest burst that may still have a particle to the cursor,
+    // measured before wrapping: a ring that has been lapped since that burst
+    // is full, and the first version read the remainder past the wrap and
+    // drew a tenth of what was alive.
+    const count = this.bursts.length ? Math.min(this.capacity, this.emitted - this.bursts[0].start) : 0;
+    const start = this.bursts.length ? this.bursts[0].start % this.capacity : this.cursor;
     this.liveStart = start; this.liveCount = count;
     f[28] = start; f[29] = count;
     queue.writeBuffer(this.frameBuffer, 0, f);
