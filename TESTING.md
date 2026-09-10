@@ -161,3 +161,19 @@ units off its target sees 128 units either side of it, so a burst placed
 higher is off the frame; and a particle fades in over its first tenth, so a
 reading straight after emission is dimmer than one later — compare separate
 runs, never two moments of one.
+
+## Post-processing on the game path
+
+`src/game/__tests__/post.gpu.test.ts` drives the post chain — bloom, the
+vignette and the grain — over flat frames and one effect quad, and reads
+patches of the result: with the rung off, or everything at nothing, a flat
+frame is flat and a corner is the middle; the vignette darkens the corner and
+not the middle; a hot quad lights a ring well outside its own edge with
+bloom and not without; a frame under the threshold blooms nothing; the grain
+leaves a black frame black, and on a grey one it spreads the pixels by
+about its amplitude and moves from frame to frame. Two things the tests
+learned: the vignette works on the tonemapped value under the gamma, so 0.6
+at the corner shows as about 0.7 of plain, not 0.4; and grain added under
+the gamma lifts every black pixel it lands on to a grey — the particle
+tests, which take a black frame as their zero, caught it — so it is added
+to the displayed value and weighted to the midtones.

@@ -28,7 +28,7 @@ import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
-import { COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
+import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -126,9 +126,27 @@ export interface GameEconomy extends SceneVariant {
   effects: number;
   /** Whether the particle pool is simulated and drawn. Off, it is neither. */
   particles?: boolean;
+  /** Whether the post chain runs. Off, the frame is tonemapped and nothing else. */
+  post?: boolean;
 }
 
-export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true };
+/**
+ * The post chain's knobs. Bloom is how much of the blurred bright pass is
+ * added back; threshold is the luminance, before tonemapping, that it
+ * starts at, and knee how softly; vignette is how dark the corners go, 0 to
+ * 1; grain is the amplitude of the noise on the displayed value.
+ */
+export interface Post {
+  bloom: number;
+  threshold: number;
+  knee: number;
+  vignette: number;
+  grain: number;
+}
+
+export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
+
+export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true };
 
 interface Uploaded {
   position: GPUBuffer;
@@ -154,6 +172,22 @@ export class GameRenderer {
   private sceneLayout: GPUBindGroupLayout;
   private effectLayout: GPUBindGroupLayout;
   private compositeLayout: GPUBindGroupLayout;
+  /** The bloom passes: bright to a quarter-size texture, then a blur each way. */
+  private postLayout: GPUBindGroupLayout;
+  private bright!: GPURenderPipeline;
+  private blur!: GPURenderPipeline;
+  private postBuffer: GPUBuffer;
+  private postData = new Float32Array(8);
+  private blurH: GPUBuffer;
+  private blurV: GPUBuffer;
+  private postSampler: GPUSampler;
+  private bloomA: GPUTexture | null = null;
+  private bloomB: GPUTexture | null = null;
+  private brightBind: GPUBindGroup | null = null;
+  private blurBindA: GPUBindGroup | null = null;
+  private blurBindB: GPUBindGroup | null = null;
+  private postTime = 0;
+  post: Post = { ...DEFAULT_POST };
   private sceneBind: GPUBindGroup | null = null;
   private effectBind: GPUBindGroup | null = null;
   private compositeBind: GPUBindGroup | null = null;
@@ -263,8 +297,25 @@ export class GameRenderer {
     });
     this.compositeLayout = device.createBindGroupLayout({
       label: 'game composite',
-      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} }],
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
     });
+    this.postLayout = device.createBindGroupLayout({
+      label: 'game post',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    this.postBuffer = device.createBuffer({ label: 'post', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.blurH = device.createBuffer({ label: 'blur across', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.blurV = device.createBuffer({ label: 'blur down', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.postSampler = device.createSampler({ label: 'post', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
 
     const instance: GPUVertexBufferLayout = {
       arrayStride: 64, stepMode: 'instance',
@@ -341,6 +392,17 @@ export class GameRenderer {
       // tested but never written: no layer may reject another
       depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'less-equal' },
     }).then((p) => { this.effect = p; }));
+
+    for (const [label, code, target] of [['game bright', BRIGHT_WGSL, HDR], ['game blur', BLUR_WGSL, HDR]] as const) {
+      const m = shader(device, code, label);
+      waits.push(device.createRenderPipelineAsync({
+        label,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [this.postLayout] }),
+        vertex: { module: m, entryPoint: 'vsMain' },
+        fragment: { module: m, entryPoint: 'fsMain', targets: [{ format: target }] },
+        primitive: { topology: 'triangle-list' },
+      }).then((p) => { if (label === 'game bright') this.bright = p; else this.blur = p; }));
+    }
 
     const comp = shader(device, COMPOSITE_WGSL, 'game composite');
     waits.push(device.createRenderPipelineAsync({
@@ -603,9 +665,46 @@ export class GameRenderer {
     this.depth = device.createTexture({ label: 'game depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
     this.keptColour = device.createTexture({ label: 'kept colour', size: [width, height], format: HDR, usage: both | GPUTextureUsage.COPY_SRC });
     this.keptDepth = device.createTexture({ label: 'kept depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    // The bloom textures, a quarter of the frame each way, and every bind
+    // group that reads the frame or them: remade with the frame.
+    for (const t of [this.bloomA, this.bloomB]) t?.destroy();
+    const bw = Math.max(1, Math.ceil(width / 4)), bh = Math.max(1, Math.ceil(height / 4));
+    this.bloomA = device.createTexture({ label: 'bloom a', size: [bw, bh], format: HDR, usage: both });
+    this.bloomB = device.createTexture({ label: 'bloom b', size: [bw, bh], format: HDR, usage: both });
+    device.queue.writeBuffer(this.blurH, 0, new Float32Array([1, 0, 1 / bw, 1 / bh]));
+    device.queue.writeBuffer(this.blurV, 0, new Float32Array([0, 1, 1 / bw, 1 / bh]));
+    this.brightBind = device.createBindGroup({
+      label: 'game bright', layout: this.postLayout,
+      entries: [
+        { binding: 0, resource: this.colour.createView() },
+        { binding: 1, resource: this.postSampler },
+        { binding: 2, resource: { buffer: this.postBuffer } },
+      ],
+    });
+    this.blurBindA = device.createBindGroup({
+      label: 'game blur across', layout: this.postLayout,
+      entries: [
+        { binding: 0, resource: this.bloomA.createView() },
+        { binding: 1, resource: this.postSampler },
+        { binding: 2, resource: { buffer: this.blurH } },
+      ],
+    });
+    this.blurBindB = device.createBindGroup({
+      label: 'game blur down', layout: this.postLayout,
+      entries: [
+        { binding: 0, resource: this.bloomB.createView() },
+        { binding: 1, resource: this.postSampler },
+        { binding: 2, resource: { buffer: this.blurV } },
+      ],
+    });
     this.compositeBind = device.createBindGroup({
       label: 'game composite', layout: this.compositeLayout,
-      entries: [{ binding: 0, resource: this.colour.createView() }],
+      entries: [
+        { binding: 0, resource: this.colour.createView() },
+        { binding: 1, resource: this.bloomA.createView() },
+        { binding: 2, resource: this.postSampler },
+        { binding: 3, resource: { buffer: this.postBuffer } },
+      ],
     });
     this.keptStale = true;
   }
@@ -723,6 +822,42 @@ export class GameRenderer {
     }
     pass.end();
 
+    // The post chain. With the rung off, or bloom at nothing, the bloom
+    // passes are skipped and the composite is told to add none of it; the
+    // vignette and the grain are likewise nothing when the rung is off.
+    const doPost = this.economy.post !== false;
+    const bloomOn = doPost && this.post.bloom > 0 && this.bright && this.blur && this.bloomA && this.bloomB;
+    this.postTime += dt;
+    const pd = this.postData;
+    pd[0] = bloomOn ? this.post.bloom : 0; pd[1] = this.post.threshold; pd[2] = this.post.knee;
+    pd[3] = doPost ? this.post.vignette : 0; pd[4] = doPost ? this.post.grain : 0; pd[5] = this.postTime;
+    pd[6] = 1 / this.width; pd[7] = 1 / this.height;
+    device.queue.writeBuffer(this.postBuffer, 0, pd);
+    if (bloomOn) {
+      const steps: [GPURenderPipeline, GPUBindGroup, GPUTexture, string][] = [
+        [this.bright, this.brightBind!, this.bloomA!, 'game bright'],
+        [this.blur, this.blurBindA!, this.bloomB!, 'game blur across'],
+        [this.blur, this.blurBindB!, this.bloomA!, 'game blur down'],
+      ];
+      for (const [pipeline, bind, out, label] of steps) {
+        const rp = encoder.beginRenderPass({
+          label,
+          colorAttachments: [{ view: out.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+        });
+        rp.setPipeline(pipeline);
+        rp.setBindGroup(0, bind);
+        rp.draw(3);
+        rp.end();
+      }
+    } else if (this.bloomA) {
+      // nothing to add: the composite reads a cleared texture
+      const rp = encoder.beginRenderPass({
+        label: 'game bloom clear',
+        colorAttachments: [{ view: this.bloomA.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      });
+      rp.end();
+    }
+
     const post = encoder.beginRenderPass({
       label: 'game composite',
       colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
@@ -739,8 +874,8 @@ export class GameRenderer {
   dispose() {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
-    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps]) t?.destroy();
-    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, ...this.passBuffers]) b.destroy();
+    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB]) t?.destroy();
+    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
   }
 }

@@ -337,16 +337,118 @@ struct Out {
 }
 `;
 
-/** Tonemap one source to the canvas. */
-export const COMPOSITE_WGSL = `
-@group(0) @binding(0) var src: texture_2d<f32>;
-@vertex fn vsMain(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+/**
+ * The post chain, and the composite that ends it.
+ *
+ * Three fragment passes over one fullscreen triangle. The bright pass reads
+ * the HDR frame at a quarter of its size, keeps what is over a threshold
+ * with a soft knee under it, and writes a quarter-size bloom texture; two
+ * blur passes take that texture back and forth through a nine-tap Gaussian,
+ * once across and once down; and the composite adds the blurred bloom back
+ * onto the frame, tonemaps, darkens the corners and adds grain. Quarter
+ * size, because bloom is by definition soft and a blur at full size is
+ * sixteen times the work for an edge nobody can see.
+ *
+ * The composite is the same tonemap the renderer always had, with the
+ * bloom added before it — so a light that is clipped white in the frame
+ * spills a colour, which is what bloom is for — and the vignette and the
+ * grain after it, on the displayable value, where they are meant to be
+ * seen.
+ */
+const POST_VERT = `
+struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vsMain(@builtin(vertex_index) i: u32) -> VsOut {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+  var out: VsOut;
+  out.pos = vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+  out.uv = vec2f(p.x, 1.0 - p.y);
+  return out;
 }
-@fragment fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  let c = textureLoad(src, vec2i(pos.xy), 0).rgb;
-  let m = c / (c + vec3f(1.0));
-  return vec4f(pow(m, vec3f(1.0 / 2.2)), 1.0);
+`;
+
+/**
+ * The knobs: bloom strength, the luminance it starts at, how soft the start
+ * is, how dark the corners go, how much grain, the time the grain rolls on,
+ * and the source's texel size for the bright pass to sample around.
+ */
+const POST_STRUCT = `
+struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32 };
+`;
+
+export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var<uniform> post: Post;
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  // four bilinear taps a half-texel out from the middle of the quarter-size
+  // pixel: a 4x4 box of the source for four fetches
+  let t = vec2f(post.texelX, post.texelY);
+  var c = textureSample(src, samp, in.uv + vec2f(-1.0, -1.0) * t).rgb;
+  c += textureSample(src, samp, in.uv + vec2f(1.0, -1.0) * t).rgb;
+  c += textureSample(src, samp, in.uv + vec2f(-1.0, 1.0) * t).rgb;
+  c += textureSample(src, samp, in.uv + vec2f(1.0, 1.0) * t).rgb;
+  c *= 0.25;
+  // a soft knee under the threshold, so a light does not switch on its bloom
+  // as it crosses a line
+  let lum = dot(c, vec3f(0.2126, 0.7152, 0.0722));
+  let knee = max(post.knee, 1e-3);
+  let soft = clamp(lum - post.threshold + knee, 0.0, 2.0 * knee);
+  let w = max(lum - post.threshold, soft * soft / (4.0 * knee)) / max(lum, 1e-4);
+  return vec4f(c * max(w, 0.0), 1.0);
+}
+`;
+
+/** Direction and texel size: one buffer for across, one for down. */
+export const BLUR_WGSL = POST_VERT + `
+struct Blur { dir: vec2f, texel: vec2f };
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var<uniform> blur: Blur;
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  // nine taps of a Gaussian with sigma about two texels, bilinear so each
+  // tap is really two
+  let step = blur.dir * blur.texel;
+  var c = textureSample(src, samp, in.uv).rgb * 0.2270;
+  let w = array<f32, 4>(0.1945, 0.1216, 0.0541, 0.0162);
+  for (var i = 1; i <= 4; i++) {
+    let o = step * f32(i) * 1.5;
+    c += textureSample(src, samp, in.uv + o).rgb * w[i - 1];
+    c += textureSample(src, samp, in.uv - o).rgb * w[i - 1];
+  }
+  return vec4f(c, 1.0);
+}
+`;
+
+/** Tonemap one source to the canvas, with the bloom, the vignette and the grain. */
+export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var bloom: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<uniform> post: Post;
+
+fn hash(p: vec2f) -> f32 {
+  let h = dot(p, vec2f(127.1, 311.7));
+  return fract(sin(h) * 43758.5453);
+}
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  var c = textureLoad(src, vec2i(in.pos.xy), 0).rgb;
+  c += textureSample(bloom, samp, in.uv).rgb * post.bloom;
+  var m = c / (c + vec3f(1.0));
+  // the corners: the distance from the middle, over the half-diagonal, so a
+  // corner is one whatever the frame's shape
+  let r = length(in.uv - vec2f(0.5)) / 0.7071;
+  m *= 1.0 - post.vignette * smoothstep(0.35, 1.05, r);
+  var d = pow(clamp(m, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / 2.2));
+  // grain, on the displayed value, rolling with the time so it does not sit
+  // still on the screen; strongest in the midtones and nothing in the black
+  // and the white, like film. Added under the gamma it lifted every black
+  // pixel it landed on to a grey, and a night sky was a grey haze.
+  let g = hash(in.pos.xy + vec2f(post.time * 60.0, post.time * 37.0)) - 0.5;
+  let l = dot(d, vec3f(0.2126, 0.7152, 0.0722));
+  d += vec3f(g * post.grain * 4.0 * l * (1.0 - l));
+  return vec4f(clamp(d, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 `;
