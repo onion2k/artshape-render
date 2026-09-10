@@ -177,3 +177,40 @@ at the corner shows as about 0.7 of plain, not 0.4; and grain added under
 the gamma lifts every black pixel it lands on to a grey — the particle
 tests, which take a black frame as their zero, caught it — so it is added
 to the displayed value and weighted to the midtones.
+
+## Volumetric fog on the game path
+
+`src/game/__tests__/fog.gpu.test.ts` marches fog through an otherwise black
+frame with one slab hanging over half of it: the frame is untouched at no
+density and with the rung off; the empty air lights up, and more of it the
+denser the fog; the air under the slab is less than half as bright as the air
+beside it, which is a shaft; the ambient term lifts the shadowed air back
+again; the layer can be raised past the camera, fogging the top of the frame
+instead of the bottom; a plate in the way shortens the march and so the fog;
+and forward scattering makes looking toward the sun brighter than looking
+away. `fog.test.ts` checks the setup on the CPU: that `viewDepth` inverts
+the projection `camera.ts` writes, and that the packed camera basis rebuilds
+rays whose view depth is exactly one — a ray a few degrees out puts the
+shafts in the wrong place and nothing looks broken.
+
+**A `card` is centred in x but runs from zero to its height in y.** The
+comment in the shadow tests saying a plate is built about its own centre is
+half true, and the half that is not cost an afternoon: a 2600-long slab
+placed at the origin covers y 0 to 2600, so every ray marching through
+negative y ran in sunlight, the shadowed patch read as bright as the lit one,
+and the fog looked broken when the scene was. Check a mesh's bounds before
+believing where it is.
+
+**Two ways this suite can lie to you.** The frame comes back **bgra**, so
+`px[o]` is blue and `px[o + 2]` is red — a debug shader writing a value per
+channel reads back reversed, which sent the hunt above off after the camera
+basis for an hour. And a debug value read through the composite passes
+through bloom, the vignette and the grain as well as the tonemap: turn the
+post rung off before decoding anything quantitative out of a pixel.
+
+**Reading a shadow map.** The maps carry `COPY_SRC`, so a test can copy one
+back and print it. A depth texture must be copied whole and with
+`aspect: 'depth-only'`; both restrictions error rather than truncate, and the
+error is easy to miss under a grep. Printing the sun map as 32×32 characters
+answered in one run what pixel checks had argued about all afternoon — the
+geometry was in half of it, which said at once that the scene was wrong.

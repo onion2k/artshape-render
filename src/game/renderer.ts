@@ -28,7 +28,8 @@ import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
-import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
+import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
+import { FOG_FLOATS, NO_FOG, fogUniform, type Fog } from './fog';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -128,6 +129,8 @@ export interface GameEconomy extends SceneVariant {
   particles?: boolean;
   /** Whether the post chain runs. Off, the frame is tonemapped and nothing else. */
   post?: boolean;
+  /** Whether the fog is marched. Off, there is none, whatever its density says. */
+  fog?: boolean;
 }
 
 /**
@@ -146,7 +149,7 @@ export interface Post {
 
 export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
 
-export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true };
+export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true, fog: true };
 
 interface Uploaded {
   position: GPUBuffer;
@@ -188,6 +191,20 @@ export class GameRenderer {
   private blurBindB: GPUBindGroup | null = null;
   private postTime = 0;
   post: Post = { ...DEFAULT_POST };
+  /**
+   * The volume the frame is seen through. Density at nothing is no fog and
+   * no passes; see `fog.ts` for what the rest of it means.
+   */
+  fog: Fog = { ...NO_FOG };
+  private fogLayout: GPUBindGroupLayout;
+  private fogBlendLayout: GPUBindGroupLayout;
+  private fogPipeline!: GPURenderPipeline;
+  private fogBlendPipeline!: GPURenderPipeline;
+  private fogBuffer: GPUBuffer;
+  private fogData = new Float32Array(FOG_FLOATS);
+  private fogMap: GPUTexture | null = null;
+  private fogBind: GPUBindGroup | null = null;
+  private fogBlendBind: GPUBindGroup | null = null;
   private sceneBind: GPUBindGroup | null = null;
   private effectBind: GPUBindGroup | null = null;
   private compositeBind: GPUBindGroup | null = null;
@@ -257,7 +274,10 @@ export class GameRenderer {
     // The maps are made once at a fixed size and never resized: a map is
     // sized to what it covers, not to the window. 2048 across an arena
     // twelve metres wide is six millimetres a texel.
-    const mapUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+    // COPY_SRC so a test can read a map back and see what is in it. A
+    // shadow that does not appear has no other symptom, and a map dumped as
+    // a picture answers in one run what pixel checks argue about for an hour.
+    const mapUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
     this.sunMap = device.createTexture({ label: 'sun shadow', size: [SUN_MAP, SUN_MAP], format: SHADOW, usage: mapUsage });
     this.spotMaps = device.createTexture({ label: 'spot shadows', size: [SPOT_MAP, SPOT_MAP, SPOT_SHADOWS], format: SHADOW, usage: mapUsage });
     // linear filtering on a comparison sampler is the hardware's own PCF
@@ -312,6 +332,23 @@ export class GameRenderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
+    this.fogLayout = device.createBindGroupLayout({
+      label: 'game fog',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    this.fogBlendLayout = device.createBindGroupLayout({
+      label: 'game fog blend',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+    this.fogBuffer = device.createBuffer({ label: 'fog', size: FOG_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.postBuffer = device.createBuffer({ label: 'post', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurH = device.createBuffer({ label: 'blur across', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurV = device.createBuffer({ label: 'blur down', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -403,6 +440,36 @@ export class GameRenderer {
         primitive: { topology: 'triangle-list' },
       }).then((p) => { if (label === 'game bright') this.bright = p; else this.blur = p; }));
     }
+
+    const fogModule = shader(device, FOG_WGSL, 'game fog');
+    waits.push(device.createRenderPipelineAsync({
+      label: 'game fog',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.fogLayout] }),
+      vertex: { module: fogModule, entryPoint: 'vsMain' },
+      fragment: { module: fogModule, entryPoint: 'fsMain', targets: [{ format: HDR }] },
+      primitive: { topology: 'triangle-list' },
+    }).then((p) => { this.fogPipeline = p; }));
+
+    // scattered light added, what got through multiplying what is there: the
+    // frame is fogged in place, before the bloom reads it, so a lamp in the
+    // mist blooms the mist and not the lamp it can no longer see
+    const fogBlend = shader(device, FOG_BLEND_WGSL, 'game fog blend');
+    waits.push(device.createRenderPipelineAsync({
+      label: 'game fog blend',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.fogBlendLayout] }),
+      vertex: { module: fogBlend, entryPoint: 'vsMain' },
+      fragment: {
+        module: fogBlend, entryPoint: 'fsMain',
+        targets: [{
+          format: HDR,
+          blend: {
+            color: { srcFactor: 'one', dstFactor: 'src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-list' },
+    }).then((p) => { this.fogBlendPipeline = p; }));
 
     const comp = shader(device, COMPOSITE_WGSL, 'game composite');
     waits.push(device.createRenderPipelineAsync({
@@ -662,9 +729,33 @@ export class GameRenderer {
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth]) t?.destroy();
     const both = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
     this.colour = device.createTexture({ label: 'game colour', size: [width, height], format: HDR, usage: both | GPUTextureUsage.COPY_DST });
-    this.depth = device.createTexture({ label: 'game depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST });
+    // TEXTURE_BINDING because the fog reads it: a march has to know where
+    // the scene stopped it
+    this.depth = device.createTexture({ label: 'game depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING });
     this.keptColour = device.createTexture({ label: 'kept colour', size: [width, height], format: HDR, usage: both | GPUTextureUsage.COPY_SRC });
     this.keptDepth = device.createTexture({ label: 'kept depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    // The fog, at half the frame each way: enough for something with no
+    // edges, a quarter of the marching.
+    this.fogMap?.destroy();
+    const fw = Math.max(1, Math.ceil(width / 2)), fh = Math.max(1, Math.ceil(height / 2));
+    this.fogMap = device.createTexture({ label: 'fog', size: [fw, fh], format: HDR, usage: both });
+    this.fogBind = device.createBindGroup({
+      label: 'game fog', layout: this.fogLayout,
+      entries: [
+        { binding: 0, resource: this.depth.createView() },
+        { binding: 1, resource: this.sunMap.createView() },
+        { binding: 2, resource: this.shadowSampler },
+        { binding: 3, resource: { buffer: this.fogBuffer } },
+      ],
+    });
+    this.fogBlendBind = device.createBindGroup({
+      label: 'game fog blend', layout: this.fogBlendLayout,
+      entries: [
+        { binding: 0, resource: this.fogMap.createView() },
+        { binding: 1, resource: this.postSampler },
+      ],
+    });
+
     // The bloom textures, a quarter of the frame each way, and every bind
     // group that reads the frame or them: remade with the frame.
     for (const t of [this.bloomA, this.bloomB]) t?.destroy();
@@ -822,6 +913,36 @@ export class GameRenderer {
     }
     pass.end();
 
+    // The fog, over the frame, before any of the post chain sees it. It
+    // needs the sun's map, which the shadow block above has just drawn, and
+    // the depth the scene pass has just written.
+    if (this.economy.fog !== false && this.fog.density > 0 && this.fogPipeline && this.fogBlendPipeline && this.fogMap) {
+      const shadowed = this.economy.shadows !== false && this.sunBox !== null;
+      fogUniform(
+        this.fogData, this.fog, this.camera,
+        shadowed ? this.shadowData.subarray(0, 16) : null,
+        this.look.sunDir, this.look.sunColour, SUN_BIAS * 4, this.postTime,
+      );
+      device.queue.writeBuffer(this.fogBuffer, 0, this.fogData);
+      const march = encoder.beginRenderPass({
+        label: 'game fog',
+        colorAttachments: [{ view: this.fogMap.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      });
+      march.setPipeline(this.fogPipeline);
+      march.setBindGroup(0, this.fogBind!);
+      march.draw(3);
+      march.end();
+
+      const over = encoder.beginRenderPass({
+        label: 'game fog blend',
+        colorAttachments: [{ view: colourView, loadOp: 'load', storeOp: 'store' }],
+      });
+      over.setPipeline(this.fogBlendPipeline);
+      over.setBindGroup(0, this.fogBlendBind!);
+      over.draw(3);
+      over.end();
+    }
+
     // The post chain. With the rung off, or bloom at nothing, the bloom
     // passes are skipped and the composite is told to add none of it; the
     // vignette and the grain are likewise nothing when the rung is off.
@@ -874,8 +995,8 @@ export class GameRenderer {
   dispose() {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
-    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB]) t?.destroy();
-    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, ...this.passBuffers]) b.destroy();
+    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB, this.fogMap]) t?.destroy();
+    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
   }
 }

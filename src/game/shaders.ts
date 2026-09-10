@@ -421,6 +421,122 @@ struct Blur { dir: vec2f, texel: vec2f };
 }
 `;
 
+/**
+ * Fog with a volume: the view ray marched, the sun's shadow map sampled at
+ * every step, the result written half-size and blended over the frame.
+ *
+ * The ray is built from the camera's basis so that its view-space z is
+ * exactly -1, which makes the march parameter the same view depth the depth
+ * buffer holds: a step is a step toward the surface, and where the surface
+ * is, the march stops. The start of the march is dithered per pixel and per
+ * frame, because twenty-four even steps through a shaft of light is
+ * twenty-four visible bands, and the same twenty-four started at a random
+ * offset is noise that a half-size texture and a bilinear upsample turn back
+ * into smoke.
+ *
+ * Output is scattered light in rgb and transmittance in alpha, which is
+ * exactly what a `one`/`src-alpha` blend wants: the frame is multiplied by
+ * what got through and the scattered light is added on top.
+ */
+export const FOG_WGSL = POST_VERT + `
+struct Fog {
+  sun: mat4x4f,
+  camPos: vec3f, near: f32,
+  right: vec3f, far: f32,
+  up: vec3f, tanHalf: f32,
+  back: vec3f, aspect: f32,
+  sunDir: vec3f, density: f32,
+  sunColour: vec3f, height: f32,
+  colour: vec3f, base: f32,
+  // shift x and y, steps, anisotropy
+  lens: vec4f,
+  // reach, ambient, shadow bias, whether there is a sun map
+  march: vec4f,
+  when: vec4f,
+};
+@group(0) @binding(0) var depthTex: texture_depth_2d;
+@group(0) @binding(1) var sunShadow: texture_depth_2d;
+@group(0) @binding(2) var cmp: sampler_comparison;
+@group(0) @binding(3) var<uniform> fog: Fog;
+
+/**
+ * Henyey-Greenstein, scaled so that g of zero is exactly one: how much of
+ * the light coming from the sun leaves in the direction of the eye. Over
+ * zero it peaks looking toward the sun, which is where a mist glows.
+ */
+fn phase(c: f32, g: f32) -> f32 {
+  let g2 = g * g;
+  let d = 1.0 + g2 - 2.0 * g * c;
+  return (1.0 - g2) / max(pow(max(d, 1e-4), 1.5), 1e-4);
+}
+
+/** A hash of the pixel and the frame: the march's starting offset. */
+fn dither(p: vec3f) -> f32 {
+  var q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  // this pass is half size; the depth it reads is not
+  let dims = vec2i(textureDimensions(depthTex));
+  let coord = min(vec2i(in.pos.xy) * 2, dims - vec2i(1));
+  let z = textureLoad(depthTex, coord, 0);
+
+  let ndc = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+  let vx = (ndc.x + 2.0 * fog.lens.x) * fog.tanHalf * fog.aspect;
+  let vy = (ndc.y + 2.0 * fog.lens.y) * fog.tanHalf;
+  // view-space z of -1, so t is the view depth the buffer above is in
+  let ray = fog.right * vx + fog.up * vy - fog.back;
+  let span = length(ray);
+  let dir = ray / span;
+
+  // the projection in camera.ts, undone; at a cleared depth of one this is
+  // the far plane, which is why nothing drawn needs no special case
+  let surface = fog.near / max(1.0 + z * (fog.near - fog.far) / fog.far, 1e-6);
+  let end = min(surface, fog.march.x / span);
+  let steps = i32(fog.lens.z);
+  let dt = end / f32(steps);
+  let segment = dt * span;
+  let start = dither(vec3f(in.pos.xy, fog.when.x));
+  let p = phase(dot(dir, fog.sunDir), fog.lens.w);
+
+  var through = 1.0;
+  var scattered = vec3f(0.0);
+  for (var i = 0; i < steps; i++) {
+    let at = fog.camPos + ray * ((f32(i) + start) * dt);
+    // exponential over the height, flat below the base: a layer that lies
+    // in the hollows and thins out over the hills
+    let density = fog.density * exp(-max(at.z - fog.base, 0.0) / fog.height);
+    if (density > 1e-9) {
+      var lit = 1.0;
+      if (fog.march.w > 0.5) {
+        let sp = fog.sun * vec4f(at, 1.0);
+        let uv = vec2f(sp.x, -sp.y) * 0.5 + 0.5;
+        // outside the map is lit: the box the sun map covers is not the world
+        if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) && sp.z >= 0.0 && sp.z <= 1.0) {
+          lit = textureSampleCompareLevel(sunShadow, cmp, uv, sp.z - fog.march.z);
+        }
+      }
+      let light = fog.colour * (fog.march.y + fog.sunColour * lit * p);
+      let taken = 1.0 - exp(-density * segment);
+      scattered += through * taken * light;
+      through *= 1.0 - taken;
+    }
+  }
+  return vec4f(scattered, through);
+}
+`;
+
+/** The half-size fog, read back up to the frame's size and blended over it. */
+export const FOG_BLEND_WGSL = POST_VERT + `
+@group(0) @binding(0) var fogTex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  return textureSample(fogTex, samp, in.uv);
+}
+`;
+
 /** Tonemap one source to the canvas, with the bloom, the vignette and the grain. */
 export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + `
 @group(0) @binding(0) var src: texture_2d<f32>;
