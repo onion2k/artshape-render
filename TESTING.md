@@ -208,6 +208,16 @@ basis for an hour. And a debug value read through the composite passes
 through bloom, the vignette and the grain as well as the tonemap: turn the
 post rung off before decoding anything quantitative out of a pixel.
 
+**The far end of a march.** `fog-reach` (`fogreach.gpu.test.ts`) puts a
+ground plane four times the fog's reach under an arena-like camera and
+measures the fog's own contribution as the difference between a frame with
+it and a frame without — which in a test is exact, because the scene does not
+move. The measure is the sharpest step between neighbouring bands. It is the
+kind of test that only works with a still scene: the same comparison
+attempted in the running game was worthless, because the car drifts, the
+camera follows it, and two captures a moment apart differ in half their
+pixels. If an A/B needs two renders, do it where nothing moves between them.
+
 **Reading a shadow map.** The maps carry `COPY_SRC`, so a test can copy one
 back and print it. A depth texture must be copied whole and with
 `aspect: 'depth-only'`; both restrictions error rather than truncate, and the

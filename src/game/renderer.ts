@@ -44,6 +44,16 @@ const SPOT_MAP = 512;
  * toward the lamp, so the same number is far more there — see the tests.
  */
 const SUN_BIAS = 0.0012;
+/**
+ * The fog's own bias into the sun's map, and much smaller than a surface's.
+ * A surface needs enough bias not to shadow itself; a point of air needs
+ * only enough to clear the map's own quantisation, and the bias is in the
+ * map's normalised depth, so on an arena-sized box lit by a low sun it buys
+ * a great many world units. At four times SUN_BIAS it was some ninety of
+ * them — wider than the trees — and a forest at dawn held a tenth of the
+ * light out of the mist instead of half.
+ */
+const FOG_BIAS = 0.0002;
 const SPOT_BIAS = 0.0006;
 
 /** One mesh and the placements of it, as the still-life path also takes them. */
@@ -921,7 +931,7 @@ export class GameRenderer {
       fogUniform(
         this.fogData, this.fog, this.camera,
         shadowed ? this.shadowData.subarray(0, 16) : null,
-        this.look.sunDir, this.look.sunColour, SUN_BIAS * 4, this.postTime,
+        this.look.sunDir, this.look.sunColour, FOG_BIAS, this.postTime,
       );
       device.queue.writeBuffer(this.fogBuffer, 0, this.fogData);
       const march = encoder.beginRenderPass({

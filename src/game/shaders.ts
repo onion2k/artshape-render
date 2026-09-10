@@ -470,6 +470,14 @@ fn phase(c: f32, g: f32) -> f32 {
   return (1.0 - g2) / max(pow(max(d, 1e-4), 1.5), 1e-4);
 }
 
+/**
+ * Where along the reach the fog starts tapering off, as a fraction of it.
+ * The last third, which at the arena's nine thousand is three thousand units
+ * of gradient — long enough that the eye reads it as the mist thinning with
+ * distance rather than as the end of anything.
+ */
+const REACH_FADE: f32 = 0.66;
+
 /** A hash of the pixel and the frame: the march's starting offset. */
 fn dither(p: vec3f) -> f32 {
   var q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
@@ -494,7 +502,9 @@ fn dither(p: vec3f) -> f32 {
   // the projection in camera.ts, undone; at a cleared depth of one this is
   // the far plane, which is why nothing drawn needs no special case
   let surface = fog.near / max(1.0 + z * (fog.near - fog.far) / fog.far, 1e-6);
-  let end = min(surface, fog.march.x / span);
+  // how far the march would go if nothing stopped it, and where it does stop
+  let far = fog.march.x / span;
+  let end = min(surface, far);
   let steps = i32(fog.lens.z);
   let dt = end / f32(steps);
   let segment = dt * span;
@@ -504,10 +514,21 @@ fn dither(p: vec3f) -> f32 {
   var through = 1.0;
   var scattered = vec3f(0.0);
   for (var i = 0; i < steps; i++) {
-    let at = fog.camPos + ray * ((f32(i) + start) * dt);
+    let t = (f32(i) + start) * dt;
+    let at = fog.camPos + ray * t;
     // exponential over the height, flat below the base: a layer that lies
     // in the hollows and thins out over the hills
-    let density = fog.density * exp(-max(at.z - fog.base, 0.0) / fog.height);
+    var density = fog.density * exp(-max(at.z - fog.base, 0.0) / fog.height);
+    // A march that runs out of reach rather than running into something has
+    // to taper, or the fog stops dead at a fixed distance from the eye —
+    // and the set of points a fixed distance from the eye is a sphere,
+    // which is an arc ruled across the frame, straight enough over a narrow
+    // view to look like somebody drew it. Ramp the density down over the
+    // last of the reach. A ray that meets a surface first never gets far
+    // enough along to notice, and two neighbouring rays, one stopped by a
+    // surface and one not, taper by nearly the same amount — so this softens
+    // the end of the march without putting an edge where the two kinds meet.
+    density *= 1.0 - smoothstep(REACH_FADE, 1.0, t / far);
     if (density > 1e-9) {
       var lit = 1.0;
       if (fog.march.w > 0.5) {
