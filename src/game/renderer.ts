@@ -27,6 +27,7 @@ import { Camera } from '../gpu/camera';
 import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
+import { Particles, type Emit } from './particles';
 import { COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 
 const HDR: GPUTextureFormat = 'rgba16float';
@@ -123,9 +124,11 @@ export const DEFAULT_LOOK: Look = {
 export interface GameEconomy extends SceneVariant {
   /** A fraction of the effect layers to draw: 1 all of them, 0 none. */
   effects: number;
+  /** Whether the particle pool is simulated and drawn. Off, it is neither. */
+  particles?: boolean;
 }
 
-export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1 };
+export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true };
 
 interface Uploaded {
   position: GPUBuffer;
@@ -198,9 +201,18 @@ export class GameRenderer {
 
   economy: GameEconomy = { ...FULL_ECONOMY };
   look: Look = { ...DEFAULT_LOOK };
+  /**
+   * The particles, simulated on the GPU: see `particles.ts`. The game emits
+   * into them through `emit` and they are moved and drawn by `frame`.
+   * Gravity is in the game's own units a second squared — the renderer has
+   * no opinion about what a unit is, and the default is a metre's worth.
+   */
+  readonly particles: Particles;
+  gravity = 9.81;
 
-  constructor(private ctx: Gpu, private lightCapacity = 512, private effectCapacity = 256) {
+  constructor(private ctx: Gpu, private lightCapacity = 512, private effectCapacity = 256, particleCapacity = 16384) {
     const { device } = ctx;
+    this.particles = new Particles(ctx, particleCapacity, 128, HDR, DEPTH);
     this.frameBuffer = device.createBuffer({ label: 'game frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = emptyBuffer(device, Math.max(1, lightCapacity) * LIGHT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'point lights');
     this.effectBuffer = device.createBuffer({ label: 'effect', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -339,6 +351,7 @@ export class GameRenderer {
       primitive: { topology: 'triangle-list' },
     }).then((p) => { this.composite = p; }));
 
+    waits.push(this.particles.ready);
     this.ready = Promise.all(waits).then(() => { this.compiled = true; });
   }
 
@@ -564,6 +577,11 @@ export class GameRenderer {
   }
   private effectQuads = 0;
 
+  /** A burst of particles this frame: smoke, spray, sparks. See `particles.ts`. */
+  emit(e: Emit): boolean {
+    return this.particles.emit(e);
+  }
+
   /** A tint over every effect layer at once. White leaves them as they are. */
   setEffectTint(colour: [number, number, number]) {
     this.effectUniform.set(colour, 0);
@@ -647,7 +665,7 @@ export class GameRenderer {
    * One frame into `target`. Returns whether it drew: before the pipelines
    * have compiled, or without an environment, it does not.
    */
-  frame(target: GPUTextureView, mode: FrameMode = 'redraw'): boolean {
+  frame(target: GPUTextureView, mode: FrameMode = 'redraw', dt = 1 / 60): boolean {
     const { device } = this.ctx;
     if (!this.compiled || !this.sceneBind || !this.compositeBind || !this.colour || !this.depth) return false;
     this.writeFrame();
@@ -674,6 +692,11 @@ export class GameRenderer {
       encoder.copyTextureToTexture({ texture: this.keptDepth! }, { texture: this.depth }, size);
     }
 
+    // the particles move before the scene is drawn, so what is drawn is
+    // where they are now
+    const particles = this.economy.particles !== false;
+    if (particles) this.particles.simulate(encoder, dt, this.camera, this.gravity);
+
     const pass = encoder.beginRenderPass({
       label: 'game scene',
       colorAttachments: [{
@@ -691,6 +714,7 @@ export class GameRenderer {
     });
     if (mode === 'redraw') this.draw(pass, this.staticGroups);
     this.draw(pass, this.dynamicGroups);
+    if (particles) this.particles.draw(pass);
     const layers = Math.round(this.effectQuads * Math.max(0, Math.min(1, this.economy.effects)));
     if (layers && this.effectBind) {
       pass.setPipeline(this.effect);
@@ -717,5 +741,6 @@ export class GameRenderer {
     GameRenderer.release(this.dynamicGroups);
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps]) t?.destroy();
     for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, ...this.passBuffers]) b.destroy();
+    this.particles.dispose();
   }
 }

@@ -149,3 +149,15 @@ checked on the CPU in `shadows.test.ts` — every corner of the fitted box
 inside the clip volume, depth linear for the sun and perspective for a spot,
 the cone just inside a spot's map. The DSL builds plates about their centre:
 a test that places one from a corner is measuring the wrong thing.
+
+## Particles on the game path
+
+`src/game/__tests__/particles.gpu.test.ts` emits into an otherwise black
+frame and reads the mean: a burst appears where it was emitted, is gone
+when its life is up, falls onto its floor when it is given gravity and
+floats when it is not, and is not drawn at all when the ladder turns the
+pool off. Two things the tests learned: a 32-degree lens from a camera 447
+units off its target sees 128 units either side of it, so a burst placed
+higher is off the frame; and a particle fades in over its first tenth, so a
+reading straight after emission is dimmer than one later — compare separate
+runs, never two moments of one.
