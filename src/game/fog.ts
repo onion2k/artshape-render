@@ -47,16 +47,27 @@ export interface Fog {
   reach: number;
   /** Steps along the ray. More is smoother and dearer; the start is dithered. */
   steps: number;
+  /**
+   * How much the shadowed spotlights scatter in the fog — a cone in the air
+   * under every lamp that carries a map, cut by whatever stands in it. Zero
+   * is none, and skips the loop. The lights are whichever ones were handed
+   * to `setLights` as shadowed: a light with no map casts no cone, because a
+   * cone that shines through a tree is worse than no cone.
+   */
+  cones: number;
 }
 
 /** No fog at all: the passes are skipped and the frame is untouched. */
 export const NO_FOG: Fog = {
   density: 0, base: 0, height: 1000, colour: [1, 1, 1],
-  ambient: 0.2, anisotropy: 0.6, reach: 6000, steps: 24,
+  ambient: 0.2, anisotropy: 0.6, reach: 6000, steps: 24, cones: 1,
 };
 
-/** Floats in the fog uniform: a matrix, seven vec4-aligned rows, three tails. */
-export const FOG_FLOATS = 56;
+/** Floats in the fog uniform: a matrix, seven vec4-aligned rows, four tails. */
+export const FOG_FLOATS = 60;
+
+/** Floats a cone takes: its shadow matrix, then four vec4s of light. */
+export const CONE_FLOATS = 32;
 
 /**
  * Pack everything a march needs into the uniform the shader reads.
@@ -71,6 +82,7 @@ export function fogUniform(
   out: Float32Array, fog: Fog, camera: Camera,
   sun: Float32Array | null, sunDir: Vec3, sunColour: Vec3,
   bias: number, time: number,
+  cones = 0, falloffHalf = 50, spotBias = 0, spotTexel = 0,
 ): Float32Array {
   if (sun) out.set(sun, 0); else out.fill(0, 0, 16);
   const v = camera.view;
@@ -93,6 +105,11 @@ export function fogUniform(
   out[48] = Math.max(fog.reach, 1); out[49] = Math.max(fog.ambient, 0);
   out[50] = bias; out[51] = sun ? 1 : 0;
   out[52] = time;
+  out[53] = Math.max(0, cones);
+  out[54] = Math.max(1, falloffHalf);
+  out[55] = spotBias;
+  out[56] = Math.max(fog.cones, 0);
+  out[57] = spotTexel;
   return out;
 }
 

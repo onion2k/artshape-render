@@ -29,7 +29,7 @@ import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
-import { FOG_FLOATS, NO_FOG, fogUniform, type Fog } from './fog';
+import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, type Fog } from './fog';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -212,6 +212,8 @@ export class GameRenderer {
   private fogBlendPipeline!: GPURenderPipeline;
   private fogBuffer: GPUBuffer;
   private fogData = new Float32Array(FOG_FLOATS);
+  private coneBuffer: GPUBuffer;
+  private coneData = new Float32Array(SPOT_SHADOWS * CONE_FLOATS);
   private fogMap: GPUTexture | null = null;
   private fogBind: GPUBindGroup | null = null;
   private fogBlendBind: GPUBindGroup | null = null;
@@ -248,7 +250,7 @@ export class GameRenderer {
   private passBinds: GPUBindGroup[] = [];
   private sunBox: Box | null = null;
   /** The spotlights being shadowed this frame: what to render each layer from. */
-  private spots: { position: [number, number, number]; direction: [number, number, number]; outer: number; reach: number }[] = [];
+  private spots: { position: [number, number, number]; direction: [number, number, number]; outer: number; reach: number; colour: [number, number, number]; cosInner: number; cosOuter: number }[] = [];
   private lightScratch = new Float32Array(0);
   private keptColour: GPUTexture | null = null;
   private keptDepth: GPUTexture | null = null;
@@ -349,6 +351,8 @@ export class GameRenderer {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
       ],
     });
     this.fogBlendLayout = device.createBindGroupLayout({
@@ -359,6 +363,7 @@ export class GameRenderer {
       ],
     });
     this.fogBuffer = device.createBuffer({ label: 'fog', size: FOG_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.coneBuffer = device.createBuffer({ label: 'fog cones', size: SPOT_SHADOWS * CONE_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.postBuffer = device.createBuffer({ label: 'post', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurH = device.createBuffer({ label: 'blur across', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurV = device.createBuffer({ label: 'blur down', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -647,6 +652,11 @@ export class GameRenderer {
         direction: [d[o + 8], d[o + 9], d[o + 10]],
         outer: (Math.acos(Math.max(-1, Math.min(1, d[o + 11]))) * 180) / Math.PI,
         reach: d[o + 3],
+        // and what it takes to throw a cone through the fog: what it puts
+        // out, and the cone it puts it out in
+        colour: [d[o + 4] * d[o + 7], d[o + 5] * d[o + 7], d[o + 6] * d[o + 7]],
+        cosOuter: d[o + 11],
+        cosInner: d[o + 12],
       });
     }
     this.ctx.device.queue.writeBuffer(this.lightBuffer, 0, d, 0, n);
@@ -756,6 +766,8 @@ export class GameRenderer {
         { binding: 1, resource: this.sunMap.createView() },
         { binding: 2, resource: this.shadowSampler },
         { binding: 3, resource: { buffer: this.fogBuffer } },
+        { binding: 4, resource: { buffer: this.coneBuffer } },
+        { binding: 5, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
       ],
     });
     this.fogBlendBind = device.createBindGroup({
@@ -928,10 +940,25 @@ export class GameRenderer {
     // the depth the scene pass has just written.
     if (this.economy.fog !== false && this.fog.density > 0 && this.fogPipeline && this.fogBlendPipeline && this.fogMap) {
       const shadowed = this.economy.shadows !== false && this.sunBox !== null;
+      // The cones: the shadowed spots, each with its own map's matrix, so
+      // the march can light the air from them and cut what stands in the
+      // way. None of it is written when the game asks for no cones.
+      const lit = this.fog.cones > 0 && this.economy.shadows !== false ? this.spots.length : 0;
+      for (let i = 0; i < lit; i++) {
+        const s = this.spots[i];
+        const o = i * CONE_FLOATS;
+        this.coneData.set(this.shadowData.subarray(20 + i * 16, 36 + i * 16), o);
+        this.coneData.set(s.position, o + 16); this.coneData[o + 19] = s.reach;
+        this.coneData.set(s.direction, o + 20); this.coneData[o + 23] = s.cosOuter;
+        this.coneData.set(s.colour, o + 24); this.coneData[o + 27] = s.cosInner;
+        this.coneData[o + 28] = i;
+      }
+      if (lit) device.queue.writeBuffer(this.coneBuffer, 0, this.coneData, 0, lit * CONE_FLOATS);
       fogUniform(
         this.fogData, this.fog, this.camera,
         shadowed ? this.shadowData.subarray(0, 16) : null,
         this.look.sunDir, this.look.sunColour, FOG_BIAS, this.postTime,
+        lit, this.look.falloffHalf, SPOT_BIAS, 1 / SPOT_MAP,
       );
       device.queue.writeBuffer(this.fogBuffer, 0, this.fogData);
       const march = encoder.beginRenderPass({
@@ -1006,7 +1033,7 @@ export class GameRenderer {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB, this.fogMap]) t?.destroy();
-    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, ...this.passBuffers]) b.destroy();
+    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, this.coneBuffer, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
   }
 }

@@ -90,34 +90,6 @@ describe('the far end of a fog march', () => {
     return out;
   }
 
-  /** The fog's own contribution, in bands, and the sharpest step in it. */
-  async function contribution(mist: typeof NO_FOG) {
-    renderer.fog = { ...mist, density: 0 };
-    renderer.frame(view(), 'redraw', 1 / 60);
-    const off = await read();
-    renderer.fog = mist;
-    renderer.frame(view(), 'redraw', 1 / 60);
-    const on = await read();
-    const k = SIZE / BANDS;
-    const cell = (img: number[][], gy: number, gx: number) => {
-      let s = 0;
-      for (let y = gy * k; y < (gy + 1) * k; y++) for (let x = gx * k; x < (gx + 1) * k; x++) s += img[y][x];
-      return s / (k * k);
-    };
-    const d: number[][] = [];
-    for (let gy = 0; gy < BANDS; gy++) {
-      const r: number[] = [];
-      for (let gx = 0; gx < BANDS; gx++) r.push(cell(on, gy, gx) - cell(off, gy, gx));
-      d.push(r);
-    }
-    const flat = d.flat();
-    let worst = 0;
-    for (let gx = 2; gx < BANDS - 2; gx++) {
-      for (let gy = 2; gy < BANDS - 3; gy++) worst = Math.max(worst, Math.abs(d[gy + 1][gx] - d[gy][gx]));
-    }
-    return { worst, range: Math.max(...flat) - Math.min(...flat) };
-  }
-
   it('fades out where it runs out of reach, instead of stopping at an arc', async () => {
     const MIST = { ...NO_FOG, density: 2.6e-4, base: 0, height: 300, ambient: 0.3, anisotropy: 0.62, reach: 9000, steps: 28 };
     renderer.fog = { ...MIST, density: 0 };

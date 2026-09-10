@@ -208,6 +208,14 @@ basis for an hour. And a debug value read through the composite passes
 through bloom, the vignette and the grain as well as the tonemap: turn the
 post rung off before decoding anything quantitative out of a pixel.
 
+**Cones.** `fogcones.gpu.test.ts` hangs one spotlight over a black frame
+with mist in it: the air under the lamp lights up when the cones come on and
+is black when they do not, the air beside the beam stays dark, and the same
+lamp put over a lid lights nothing below it. That last one is the test with
+teeth — replace the cone's shadow lookup with a constant and it is the only
+one that fails, which is what says the beam is really being cut rather than
+merely being narrow.
+
 **The far end of a march.** `fog-reach` (`fogreach.gpu.test.ts`) puts a
 ground plane four times the fog's reach under an arena-like camera and
 measures the fog's own contribution as the difference between a frame with
