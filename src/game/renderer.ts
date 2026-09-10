@@ -26,10 +26,23 @@ import { bufferFrom, emptyBuffer, shader, type Gpu } from '../gpu/context';
 import { Camera } from '../gpu/camera';
 import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
-import { COMPOSITE_WGSL, EFFECT_WGSL, sceneSource, type SceneVariant } from './shaders';
+import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
+import { COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
+/** The shadow maps' format: a depth the comparison sampler can read. */
+const SHADOW: GPUTextureFormat = 'depth32float';
+const SUN_MAP = 2048;
+const SPOT_MAP = 512;
+/**
+ * Depth bias in the lookups, in clip depth. The sun's map spans the fitted
+ * box, so a unit of its depth is the box's whole extent along the light and
+ * this is a few millimetres of it; a spot's depth is perspective and packed
+ * toward the lamp, so the same number is far more there — see the tests.
+ */
+const SUN_BIAS = 0.0012;
+const SPOT_BIAS = 0.0006;
 
 /** One mesh and the placements of it, as the still-life path also takes them. */
 export interface GameGroup {
@@ -155,6 +168,24 @@ export class GameRenderer {
 
   private colour: GPUTexture | null = null;
   private depth: GPUTexture | null = null;
+
+  // The shadow maps: one for the sun, a stack for the spotlights, a
+  // comparison sampler to read them through, the matrices they were
+  // rendered with, and a depth-only pipeline to render them.
+  private sunMap: GPUTexture;
+  private spotMaps: GPUTexture;
+  private shadowSampler: GPUSampler;
+  private shadowBuffer: GPUBuffer;
+  private shadowData = new Float32Array(16 + 4 + SPOT_SHADOWS * 16 + 4);
+  private depthPipeline!: GPURenderPipeline;
+  private depthLayout: GPUBindGroupLayout;
+  /** One matrix buffer and bind group per pass: the sun's, then a spot's each. */
+  private passBuffers: GPUBuffer[] = [];
+  private passBinds: GPUBindGroup[] = [];
+  private sunBox: Box | null = null;
+  /** The spotlights being shadowed this frame: what to render each layer from. */
+  private spots: { position: [number, number, number]; direction: [number, number, number]; outer: number; reach: number }[] = [];
+  private lightScratch = new Float32Array(0);
   private keptColour: GPUTexture | null = null;
   private keptDepth: GPUTexture | null = null;
   private width = 0;
@@ -177,6 +208,25 @@ export class GameRenderer {
     this.quadBuffer = emptyBuffer(device, Math.max(1, effectCapacity) * EFFECT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'effect quads');
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' });
 
+    // The maps are made once at a fixed size and never resized: a map is
+    // sized to what it covers, not to the window. 2048 across an arena
+    // twelve metres wide is six millimetres a texel.
+    const mapUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+    this.sunMap = device.createTexture({ label: 'sun shadow', size: [SUN_MAP, SUN_MAP], format: SHADOW, usage: mapUsage });
+    this.spotMaps = device.createTexture({ label: 'spot shadows', size: [SPOT_MAP, SPOT_MAP, SPOT_SHADOWS], format: SHADOW, usage: mapUsage });
+    // linear filtering on a comparison sampler is the hardware's own PCF
+    this.shadowSampler = device.createSampler({ label: 'shadow compare', compare: 'less-equal', magFilter: 'linear', minFilter: 'linear' });
+    this.shadowBuffer = device.createBuffer({ label: 'shadows', size: this.shadowData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.depthLayout = device.createBindGroupLayout({
+      label: 'shadow pass',
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
+    });
+    for (let i = 0; i < 1 + SPOT_SHADOWS; i++) {
+      const b = device.createBuffer({ label: `shadow pass ${i}`, size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this.passBuffers.push(b);
+      this.passBinds.push(device.createBindGroup({ label: `shadow pass ${i}`, layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: b } }] }));
+    }
+
     this.sceneLayout = device.createBindGroupLayout({
       label: 'game scene',
       entries: [
@@ -185,6 +235,10 @@ export class GameRenderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+        { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
       ],
     });
     this.effectLayout = device.createBindGroupLayout({
@@ -216,12 +270,12 @@ export class GameRenderer {
     // Every permutation is built up front. There are four, they compile in
     // parallel with each other, and a ladder that had to wait for a compile
     // before it could step would step too late to matter.
-    const variants: SceneVariant[] = [
-      { cullLights: true, points: true },
-      { cullLights: false, points: true },
-      { cullLights: true, points: false },
-      { cullLights: false, points: false },
-    ];
+    const variants: SceneVariant[] = [];
+    for (const shadows of [true, false]) {
+      for (const points of [true, false]) {
+        for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows });
+      }
+    }
     const waits: Promise<unknown>[] = variants.map((v) => {
       const module = shader(device, sceneSource(v), `game scene ${GameRenderer.key(v)}`);
       return device.createRenderPipelineAsync({
@@ -241,6 +295,25 @@ export class GameRenderer {
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
       }).then((p) => { this.scenePipelines.set(GameRenderer.key(v), p); });
     });
+
+    // The depth pass: position and placement in, depth out, nothing else.
+    // A slope-scaled bias in the rasteriser rather than in the lookup alone,
+    // because the two together are what stop a flat floor shadowing itself
+    // in stripes.
+    const dp = shader(device, DEPTH_WGSL, 'shadow depth');
+    waits.push(device.createRenderPipelineAsync({
+      label: 'shadow depth',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.depthLayout] }),
+      vertex: {
+        module: dp, entryPoint: 'vsMain',
+        buffers: [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+          instance,
+        ],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: SHADOW, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2 },
+    }).then((p) => { this.depthPipeline = p; }));
 
     const fx = shader(device, EFFECT_WGSL, 'game effects');
     const additive: GPUBlendState = {
@@ -270,7 +343,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}`;
   }
 
   /** The environment the material reads: a prefiltered cube and the split-sum lookup. */
@@ -285,6 +358,10 @@ export class GameRenderer {
         { binding: 2, resource: brdf.createView() },
         { binding: 3, resource: this.sampler },
         { binding: 4, resource: { buffer: this.lightBuffer } },
+        { binding: 5, resource: { buffer: this.shadowBuffer } },
+        { binding: 6, resource: this.sunMap.createView() },
+        { binding: 7, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
+        { binding: 8, resource: this.shadowSampler },
       ],
     });
     this.effectBind = this.ctx.device.createBindGroup({
@@ -391,12 +468,88 @@ export class GameRenderer {
     );
   }
 
-  /** The live lights for this frame. */
-  setLights(pool: LightPool) {
+  /**
+   * The live lights for this frame, and which of them — by index in the
+   * pool, at most SPOT_SHADOWS of them, spotlights only — get a shadow map
+   * rendered from where they stand. The pool is not touched: the layer each
+   * shadowed light reads is written into a copy on its way to the GPU.
+   */
+  setLights(pool: LightPool, shadowed: number[] = []) {
     this.lightCount = Math.min(pool.count, this.lightCapacity);
-    if (this.lightCount) {
-      this.ctx.device.queue.writeBuffer(this.lightBuffer, 0, pool.data, 0, this.lightCount * LIGHT_STRIDE);
+    this.spots = [];
+    if (!this.lightCount) return;
+    const n = this.lightCount * LIGHT_STRIDE;
+    if (this.lightScratch.length < n) this.lightScratch = new Float32Array(pool.data.length);
+    const d = this.lightScratch;
+    d.set(pool.data.subarray(0, n));
+    for (let i = 0; i < n; i += LIGHT_STRIDE) d[i + 13] = -1;
+    for (const index of shadowed) {
+      if (this.spots.length >= SPOT_SHADOWS) break;
+      if (index < 0 || index >= this.lightCount) continue;
+      const o = index * LIGHT_STRIDE;
+      // no cone, no frustum: an all-round light has no one map to render
+      if (d[o + 11] <= -1.5) continue;
+      d[o + 13] = this.spots.length;
+      this.spots.push({
+        position: [d[o], d[o + 1], d[o + 2]],
+        direction: [d[o + 8], d[o + 9], d[o + 10]],
+        outer: (Math.acos(Math.max(-1, Math.min(1, d[o + 11]))) * 180) / Math.PI,
+        reach: d[o + 3],
+      });
     }
+    this.ctx.device.queue.writeBuffer(this.lightBuffer, 0, d, 0, n);
+  }
+
+  /**
+   * Where the sun's shadow map is fitted: a box round everything that may
+   * cast or catch one, in world units. Null turns the sun's shadow off; the
+   * sun still lights, and still has its diffuse term.
+   */
+  setSunShadow(box: Box | null) {
+    this.sunBox = box;
+  }
+
+  /** The matrices the maps are rendered with, and the lookups read with. */
+  private writeShadows() {
+    const f = this.shadowData;
+    const sun = f.subarray(0, 16);
+    if (this.sunBox) sunShadowMatrix(sun, this.look.sunDir, this.sunBox);
+    else sun.fill(0);
+    // texel size, bias in depth units, on
+    f[16] = 1 / SUN_MAP; f[17] = SUN_BIAS; f[18] = this.sunBox ? 1 : 0; f[19] = 0;
+    for (let i = 0; i < SPOT_SHADOWS; i++) {
+      const m = f.subarray(20 + i * 16, 36 + i * 16);
+      const s = this.spots[i];
+      if (s) spotShadowMatrix(m, s.position, s.direction, s.outer, s.reach);
+      else m.fill(0);
+    }
+    const tail = 20 + SPOT_SHADOWS * 16;
+    f[tail] = 1 / SPOT_MAP; f[tail + 1] = SPOT_BIAS; f[tail + 2] = this.spots.length; f[tail + 3] = 0;
+    const { queue } = this.ctx.device;
+    queue.writeBuffer(this.shadowBuffer, 0, f);
+    queue.writeBuffer(this.passBuffers[0], 0, f, 0, 16);
+    for (let i = 0; i < this.spots.length; i++) queue.writeBuffer(this.passBuffers[1 + i], 0, f, 20 + i * 16, 16);
+  }
+
+  /** One shadow map: every group, from one matrix, depth only. */
+  private renderShadow(encoder: GPUCommandEncoder, view: GPUTextureView, pass: number, label: string) {
+    const rp = encoder.beginRenderPass({
+      label,
+      colorAttachments: [],
+      depthStencilAttachment: { view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+    });
+    rp.setPipeline(this.depthPipeline);
+    rp.setBindGroup(0, this.passBinds[pass]);
+    for (const groups of [this.staticGroups, this.dynamicGroups]) {
+      for (const g of groups) {
+        if (!g.count) continue;
+        rp.setVertexBuffer(0, g.position);
+        rp.setVertexBuffer(1, g.instance);
+        rp.setIndexBuffer(g.index, 'uint32');
+        rp.drawIndexed(g.indexCount, g.count);
+      }
+    }
+    rp.end();
   }
 
   /**
@@ -502,6 +655,18 @@ export class GameRenderer {
     const colourView = this.colour.createView();
     const depthView = this.depth.createView();
 
+    // The maps first, so the scene pass can read them. Every frame: the sun
+    // moves, the trucks move, and a map of where things were is a shadow of
+    // where they are not.
+    if (this.economy.shadows !== false && this.depthPipeline) {
+      this.writeShadows();
+      if (this.sunBox) this.renderShadow(encoder, this.sunMap.createView(), 0, 'sun shadow');
+      for (let i = 0; i < this.spots.length; i++) {
+        const view = this.spotMaps.createView({ dimension: '2d', baseArrayLayer: i, arrayLayerCount: 1 });
+        this.renderShadow(encoder, view, 1 + i, `spot shadow ${i}`);
+      }
+    }
+
     if (mode === 'keep') {
       if (this.keptStale) this.bakeKept(encoder);
       const size = { width: this.width, height: this.height, depthOrArrayLayers: 1 };
@@ -550,7 +715,7 @@ export class GameRenderer {
   dispose() {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
-    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth]) t?.destroy();
-    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer]) b.destroy();
+    for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps]) t?.destroy();
+    for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, ...this.passBuffers]) b.destroy();
   }
 }

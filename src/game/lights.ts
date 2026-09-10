@@ -1,9 +1,10 @@
 /**
  * Point lights for the game path, packed the way the shader reads them.
  *
- * No shadows. A light that casts one is a different and far larger cost, and
- * an arena's flashes, glowing bullets and explosions do not need them. What
- * they do need is to be many: measured on a desktop GPU at 1080p, a forward
+ * Mostly no shadows. A light that casts one is a different and far larger
+ * cost, and an arena's flashes, glowing bullets and explosions do not need
+ * them; a handful of spotlights may carry a map each — see the renderer's
+ * setLights — and the rest cast nothing. What they do need is to be many: measured on a desktop GPU at 1080p, a forward
  * loop carries about 0.018 ms a light with the radius cull, so a couple of
  * hundred are comfortable, five hundred is the whole scene budget, and past
  * that the loop wants replacing with tiles or clusters.
@@ -31,6 +32,11 @@ export interface PointLight {
    * without a direction.
    */
   cone?: [number, number];
+  /**
+   * Which spot shadow layer this light reads, or none. The renderer writes
+   * this itself for the lights it is told to shadow; a game does not set it.
+   */
+  shadow?: number;
 }
 
 /**
@@ -94,7 +100,7 @@ export class LightPool {
       d[o + 8] = 0; d[o + 9] = 0; d[o + 10] = -1;
       d[o + 11] = -2; d[o + 12] = -1;
     }
-    d[o + 13] = 0; d[o + 14] = 0; d[o + 15] = 0;
+    d[o + 13] = light.shadow ?? -1; d[o + 14] = 0; d[o + 15] = 0;
     if (index >= this.live) this.live = index + 1;
     return true;
   }
@@ -118,6 +124,7 @@ export class LightPool {
       colour: [d[o + 4], d[o + 5], d[o + 6]],
       intensity: d[o + 7],
     };
+    if (d[o + 13] >= 0) light.shadow = d[o + 13];
     if (d[o + 11] > -1.5) {
       light.direction = [d[o + 8], d[o + 9], d[o + 10]];
       light.cone = [

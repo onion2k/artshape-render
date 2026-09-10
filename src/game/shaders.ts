@@ -32,7 +32,16 @@ export interface SceneVariant {
   cullLights?: boolean;
   /** Whether point lights are evaluated at all. The ladder's cheapest deep cut. */
   points?: boolean;
+  /**
+   * Whether the sun and the shadowed spotlights read their maps. Off, the
+   * lookups compile out and the maps are never rendered; the sun still has
+   * its diffuse term either way.
+   */
+  shadows?: boolean;
 }
+
+/** How many spotlights may carry a shadow map at once. */
+export const SPOT_SHADOWS = 8;
 
 const SCENE = `
 struct Frame {
@@ -69,7 +78,21 @@ struct Point {
   // light after the first would read the tail of the one before it. Which is
   // exactly what happened, and what it looked like was a truck with one
   // working headlight.
-  cosInner: f32, _pad0: f32, _pad1: f32, _pad2: f32,
+  // shadow is which layer of the spot maps this light's is in, or -1 for
+  // none; the CPU writes it into what used to be padding
+  cosInner: f32, shadow: f32, _pad1: f32, _pad2: f32,
+};
+/**
+ * The shadow maps' matrices, world to clip. sunParams is the map's texel
+ * size, the depth bias, and whether there is a sun map at all; spotParams is
+ * the same for the spot layers. Eight spots is the array's size, not a
+ * suggestion: the layers are one texture and the layout is fixed.
+ */
+struct Shadows {
+  sun: mat4x4f,
+  sunParams: vec4f,
+  spots: array<mat4x4f, SPOT_SLOTS>,
+  spotParams: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -77,6 +100,38 @@ struct Point {
 @group(0) @binding(2) var envBrdf: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var<storage, read> points: array<Point>;
+@group(0) @binding(5) var<uniform> shadows: Shadows;
+@group(0) @binding(6) var sunShadow: texture_depth_2d;
+@group(0) @binding(7) var spotShadow: texture_depth_2d_array;
+@group(0) @binding(8) var cmp: sampler_comparison;
+
+// How much of a light a surface takes as plain matte light, on top of the
+// highlight: the same quarter the point lights have always used, so that the
+// sun is the same kind of light they are. It was a highlight only, which is
+// why a bright day was a bright overcast one — the ground was lit by the
+// environment and the sun only glinted off it.
+const DIFFUSE: f32 = 0.25;
+
+// Four compared taps at half-texel offsets, each of which the hardware
+// bilinearly compares over four texels: sixteen texels' worth of edge for
+// four fetches. Level zero explicitly, because a sample that takes
+// derivatives may not be made under a branch and these are all under one.
+fn sunLit(uv: vec2f, z: f32) -> f32 {
+  let t = shadows.sunParams.x;
+  var s = textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(-0.5, -0.5) * t, z);
+  s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(0.5, -0.5) * t, z);
+  s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(-0.5, 0.5) * t, z);
+  s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(0.5, 0.5) * t, z);
+  return s * 0.25;
+}
+fn spotLit(uv: vec2f, layer: i32, z: f32) -> f32 {
+  let t = shadows.spotParams.x;
+  var s = textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(-0.5, -0.5) * t, layer, z);
+  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(0.5, -0.5) * t, layer, z);
+  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(-0.5, 0.5) * t, layer, z);
+  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(0.5, 0.5) * t, layer, z);
+  return s * 0.25;
+}
 
 struct VsOut {
   @builtin(position) pos: vec4f,
@@ -132,11 +187,25 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let a2 = a * a;
   let k = a * 0.5;
 
-  // the sun: one direction, no shadow. A game that wants one casts it into
-  // a map of its own; nothing here filters thirty-six taps a pixel.
+  // The sun: one direction, a highlight and a quarter of matte, and a shadow
+  // read from one orthographic map fitted round whatever box the game named.
+  // The still-life renderer filters thirty-six taps a pixel for its soft
+  // shadow; this reads four, compared in hardware, and is sharp.
   let l = normalize(frame.sunDir);
   let ndl = max(dot(n, l), 0.0);
-  var colour = ggx(n, v, l, ndv, a2, k) * fresnel(f0, max(dot(normalize(l + v), v), 0.0)) * frame.sunColour * ndl;
+  var lit = 1.0;
+  if (SHADOWS && shadows.sunParams.z > 0.5 && ndl > 0.0) {
+    let sp = shadows.sun * vec4f(in.world, 1.0);
+    let uv = vec2f(sp.x, -sp.y) * 0.5 + 0.5;
+    if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) && sp.z >= 0.0 && sp.z <= 1.0) {
+      // more bias the more edge-on the surface is to the light, which is
+      // where a map's texel spans the most depth
+      let slope = sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.05);
+      lit = sunLit(uv, sp.z - shadows.sunParams.y * (1.0 + min(slope, 8.0)));
+    }
+  }
+  let sunSpec = ggx(n, v, l, ndv, a2, k) * fresnel(f0, max(dot(normalize(l + v), v), 0.0));
+  var colour = (sunSpec + f0 * DIFFUSE) * frame.sunColour * ndl * lit;
 
   if (POINT_LIGHTS) {
     let count = u32(frame.lightCount);
@@ -162,8 +231,22 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
       // back to the surface
       let cone = smoothstep(p.cosOuter, p.cosInner, dot(-pl, p.direction));
       if (cone <= 0.0) { continue; }
+      // a spotlight with a map of its own reads it the way the sun does
+      var plit = 1.0;
+      if (SHADOWS && p.shadow >= 0.0) {
+        let layer = i32(p.shadow);
+        let sp = shadows.spots[layer] * vec4f(in.world, 1.0);
+        if (sp.w > 0.0) {
+          let ndc = sp.xyz / sp.w;
+          let uv = vec2f(ndc.x, -ndc.y) * 0.5 + 0.5;
+          if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) && ndc.z <= 1.0) {
+            let slope = sqrt(max(1.0 - pndl * pndl, 0.0)) / max(pndl, 0.05);
+            plit = spotLit(uv, layer, ndc.z - shadows.spotParams.y * (1.0 + min(slope, 8.0)));
+          }
+        }
+      }
       let spec = ggx(n, v, pl, ndv, a2, k) * fresnel(f0, max(dot(normalize(pl + v), v), 0.0));
-      colour += (spec + f0 * 0.25) * p.colour * p.intensity * pndl * atten * cone;
+      colour += (spec + f0 * DIFFUSE) * p.colour * p.intensity * pndl * atten * cone * plit;
     }
   }
 
@@ -177,9 +260,26 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
 }
 `;
 
-export function sceneSource({ cullLights = true, points = true }: SceneVariant = {}): string {
-  return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n` + SCENE;
+export function sceneSource({ cullLights = true, points = true, shadows = true }: SceneVariant = {}): string {
+  return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
+    + `const SHADOWS: bool = ${shadows};\nconst SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
 }
+
+/**
+ * The depth pass a shadow map is rendered with: the same instanced
+ * placements, the same vertex layout for position and matrix, and nothing
+ * else — no normals, no material, no fragment stage. One matrix in.
+ */
+export const DEPTH_WGSL = `
+@group(0) @binding(0) var<uniform> viewProj: mat4x4f;
+@vertex fn vsMain(
+  @location(0) position: vec3f,
+  @location(4) m0: vec4f, @location(5) m1: vec4f, @location(6) m2: vec4f, @location(7) m3: vec4f,
+) -> @builtin(position) vec4f {
+  let model = mat4x4f(m0, m1, m2, m3);
+  return viewProj * (model * vec4f(position, 1.0));
+}
+`;
 
 /**
  * Effects: explosions, muzzle flashes, the bright things a game draws over

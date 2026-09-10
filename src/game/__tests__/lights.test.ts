@@ -21,7 +21,7 @@ describe('LightPool', () => {
       1, 2, 3, 11,             // position, radius
       0.125, 0.5, 0.875, 1,    // colour, intensity
       0, 0, -1, -2,            // no cone: an outer edge no cosine can reach
-      -1, 0, 0, 0,
+      -1, -1, 0, 0,            // inner cosine, then no shadow layer
     ]);
   });
 

@@ -28,13 +28,21 @@ describe('the scene shader is a permutation of itself', () => {
     expect(body(sceneSource({ points: false }))).toBe(body(sceneSource({ points: true })));
   });
 
-  it('has no shadow machinery in it at all', () => {
+  it('has a hard shadow of its own, and none of the still-life machinery', () => {
     // The still-life shader spends 4.7 ms a megapixel filtering one soft
-    // shadow over thirty-six taps. A game that wants a shadow casts it
-    // itself; nothing here should quietly acquire one.
+    // shadow over thirty-six taps, with a blocker search first. This one
+    // reads four hardware-compared taps and is sharp: it asserted for a
+    // long time that it had no shadow at all, and now it asserts that what
+    // it has is the cheap kind.
     const src = sceneSource();
-    for (const word of ['shadowTaps', 'blocker', 'textureSampleCompare', 'discShadow']) {
+    expect(src).toContain('textureSampleCompareLevel');
+    for (const word of ['shadowTaps', 'blocker', 'discShadow', 'textureSampleCompare(']) {
       expect(src).not.toContain(word);
     }
+  });
+
+  it('folds the shadow lookups to a constant when the ladder gives them up', () => {
+    expect(sceneSource({ shadows: false })).toContain('const SHADOWS: bool = false;');
+    expect(sceneSource()).toContain('const SHADOWS: bool = true;');
   });
 });
