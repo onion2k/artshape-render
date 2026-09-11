@@ -150,6 +150,24 @@ inside the clip volume, depth linear for the sun and perspective for a spot,
 the cone just inside a spot's map. The DSL builds plates about their centre:
 a test that places one from a corner is measuring the wrong thing.
 
+**A spot's soft edge.** `look.spotSoftness` widens a spotlight's lookup disc
+with the surface's distance from the lamp, in texels per world unit, and the
+test for it reads brightness along a line of floor points crossing the box's
+shadow edge and compares how steeply the line falls at its steepest: half
+as steep, at least, at a texel per twenty-five units as at none. It is the
+slope and not a count of the ramp's samples because the "hard" edge is not
+a step in the frame either — the bloom spills the lit floor forty-odd units
+into the shadow — and a ramp wider than any window you count in reads as
+narrow. The box is moved away from the lamp for it, so the shadow's far edge
+is clear of the box's own image. What the softness is for was found in the
+arena and not here: a lamp post as tall as the lamp beside it throws a
+shadow with no end, and the arena's lamps also turned out to be sitting
+inside their own heads — the head's underside, past the map's near plane,
+was in every lamp's own map and shaded half the road. The library cannot
+know where a game puts its lamp relative to its lamp mesh; a game that sees
+a hard-edged bite out of every pool should look for a blocker within a few
+units of the light before it looks anywhere else.
+
 ## Particles on the game path
 
 `src/game/__tests__/particles.gpu.test.ts` emits into an otherwise black

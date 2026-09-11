@@ -85,7 +85,8 @@ struct Point {
 /**
  * The shadow maps' matrices, world to clip. sunParams is the map's texel
  * size, the depth bias, and whether there is a sun map at all; spotParams is
- * the same for the spot layers. Eight spots is the array's size, not a
+ * the same for the spot layers, with how fast their kernel widens with the
+ * distance from the lamp in its last slot. Eight spots is the array's size, not a
  * suggestion: the layers are one texture and the layout is fixed.
  */
 struct Shadows {
@@ -124,13 +125,40 @@ fn sunLit(uv: vec2f, z: f32) -> f32 {
   s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(0.5, 0.5) * t, z);
   return s * 0.25;
 }
-fn spotLit(uv: vec2f, layer: i32, z: f32) -> f32 {
-  let t = shadows.spotParams.x;
-  var s = textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(-0.5, -0.5) * t, layer, z);
-  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(0.5, -0.5) * t, layer, z);
-  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(-0.5, 0.5) * t, layer, z);
-  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(0.5, 0.5) * t, layer, z);
-  return s * 0.25;
+// A spot's shadow is read over a disc whose radius grows with how far the
+// surface is from the lamp. A lamp is not a point: it is a head some way
+// across, and what stands between it and a surface far off throws an edge
+// that has spread by the time it lands — a pole as tall as the lamp beside
+// it throws a shadow with no end, which as a hard black wedge across a road
+// is the one thing a night circuit must not have. The proper answer scales
+// the blur by how far the thing casting is from the surface too — the
+// still-life path searches the map for that; this scales by the surface
+// alone, which blurs a near caster's shadow as much as a far one's. That
+// is wrong exactly where the lamp is far from both, and a lamp far from a
+// surface has lost most of its light to the falloff by then.
+//
+// Eight taps on a spiral, turned by a per-pixel angle so that a wide disc
+// gives noise where eight fixed taps would give eight steps; each tap is
+// itself the hardware's bilinear compare, four texels for one fetch.
+fn spotLit(uv: vec2f, layer: i32, z: f32, r: f32, rot: vec2f) -> f32 {
+  let t = shadows.spotParams.x * r;
+  var s = 0.0;
+${[
+  [0.2500, 0.0000], [-0.3193, 0.2925], [0.0489, -0.5569], [0.4024, 0.5249],
+  [-0.7385, -0.1306], [0.6996, -0.4450], [-0.2340, 0.8705], [-0.4463, -0.8593],
+].map(([x, y]) => `  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(${x} * rot.x - ${y} * rot.y, ${x} * rot.y + ${y} * rot.x) * t, layer, z);`).join('\n')}
+  return s * 0.125;
+}
+
+// A spot map's near plane, 20, times the angle one of its texels spans —
+// about 0.0075 for the 125-degree map a 58-degree cone gets, less for a
+// narrower one, which errs toward a little too much bias.
+const SOFT_BIAS: f32 = 0.15;
+
+/** A hash of the pixel's place on screen, as an angle to turn a kernel by. */
+fn kernelTurn(pixel: vec2f) -> vec2f {
+  let a = 6.2831853 * fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+  return vec2f(cos(a), sin(a));
 }
 
 struct VsOut {
@@ -186,6 +214,9 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let a = rough * rough;
   let a2 = a * a;
   let k = a * 0.5;
+  // one turn for every spot's kernel: a fragment's shadows share a pattern,
+  // and its neighbours' differ from it
+  let turn = kernelTurn(in.pos.xy);
 
   // The sun: one direction, a highlight and a quarter of matte, and a shadow
   // read from one orthographic map fitted round whatever box the game named.
@@ -241,7 +272,25 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
           let uv = vec2f(ndc.x, -ndc.y) * 0.5 + 0.5;
           if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) && ndc.z <= 1.0) {
             let slope = sqrt(max(1.0 - pndl * pndl, 0.0)) / max(pndl, 0.05);
-            plit = spotLit(uv, layer, ndc.z - shadows.spotParams.y * (1.0 + min(slope, 8.0)));
+            // the disc, in texels: half a texel at the least, which is the
+            // hard edge, and out from there with the distance to the lamp —
+            // sp.w is that distance, as the clip w of a perspective map is
+            let r = max(0.5, sp.w * shadows.spotParams.w);
+            // The taps reach r texels across a surface that may be slanted
+            // to the lamp, so the depth they read drifts by the slope times
+            // the disc's width in world units, or the disc shadows itself.
+            // That width is r texels of a map whose texels grow with the
+            // distance, and r grows with the distance too, so in world units
+            // it goes with the square of the distance — and a perspective
+            // map's depth goes with the inverse square, so in the map's own
+            // depth the drift is a constant: the slope, the softness, and
+            // the near plane times a texel's angle, which is SOFT_BIAS. Not
+            // the map's bias scaled up by r: that number is already a few
+            // hundred world units far from a lamp, and r times it threw away
+            // every shadow the far lamps cast.
+            let bias = shadows.spotParams.y * (1.0 + min(slope, 8.0))
+              + min(slope, 8.0) * shadows.spotParams.w * SOFT_BIAS;
+            plit = spotLit(uv, layer, ndc.z - bias, r, turn);
           }
         }
       }

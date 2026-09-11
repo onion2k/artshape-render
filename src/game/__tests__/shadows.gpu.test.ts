@@ -174,6 +174,78 @@ describe('shadows on the game renderer', () => {
     expect(shadowed).toBeLessThan(open * 0.6);
   });
 
+  /**
+   * How wide a shadow's edge is: brightness along a line of floor points
+   * crossing it, and the count of them that are neither lit nor shadowed.
+   * With the box moved to x = -27 its far top edge lands at about x = -150
+   * from a lamp at +120, so the line runs from the floor's edge to well
+   * inside the shadow.
+   */
+  async function edgeWidth(): Promise<{ width: number; steepest: number; open: number; dark: number }> {
+    await gpu.queue.onSubmittedWorkDone();
+    const bytesPerRow = Math.ceil((SIZE * 4) / 256) * 256;
+    const buffer = gpu.device.createBuffer({ size: bytesPerRow * SIZE, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = gpu.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: target }, { buffer, bytesPerRow, rowsPerImage: SIZE }, [SIZE, SIZE, 1]);
+    gpu.queue.submit([enc.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const px = new Uint8Array(buffer.getMappedRange().slice(0));
+    buffer.unmap(); buffer.destroy();
+    const along: number[] = [];
+    for (let x = -195; x <= -50; x += 1) {
+      const [cx, cy] = pixelOf([x, 0, 6]);
+      const o = cy * bytesPerRow + cx * 4;
+      along.push((px[o] + px[o + 1] + px[o + 2]) / 3);
+    }
+    // The edge is where the line changes fastest. The lit floor is not
+    // flat in brightness — it falls off with distance from the lamp — so
+    // lit and dark are read a little either side of the edge, and the
+    // width is counted in a window round it, or the falloff's own slope
+    // would be counted as edge.
+    const WINDOW = 55;
+    let edge = WINDOW, steepest = 0;
+    for (let i = WINDOW; i < along.length - WINDOW; i++) {
+      const slope = Math.abs(along[i + 1] - along[i - 1]);
+      if (slope > steepest) { steepest = slope; edge = i; }
+    }
+    const mean = (a: number, b: number) => along.slice(a, b).reduce((s, v) => s + v, 0) / (b - a);
+    const open = mean(edge - WINDOW, edge - WINDOW + 5);
+    const dark = mean(edge + WINDOW - 5, edge + WINDOW);
+    const lo = Math.min(open, dark) + Math.abs(open - dark) * 0.2;
+    const hi = Math.min(open, dark) + Math.abs(open - dark) * 0.8;
+    const width = along.slice(edge - WINDOW, edge + WINDOW).filter((v) => v > lo && v < hi).length;
+    return { width, steepest, open: Math.max(open, dark), dark: Math.min(open, dark) };
+  }
+
+  it('a spotlight\'s shadow edge widens with the distance from the lamp when asked', async () => {
+    const pool = new LightPool(16);
+    pool.add({ position: [120, 0, 380], radius: 900, colour: [1, 1, 1], intensity: 40, direction: [-120, 0, -380], cone: [30, 50] });
+    // the box further from the lamp, so its shadow's far edge is well clear
+    // of the box's own image in the frame
+    renderer.move(0, at(-27, 0, 90), 1);
+    renderer.setLights(pool, [0]);
+    renderer.look = { ...renderer.look, spotSoftness: 0 };
+    renderer.frame(view());
+    const hard = await edgeWidth();
+    // a disc of a texel per twenty-five units: the floor under the edge is
+    // some 460 from the lamp, so eighteen texels of a map whose texels are
+    // about two and a half units there — a radius of forty-odd
+    renderer.look = { ...renderer.look, spotSoftness: 1 / 25 };
+    renderer.frame(view());
+    const soft = await edgeWidth();
+    renderer.look = { ...renderer.look, spotSoftness: 0 };
+    renderer.move(0, at(0, 0, 90), 1);
+    // both cross a real edge, from lit floor to floor in the box's shadow
+    expect(hard.dark).toBeLessThan(hard.open * 0.6);
+    expect(soft.dark).toBeLessThan(soft.open * 0.6);
+    // The hard edge is not a step in the frame — the bloom spills the lit
+    // floor a little way into the shadow — so the test is the soft one
+    // against it, not the hard one against a step; and what is compared is
+    // how steeply each falls, which a ramp wider than the window still
+    // shows, where a count of the ramp's samples would not.
+    expect(hard.steepest).toBeGreaterThan(soft.steepest * 1.5);
+  });
+
   it('gives the flat picture when the ladder turns shadows off', async () => {
     const pool = new LightPool(16);
     pool.add({ position: [120, 0, 380], radius: 900, colour: [1, 1, 1], intensity: 40, direction: [-120, 0, -380], cone: [30, 50] });

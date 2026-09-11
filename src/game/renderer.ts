@@ -112,6 +112,17 @@ export interface Look {
    */
   ambient: number;
   /**
+   * How a spotlight's shadow softens with distance: texels of its map the
+   * lookup's disc grows by for every world unit a surface is from the lamp.
+   * Zero is a hard edge everywhere. A lamp is a head, not a point, and a
+   * thin thing standing far from the surface it shades throws an edge that
+   * has spread by the time it lands; at 1/500 a pole 2500 from a lamp
+   * shades the road in a smear rather than a wedge. The map is 512 across
+   * a cone, so a texel is about 0.008 of the distance: the disc's radius in
+   * world units is roughly this times the distance squared times that.
+   */
+  spotSoftness: number;
+  /**
    * What the frame clears to, before tonemapping. The environment lights the
    * material but is never drawn, so this is the whole of the sky the camera
    * sees past the arena's edge.
@@ -128,6 +139,7 @@ export const DEFAULT_LOOK: Look = {
   // fifty units, which is what the constant it replaced worked out at
   falloffHalf: 50,
   ambient: 1,
+  spotSoftness: 0,
   background: [0.02, 0.02, 0.024],
 };
 
@@ -686,7 +698,7 @@ export class GameRenderer {
       else m.fill(0);
     }
     const tail = 20 + SPOT_SHADOWS * 16;
-    f[tail] = 1 / SPOT_MAP; f[tail + 1] = SPOT_BIAS; f[tail + 2] = this.spots.length; f[tail + 3] = 0;
+    f[tail] = 1 / SPOT_MAP; f[tail + 1] = SPOT_BIAS; f[tail + 2] = this.spots.length; f[tail + 3] = this.look.spotSoftness;
     const { queue } = this.ctx.device;
     queue.writeBuffer(this.shadowBuffer, 0, f);
     queue.writeBuffer(this.passBuffers[0], 0, f, 0, 16);
