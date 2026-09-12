@@ -246,6 +246,55 @@ describe('shadows on the game renderer', () => {
     expect(hard.steepest).toBeGreaterThan(soft.steepest * 1.5);
   });
 
+  it('keeps a narrow cone\'s shadow when the edge is softened', async () => {
+    // The bug this is here for: the disc's bias was one constant for every
+    // lamp, worked out for the 125-degree map a 58-degree cone gets. A cone
+    // a fraction of that gets a map that much finer, so the same number is
+    // several times the bias it needs — and past a point a bias does not
+    // soften a shadow, it lifts the whole thing off the floor. A chess set
+    // under a tight pendant lost every shadow on the board and nothing in
+    // the frame said why.
+    //
+    // Its own two points, and not the ones the wide-cone tests use: a narrow
+    // cone does not reach them both, and a point outside the beam is dark
+    // for a reason that has nothing to do with a shadow.
+    const SHADE: [number, number, number] = [-60, 0, 6];
+    const LIT: [number, number, number] = [60, 0, 6];
+    renderer.look = { ...renderer.look, sunColour: [0, 0, 0] };
+    renderer.setSunShadow(null);
+    const pool = new LightPool(16);
+    pool.add({ position: [90, 0, 420], radius: 900, colour: [1, 1, 1], intensity: 40, direction: [-150, 0, -414], cone: [14, 24] });
+    renderer.setLights(pool, [0]);
+
+    // what that floor looks like with the lamp casting nothing at all: the
+    // measure is against this rather than against the open floor beside it,
+    // because a beam falls off across its own cone and the two points are
+    // not owed the same brightness
+    renderer.setLights(pool, []);
+    renderer.frame(view());
+    const open = await readAt(pixelOf(SHADE));
+    const openLit = await readAt(pixelOf(LIT));
+    renderer.setLights(pool, [0]);
+
+    renderer.look = { ...renderer.look, spotSoftness: 0 };
+    renderer.frame(view());
+    const hard = await readAt(pixelOf(SHADE));
+
+    renderer.look = { ...renderer.look, spotSoftness: 1 / 25 };
+    renderer.frame(view());
+    const soft = await readAt(pixelOf(SHADE));
+    renderer.look = { ...renderer.look, spotSoftness: 0 };
+
+    // the beam reaches both points at all
+    expect(open).toBeGreaterThan(20);
+    expect(openLit).toBeGreaterThan(20);
+    // the hard shadow darkens that floor, and the softened one still does.
+    // Before this, softening took the second back to the first: a lamp that
+    // cast nothing, with nothing in the frame to say why.
+    expect(hard).toBeLessThan(open * 0.6);
+    expect(soft).toBeLessThan(open * 0.7);
+  });
+
   it('gives the flat picture when the ladder turns shadows off', async () => {
     const pool = new LightPool(16);
     pool.add({ position: [120, 0, 380], radius: 900, colour: [1, 1, 1], intensity: 40, direction: [-120, 0, -380], cone: [30, 50] });
