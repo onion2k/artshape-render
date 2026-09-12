@@ -129,6 +129,17 @@ What the measurements settled, so nobody has to re-argue it:
   redrawing it — worth almost all of a heavy arena's cost, and worth
   nothing if the lights that reach it move, because then it is stale.
 
+**A world unit is the game's to choose.** `new GameRenderer(gpu, lights,
+effects, particles, mmPerUnit)` says how many millimetres one of them is, and
+defaults to one, as the still-life path's `mmPerUnit` does. Everything a game
+hands over — meshes, matrices, camera, light radii, emitters — stays in its
+own units; what converts is what the renderer fixes in a real size: the near
+plane of a spotlight's shadow map, the soft kernel's bias, gravity, and the
+opening values of the look and the fog, which `defaultLook(mmPerUnit)` and
+`noFog(mmPerUnit)` will give you in any unit. A length that is per unit
+rather than a unit — the fog's density, the look's `spotSoftness` — scales
+the other way, and says so where it is declared.
+
 Everything the ladder can give up is a shader permutation rather than a
 uniform. A branch the compiler cannot fold leaves the code resident, and
 residency is most of what a shader costs: gating the still life's table
@@ -137,8 +148,8 @@ out saved five milliseconds a megapixel.
 
 ## Checking it
 
-    npm test          893 tests, node
-    npm run test:gpu  37 tests, headless Chrome with a real device
+    npm test          920 tests, node
+    npm run test:gpu  71 tests, headless Chrome with a real device
     npm run typecheck
 
 The GPU suite runs in the machine's own Chrome through Vitest's browser

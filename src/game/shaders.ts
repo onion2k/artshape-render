@@ -94,6 +94,10 @@ struct Shadows {
   sunParams: vec4f,
   spots: array<mat4x4f, SPOT_SLOTS>,
   spotParams: vec4f,
+  // x: the soft kernel's own bias, in the spot map's depth — the near plane
+  // times the angle one of its texels spans, which is a length and so is the
+  // renderer's to compute in the unit the world is in. The rest is spare.
+  spotSoft: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -149,11 +153,6 @@ ${[
 ].map(([x, y]) => `  s += textureSampleCompareLevel(spotShadow, cmp, uv + vec2f(${x} * rot.x - ${y} * rot.y, ${x} * rot.y + ${y} * rot.x) * t, layer, z);`).join('\n')}
   return s * 0.125;
 }
-
-// A spot map's near plane, 20, times the angle one of its texels spans —
-// about 0.0075 for the 125-degree map a 58-degree cone gets, less for a
-// narrower one, which errs toward a little too much bias.
-const SOFT_BIAS: f32 = 0.15;
 
 /** A hash of the pixel's place on screen, as an angle to turn a kernel by. */
 fn kernelTurn(pixel: vec2f) -> vec2f {
@@ -255,7 +254,7 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
       // square beyond — the radius says how far a light reaches, this says
       // how it spends the way there.
       let reach = clamp(1.0 - d2 / (p.radius * p.radius), 0.0, 1.0);
-      let half = max(frame.falloffHalf, 1.0);
+      let half = max(frame.falloffHalf, 1e-6);
       let atten = reach * reach / (1.0 + d2 / (half * half));
       // the cone: pl runs from the surface to the light, so the angle to
       // compare against is the one between the light's own aim and the way
@@ -284,12 +283,12 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
             // it goes with the square of the distance — and a perspective
             // map's depth goes with the inverse square, so in the map's own
             // depth the drift is a constant: the slope, the softness, and
-            // the near plane times a texel's angle, which is SOFT_BIAS. Not
+            // the near plane times a texel's angle, which is spotSoft.x. Not
             // the map's bias scaled up by r: that number is already a few
             // hundred world units far from a lamp, and r times it threw away
             // every shadow the far lamps cast.
             let bias = shadows.spotParams.y * (1.0 + min(slope, 8.0))
-              + min(slope, 8.0) * shadows.spotParams.w * SOFT_BIAS;
+              + min(slope, 8.0) * shadows.spotParams.w * shadows.spotSoft.x;
             plit = spotLit(uv, layer, ndc.z - bias, r, turn);
           }
         }
@@ -664,7 +663,7 @@ fn dither(p: vec3f) -> f32 {
       // a shaft and a light with a smudge round it. Only the lamps this ray
       // was found to pass near are in the loop at all.
       var lamps = vec3f(0.0);
-      let half = max(fog.when.z, 1.0);
+      let half = max(fog.when.z, 1e-6);
       for (var k = 0; k < nearCount; k++) {
         let L = cones[near[k]];
         let toLight = L.position - at;

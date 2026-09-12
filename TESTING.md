@@ -244,6 +244,28 @@ attempted in the running game was worthless, because the car drifts, the
 camera follows it, and two captures a moment apart differ in half their
 pixels. If an A/B needs two renders, do it where nothing moves between them.
 
+## Units on the game path
+
+`src/game/__tests__/units.gpu.test.ts` is the game path's answer to the
+still-life path's metres test, and it is shaped the same way: a lamp over a
+slab over a floor, in mist, drawn once in millimetres with `mmPerUnit` 1 and
+once a thousand times smaller in number with `mmPerUnit` 1000. The two frames
+differ by 0.001 of a level, which is nothing; the third frame in the file is
+the control, the metre world drawn by a renderer that was told nothing about
+the unit, and it differs by 8.9 — which is what the path did before this pass.
+Look at the control's PNG and the fault is plain: the slab casts no shadow at
+all, because a near plane of twenty world units is twenty metres, and the
+whole scene is in front of it.
+
+`units.test.ts` checks the same rules without a device: that a lamp described
+in millimetres and in metres writes the same depths into its map, that the
+fog uniform no longer rounds a sub-unit length up to one, and that the look's
+`falloffHalf` converts one way while `spotSoftness`, being per length,
+converts the other. One of its assertions is the old bug rather than the new
+behaviour — `spotShadowMatrix(..., 20)` on a scene eight units deep puts the
+floor behind the near plane — so that a length written back into the library
+by hand fails a test instead of quietly losing every shadow.
+
 **Reading a shadow map.** The maps carry `COPY_SRC`, so a test can copy one
 back and print it. A depth texture must be copied whole and with
 `aspect: 'depth-only'`; both restrictions error rather than truncate, and the

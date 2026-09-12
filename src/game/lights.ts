@@ -15,7 +15,12 @@
  * frame.
  */
 
-/** One light. `radius` is where it fades to nothing, and where the cull cuts it. */
+/**
+ * One light. `radius` is where it fades to nothing, and where the cull cuts
+ * it; it and `position` are in whatever unit the game's world is in, as
+ * everything a game hands the renderer is. What the renderer fixes in a real
+ * size it converts itself — see `GameRenderer`'s `mmPerUnit`.
+ */
 export interface PointLight {
   position: [number, number, number];
   radius: number;

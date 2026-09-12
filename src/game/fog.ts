@@ -27,6 +27,12 @@ export interface Fog {
    * taken out of it per unit travelled. Zero is no fog, and costs nothing —
    * the passes are skipped. The useful range is small, because a world unit
    * is small: at 2e-5 a beam is down to half over 35 000 units.
+   *
+   * It is the one number here that is per length rather than a length, so it
+   * scales the other way: the same mist described in metres instead of
+   * millimetres has a density a thousand times larger, not smaller. `noFog`
+   * converts, and everything else in this record is a length in the caller's
+   * own units.
    */
   density: number;
   /** The world Z the fog is thickest at, and below which it does not thicken. */
@@ -57,11 +63,39 @@ export interface Fog {
   cones: number;
 }
 
-/** No fog at all: the passes are skipped and the frame is untouched. */
+/**
+ * No fog at all: the passes are skipped and the frame is untouched. Its
+ * lengths are millimetres, which is the unit the library was written in; for
+ * a world in anything else use `noFog`.
+ */
 export const NO_FOG: Fog = {
   density: 0, base: 0, height: 1000, colour: [1, 1, 1],
   ambient: 0.2, anisotropy: 0.6, reach: 6000, steps: 24, cones: 1,
 };
+
+/**
+ * `NO_FOG` in the caller's units: `mmPerUnit` millimetres to a world unit, as
+ * the renderer was given. A metre-scale world gets a layer a metre deep and
+ * six metres of reach rather than a thousand and six thousand of them.
+ */
+export function noFog(mmPerUnit = 1): Fog {
+  return {
+    ...NO_FOG,
+    density: NO_FOG.density * mmPerUnit,
+    base: NO_FOG.base / mmPerUnit,
+    height: NO_FOG.height / mmPerUnit,
+    reach: NO_FOG.reach / mmPerUnit,
+  };
+}
+
+/**
+ * The floor under every length that ends up a divisor here. It is small
+ * enough to be nothing in any unit a world might be in — a micrometre, in
+ * metres — because its only job is to keep a division finite. It was one
+ * world unit, which silently rounded a half-metre falloff up to a metre in a
+ * world measured in metres.
+ */
+const TINY = 1e-6;
 
 /** Floats in the fog uniform: a matrix, seven vec4-aligned rows, four tails. */
 export const FOG_FLOATS = 60;
@@ -97,16 +131,16 @@ export function fogUniform(
   out[32] = sunDir[0] / l; out[33] = sunDir[1] / l; out[34] = sunDir[2] / l;
   out[35] = Math.max(fog.density, 0);
   out[36] = sunColour[0]; out[37] = sunColour[1]; out[38] = sunColour[2];
-  out[39] = Math.max(fog.height, 1e-3);
+  out[39] = Math.max(fog.height, TINY);
   out[40] = fog.colour[0]; out[41] = fog.colour[1]; out[42] = fog.colour[2];
   out[43] = fog.base;
   out[44] = camera.shift[0]; out[45] = camera.shift[1];
   out[46] = Math.max(1, Math.round(fog.steps)); out[47] = Math.min(0.95, Math.max(-0.95, fog.anisotropy));
-  out[48] = Math.max(fog.reach, 1); out[49] = Math.max(fog.ambient, 0);
+  out[48] = Math.max(fog.reach, TINY); out[49] = Math.max(fog.ambient, 0);
   out[50] = bias; out[51] = sun ? 1 : 0;
   out[52] = time;
   out[53] = Math.max(0, cones);
-  out[54] = Math.max(1, falloffHalf);
+  out[54] = Math.max(falloffHalf, TINY);
   out[55] = spotBias;
   out[56] = Math.max(fog.cones, 0);
   out[57] = spotTexel;

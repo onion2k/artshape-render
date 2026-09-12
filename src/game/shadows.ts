@@ -74,9 +74,23 @@ export function orthographic(out: Float32Array, left: number, right: number, bot
 }
 
 /**
+ * How near the lamp a spot's map starts, as a fraction of its reach, when the
+ * caller does not say. It must be a fraction and not a length: a near plane
+ * is where a perspective map spends its depth precision, and a constant
+ * number of world units is a different fraction of the frustum in every unit
+ * the caller might work in. A three-hundredth is 20 mm at the arena's 6.5 m
+ * lamp, which is what this was before it was relative.
+ */
+const NEAR_FRACTION = 1 / 325;
+
+/**
  * A spotlight's map: from the lamp, along its aim, a little wider than its
  * outer cone so the soft edge of the cone is inside the map, out to its
  * reach. `outerDegrees` is the half-angle the light itself carries.
+ *
+ * `near` is in the caller's world units, and every floor here is a fraction
+ * of the reach rather than a length, so that the same lamp described in
+ * metres and in millimetres gets the same frustum.
  */
 export function spotShadowMatrix(
   out: Float32Array,
@@ -84,7 +98,7 @@ export function spotShadowMatrix(
   direction: [number, number, number],
   outerDegrees: number,
   reach: number,
-  near = 20,
+  near = reach * NEAR_FRACTION,
 ) {
   const l = Math.hypot(direction[0], direction[1], direction[2]) || 1;
   const d: [number, number, number] = [direction[0] / l, direction[1] / l, direction[2] / l];
@@ -93,6 +107,8 @@ export function spotShadowMatrix(
   lookAt(view, position, target, upFor(d));
   const proj = new Float32Array(16);
   const fov = Math.min(Math.PI * 0.94, (2 * outerDegrees * Math.PI) / 180 * 1.08);
-  perspective(proj, fov, 1, Math.max(1, near), Math.max(near + 1, reach));
+  const span = Math.max(reach, 1e-6);
+  const n = Math.max(near, span * 1e-4);
+  perspective(proj, fov, 1, n, Math.max(span, n * 1.01));
   multiply(out, proj, view);
 }

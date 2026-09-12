@@ -29,7 +29,7 @@ import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
-import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, type Fog } from './fog';
+import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -55,6 +55,18 @@ const SUN_BIAS = 0.0012;
  */
 const FOG_BIAS = 0.0002;
 const SPOT_BIAS = 0.0006;
+/**
+ * How near a lamp its shadow map starts, in millimetres, and the angle one
+ * texel of that map spans — about 0.0075 radians for the 125-degree map a
+ * 58-degree cone gets, less for a narrower one, which errs toward a little
+ * too much bias. Their product is the soft kernel's bias in the map's own
+ * depth, which the shader used to hold as a constant of 0.15: right in
+ * millimetres and a hundred and fifty metres out in metres.
+ */
+const SPOT_NEAR_MM = 20;
+const SPOT_TEXEL_ANGLE = 0.0075;
+/** The earth's gravity, in millimetres a second squared. */
+const EARTH_MM = 9810;
 
 /** One mesh and the placements of it, as the still-life path also takes them. */
 export interface GameGroup {
@@ -98,10 +110,11 @@ export interface Look {
   sunColour: [number, number, number];
   exposure: number;
   /**
-   * How far a point light carries: the distance, in world units, at which it
-   * is down to half. Small makes a bright dot with darkness around it; large
-   * makes a light that washes a room. It is not the light's radius — the
-   * radius is where it stops entirely, this is how it spends the way there.
+   * How far a point light carries: the distance, in the world's own units,
+   * at which it is down to half. Small makes a bright dot with darkness
+   * around it; large makes a light that washes a room. It is not the light's
+   * radius — the radius is where it stops entirely, this is how it spends
+   * the way there.
    */
   falloffHalf: number;
   /**
@@ -120,6 +133,11 @@ export interface Look {
    * shades the road in a smear rather than a wedge. The map is 512 across
    * a cone, so a texel is about 0.008 of the distance: the disc's radius in
    * world units is roughly this times the distance squared times that.
+   *
+   * It is per world unit, and so the one number in this record that scales
+   * the other way: a world in metres wants a thousand times the value a
+   * world in millimetres does, because the distances it multiplies are a
+   * thousand times smaller.
    */
   spotSoftness: number;
   /**
@@ -130,6 +148,10 @@ export interface Look {
   background: [number, number, number];
 }
 
+/**
+ * The look's opening settings, with its lengths in millimetres — the unit the
+ * library is written in. For a world in anything else, `defaultLook`.
+ */
 export const DEFAULT_LOOK: Look = {
   albedo: [0.95, 0.93, 0.88],
   roughness: 0.3,
@@ -142,6 +164,19 @@ export const DEFAULT_LOOK: Look = {
   spotSoftness: 0,
   background: [0.02, 0.02, 0.024],
 };
+
+/**
+ * `DEFAULT_LOOK` in the caller's units: `mmPerUnit` millimetres to a world
+ * unit, as the renderer was given. Only `falloffHalf` is a length, and
+ * `spotSoftness` would be per length if it were not nought.
+ */
+export function defaultLook(mmPerUnit = 1): Look {
+  return {
+    ...DEFAULT_LOOK,
+    falloffHalf: DEFAULT_LOOK.falloffHalf / mmPerUnit,
+    spotSoftness: DEFAULT_LOOK.spotSoftness * mmPerUnit,
+  };
+}
 
 /** What the ladder may give up, cheapest loss first. */
 export interface GameEconomy extends SceneVariant {
@@ -254,7 +289,9 @@ export class GameRenderer {
   private spotMaps: GPUTexture;
   private shadowSampler: GPUSampler;
   private shadowBuffer: GPUBuffer;
-  private shadowData = new Float32Array(16 + 4 + SPOT_SHADOWS * 16 + 4);
+  // the sun's matrix and params, a matrix a spot, the spots' params, and the
+  // soft kernel's bias — which is a length, so it is computed, not written in
+  private shadowData = new Float32Array(16 + 4 + SPOT_SHADOWS * 16 + 4 + 4);
   private depthPipeline!: GPURenderPipeline;
   private depthLayout: GPUBindGroupLayout;
   /** One matrix buffer and bind group per pass: the sun's, then a spot's each. */
@@ -275,18 +312,40 @@ export class GameRenderer {
   private keptStale = true;
 
   economy: GameEconomy = { ...FULL_ECONOMY };
+  /** The look, opened at `defaultLook(mmPerUnit)` by the constructor. */
   look: Look = { ...DEFAULT_LOOK };
   /**
    * The particles, simulated on the GPU: see `particles.ts`. The game emits
    * into them through `emit` and they are moved and drawn by `frame`.
    * Gravity is in the game's own units a second squared — the renderer has
-   * no opinion about what a unit is, and the default is a metre's worth.
+   * no opinion about what a unit is, and the default is the earth's, put into
+   * that unit through `mmPerUnit`.
    */
   readonly particles: Particles;
-  gravity = 9.81;
+  /** The earth's, in the caller's units, unless the game says otherwise. */
+  gravity: number;
 
-  constructor(private ctx: Gpu, private lightCapacity = 512, private effectCapacity = 256, particleCapacity = 16384) {
+  /**
+   * How many millimetres one world unit is. The world itself — meshes,
+   * matrices, camera, lights, emitters — stays in whatever unit the caller
+   * works in; this is how the renderer states its own fixed sizes in that
+   * unit, and it is the whole of what `render/` learned when it was made a
+   * library. Nothing here is fixed in a real size the way a groove or a vein
+   * wire is; what needs it is the defaults that carry a length, the floors
+   * under the lengths a division needs, and the near plane of a spot's
+   * shadow map.
+   */
+  readonly mmPerUnit: number;
+
+  /** A fixed size, from millimetres into the world's own unit. */
+  private mm(millimetres: number) { return millimetres / this.mmPerUnit; }
+
+  constructor(private ctx: Gpu, private lightCapacity = 512, private effectCapacity = 256, particleCapacity = 16384, mmPerUnit = 1) {
     const { device } = ctx;
+    this.mmPerUnit = mmPerUnit > 0 ? mmPerUnit : 1;
+    this.look = defaultLook(this.mmPerUnit);
+    this.fog = noFog(this.mmPerUnit);
+    this.gravity = this.mm(EARTH_MM);
     this.particles = new Particles(ctx, particleCapacity, 128, HDR, DEPTH);
     this.frameBuffer = device.createBuffer({ label: 'game frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = emptyBuffer(device, Math.max(1, lightCapacity) * LIGHT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'point lights');
@@ -694,11 +753,12 @@ export class GameRenderer {
     for (let i = 0; i < SPOT_SHADOWS; i++) {
       const m = f.subarray(20 + i * 16, 36 + i * 16);
       const s = this.spots[i];
-      if (s) spotShadowMatrix(m, s.position, s.direction, s.outer, s.reach);
+      if (s) spotShadowMatrix(m, s.position, s.direction, s.outer, s.reach, this.mm(SPOT_NEAR_MM));
       else m.fill(0);
     }
     const tail = 20 + SPOT_SHADOWS * 16;
     f[tail] = 1 / SPOT_MAP; f[tail + 1] = SPOT_BIAS; f[tail + 2] = this.spots.length; f[tail + 3] = this.look.spotSoftness;
+    f[tail + 4] = this.mm(SPOT_NEAR_MM) * SPOT_TEXEL_ANGLE;
     const { queue } = this.ctx.device;
     queue.writeBuffer(this.shadowBuffer, 0, f);
     queue.writeBuffer(this.passBuffers[0], 0, f, 0, 16);
