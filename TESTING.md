@@ -244,6 +244,48 @@ attempted in the running game was worthless, because the car drifts, the
 camera follows it, and two captures a moment apart differ in half their
 pixels. If an A/B needs two renders, do it where nothing moves between them.
 
+## A lamp in the rig
+
+`src/render/__tests__/lamp.gpu.test.ts` hangs one rig light in the scene
+rather than in the sky — a position, a cone, a reach — over a bead floating
+clear of a matte table, and checks three things: that it pools where it is
+aimed and leaves the rest of the table dark, that the bead's shadow lands on
+the table, and that the raster and the tracer agree about all of it to within
+eight levels.
+
+The third is the one that earned its keep. It found two faults the first two
+could not, because both were places where the raster quietly did nothing:
+
+**A rig light did not cast unless the key was lit.** `shadowOn` in the frame
+uniform was the key's strength alone, which is right while the key is what
+lights a piece and wrong the moment the rig can light one by itself. A scene
+lit by a bench lamp with the key turned down threw no shadow at all, and the
+lamp read as a broken shadow map rather than as a switch left off.
+
+**A perspective map wants its bias in its own depth.** The sky's rig maps are
+orthographic, and their depth is linear across the scene, so one bias in clip
+depth means the same number of world units everywhere. A lamp's map is a
+perspective one from the lamp, and the same figure was worth a few world
+units close in and some tens further out: the shadow lifted off the table and
+started a good six millimetres late. The lamp now carries `depthScale` —
+`near·far/(far−near)` — and the shader divides it by the squared distance,
+which is a bias in world units expressed in that map's own depth. Taking the
+conversion out again moves the near half of the shadow by 28 levels, which is
+what says it is load-bearing rather than tidy.
+
+The shape of the test is worth copying for anything else lit from a place
+rather than a direction: profile a line of table across the shadow, print
+raster and traced side by side, and look at where they part company. Both
+faults showed as a run of pixels where the two disagreed by twenty or thirty
+levels with the rest of the line agreeing to within four.
+
+**Two traps in arranging the scene**, both of which cost a run each. A squat
+piece sitting on the table under a high lamp throws a shadow its own base
+covers — the same thing that made a chessboard look unlit — so the bead here
+floats. And a pool falls off from where it is aimed, so a point in shadow
+must be measured against its mirror image in the pool rather than against the
+pool's middle, or the lamp's own falloff is counted as shadow.
+
 ## Units on the game path
 
 `src/game/__tests__/units.gpu.test.ts` is the game path's answer to the

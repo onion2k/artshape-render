@@ -44,10 +44,12 @@ const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
 const MATERIAL_STRIDE = 512;
 /** Bytes of each material record that the shader reads. */
 const MATERIAL_SIZE = 272;
-/** The frame uniform: 272 bytes of scene, then the rig's three lights at 96 each. */
+/** The frame uniform: 272 bytes of scene, then the rig's three lights at 128 each. */
 // the frame's fixed fields, padded to the rig array's alignment, then the rig
 const RIG_OFFSET = 72;
-const FRAME_SIZE = RIG_OFFSET * 4 + 3 * 96;
+/** Floats a rig light: a disc's direction and colour, a lamp's place and cone, and its shadow matrix. */
+const RIG_STRIDE = 32;
+const FRAME_SIZE = RIG_OFFSET * 4 + 3 * RIG_STRIDE * 4;
 const RIG_SHADOW_SIZE = 1024;
 export const MAX_RIG_LIGHTS = 3;
 /** The reflection probe: face size and prefilter levels. */
@@ -61,15 +63,46 @@ const LIGHTS_SIZE = 16 + MAX_LIGHTS * 32;
 
 export type Quality = 'draft' | 'final' | 'traced';
 
-/** A light of the studio rig: a disc in the sky like the key, with its own shadow. */
+/**
+ * A light of the studio rig: by default a disc in the sky like the key, with
+ * its own shadow — and, given `at`, a lamp standing in the scene instead.
+ *
+ * The two are one record because they are one light to a user: fill, rim,
+ * bench lamp, the spot over a case. What changes is where the light is and
+ * what shape it throws, not what it is for.
+ */
 export interface RigLight {
   elevation: number;
   azimuth: number;
   strength: number;
   /** -1 cool to 1 warm, as the key's. */
   warmth: number;
-  /** Angular radius in radians. */
+  /**
+   * How big the light is: an angular radius in radians for a disc in the
+   * sky, and the lamp's own radius in world units when it stands in the
+   * scene. Both widen the penumbra with the distance from what they light;
+   * only a lamp's changes across the piece.
+   */
   size: number;
+  /**
+   * Where the lamp hangs, in world units. Given, this is a lamp rather than a
+   * disc: it falls away with the square of the distance, throws a cone, and
+   * its `elevation` and `azimuth` are not read.
+   */
+  at?: [number, number, number];
+  /** What the lamp points at. The scene's centre if it is not said. */
+  aim?: [number, number, number];
+  /**
+   * The cone, as two half-angles in degrees: full strength within the first,
+   * nothing past the second, and a smooth edge between. A narrow pair is a
+   * spot on a case, a wide one a bench lamp over a whole board.
+   */
+  cone?: [number, number];
+  /**
+   * How far the lamp carries, in world units; at that distance it is nothing
+   * at all. Left out, far enough to cover the scene from where it hangs.
+   */
+  reach?: number;
 }
 
 export interface InstanceGroup {
@@ -870,6 +903,46 @@ export class Renderer {
     this.dirty = true;
   }
 
+  /**
+   * A lamp's frustum and its cone, and the matrix its shadow map is rendered
+   * with, written into `out`.
+   *
+   * The near plane is a hundredth of the way to what it lights rather than a
+   * fixed distance: a perspective map spends its depth precision between near
+   * and far, and a length written in here would mean one thing over a brooch
+   * and another over a chessboard. The far plane is the reach, for the same
+   * reason — beyond it the light gives nothing, so nothing past it need be in
+   * the map.
+   */
+  private lampFrustum(l: RigLight, out: Float32Array) {
+    const at = l.at!;
+    const aim = l.aim ?? this.sceneCentre;
+    const away: Vec3 = [aim[0] - at[0], aim[1] - at[1], aim[2] - at[2]];
+    const distance = Math.max(Math.hypot(away[0], away[1], away[2]), this.mm(0.01));
+    const aimDir: Vec3 = [away[0] / distance, away[1] / distance, away[2] / distance];
+    const [inner, outer] = l.cone ?? [22, 38];
+    const outerRad = (Math.min(Math.max(outer, 0.5), 89) * Math.PI) / 180;
+    const reach = Math.max(l.reach ?? distance + this.sceneRadius * 2, distance * 1.05);
+    // a little wider than the cone, so its soft edge is inside the map
+    const fov = Math.min(Math.PI * 0.9, outerRad * 2 * 1.12);
+    const up: Vec3 = Math.abs(aimDir[2]) < 0.95 ? [0, 0, 1] : [1, 0, 0];
+    const view = new Float32Array(16);
+    lookAt(view, at, aim, up);
+    const proj = new Float32Array(16);
+    perspective(proj, fov, 1, Math.max(distance * 0.01, this.mm(0.05)), reach);
+    multiplyMat(out, proj, view);
+    const near = Math.max(distance * 0.01, this.mm(0.05));
+    return {
+      aim: aimDir,
+      distance,
+      reach,
+      cosInner: Math.cos((Math.min(inner, outer) * Math.PI) / 180),
+      cosOuter: Math.cos(outerRad),
+      // d(depth)/d(distance) at a distance is this over the distance squared
+      depthScale: (near * reach) / (reach - near),
+    };
+  }
+
   setKeyLight(opts: { elevation: number; azimuth: number; strength: number; warmth: number; size?: number }) {
     this.invalidateProbe();
     const ce = Math.cos(opts.elevation);
@@ -1551,7 +1624,12 @@ export class Renderer {
     const texel = (2 * this.sceneRadius) / this.keyShadowSize;
     frame[52] = texel * 2.5;
     frame[53] = 1.5 / this.keyShadowSize;
-    frame[54] = this.keyStrength > 0 && this.groups.length ? 1 : 0;
+    // Whether anything casts at all. It was the key's strength alone, which
+    // is right while the key is what lights a piece and wrong the moment the
+    // rig can: a scene lit by a bench lamp with the key turned down threw no
+    // shadow of any kind, and the lamp looked as though its map was broken.
+    const casts = this.keyStrength > 0 || this.rig.some((l) => l.strength > 0);
+    frame[54] = casts && this.groups.length ? 1 : 0;
     frame[55] = this.keySize;
     // the probe: just over the piece, where nothing is in the way, reaching
     // out to take the table in
@@ -1567,15 +1645,33 @@ export class Renderer {
     frame[67] = this.rig.length;
     frame[68] = this.economy.shadowTaps;
     this.rig.forEach((l, i) => {
-      const o = RIG_OFFSET + i * 24;
-      const ce = Math.cos(l.elevation);
-      const d: [number, number, number] = [Math.cos(l.azimuth) * ce, Math.sin(l.azimuth) * ce, Math.sin(l.elevation)];
-      frame.set(d, o);
-      frame[o + 3] = l.strength;
+      const o = RIG_OFFSET + i * RIG_STRIDE;
       frame.set(warmthColour(l.warmth), o + 4);
       frame[o + 7] = Math.max(0, l.size);
-      orthoFromDirection(this.rigViewProj[i], d, this.sceneCentre, this.sceneRadius);
-      frame.set(this.rigViewProj[i], o + 8);
+      if (l.at) {
+        const lamp = this.lampFrustum(l, this.rigViewProj[i]);
+        frame.set(lamp.aim, o);
+        // the aim distance folded in, so a strength means the same brightness
+        // on the thing aimed at whether it is thrown from the sky or from a
+        // lamp a hand's breadth away
+        frame[o + 3] = l.strength * lamp.distance * lamp.distance;
+        frame.set(l.at, o + 8);
+        frame[o + 11] = lamp.reach;
+        frame[o + 12] = lamp.cosInner;
+        frame[o + 13] = lamp.cosOuter;
+        frame[o + 14] = 1;
+        // the bias the sky's maps use, in world units, ready to be turned
+        // into this lamp's own packed depth by the squared distance
+        frame[o + 15] = frame[53] * 4 * this.sceneRadius * lamp.depthScale;
+      } else {
+        const ce = Math.cos(l.elevation);
+        const d: [number, number, number] = [Math.cos(l.azimuth) * ce, Math.sin(l.azimuth) * ce, Math.sin(l.elevation)];
+        frame.set(d, o);
+        frame[o + 3] = l.strength;
+        frame[o + 14] = 0;
+        orthoFromDirection(this.rigViewProj[i], d, this.sceneCentre, this.sceneRadius);
+      }
+      frame.set(this.rigViewProj[i], o + 16);
     });
     device.queue.writeBuffer(this.frameBuffer, 0, frame);
 

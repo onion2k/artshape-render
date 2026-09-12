@@ -36,7 +36,9 @@ would cost them something for nothing.
   for — that is the honest answer the raster is held to.
 - **Lighting that reads as a bench**: a baked environment or a loaded
   HDRI, a reflection probe, a movable area key with a soft shadow, a
-  studio rig, the piece's own lights, contact occlusion, and a film pass.
+  studio rig whose lights are discs in the sky or lamps standing in the
+  scene with a cone of their own, the piece's own lights, contact
+  occlusion, and a film pass.
 - **A table the piece sits on**, hard or cloth, with a cushion it sinks
   into, and a camera with a lens in millimetres.
 - **It measures the machine it is on.** The viewer times its first frames
@@ -149,7 +151,7 @@ out saved five milliseconds a megapixel.
 ## Checking it
 
     npm test          920 tests, node
-    npm run test:gpu  71 tests, headless Chrome with a real device
+    npm run test:gpu  75 tests, headless Chrome with a real device
     npm run typecheck
 
 The GPU suite runs in the machine's own Chrome through Vitest's browser

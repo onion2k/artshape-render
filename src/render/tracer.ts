@@ -773,12 +773,42 @@ fn discLight(s: Surf, v: vec3f, dir: vec3f, size: f32, colour: vec3f, strength: 
   // the disc's irradiance, 3 in sky units per unit of strength, as the raster shader's
   return b.f * ndl * colour * strength * 3.0;
 }
+/**
+ * A lamp of the rig: a sphere of light standing in the scene, throwing a
+ * cone. The same three terms the raster shader uses — the cone's smooth
+ * edge, the window that takes it to nothing at its reach, and the inverse
+ * square — because where the two disagree the tracer is the reference and
+ * there is nothing to learn from them disagreeing about arithmetic.
+ */
+fn lampLight(s: Surf, v: vec3f, l: RigLight) -> vec3f {
+  if (l.strength <= 0.0) { return vec3f(0.0); }
+  let to = l.pos - s.p;
+  let dist = length(to);
+  if (dist > l.reach || dist <= 1e-4) { return vec3f(0.0); }
+  let centre = to / dist;
+  let cone = smoothstep(l.cosOuter, l.cosInner, dot(-centre, l.dir));
+  if (cone <= 0.0) { return vec3f(0.0); }
+  // a point on the lamp rather than its middle, so its shadow has the
+  // penumbra its size gives it, as the raster's blocker search does
+  let size = asin(min(max(l.size, 1e-5) / max(dist, 1e-4), 1.0));
+  let dir = coneDir(centre, max(size, 1e-3), rand(), rand());
+  let ndl = dot(s.n, dir);
+  if (ndl <= 0.0 || dot(s.ng, dir) <= 0.0) { return vec3f(0.0); }
+  if (occluded(s.p + s.ng * params.eps, dir, dist - l.size)) { return vec3f(0.0); }
+  // full until three quarters of the way to the reach, as the raster's is
+  let window = clamp((1.0 - dist / l.reach) / 0.25, 0.0, 1.0);
+  let b = evalBsdf(s, v, dir);
+  return b.f * ndl * l.colour * l.strength * cone * window * 3.0 / (dist * dist);
+}
+
 fn directLight(s: Surf, v: vec3f) -> vec3f {
   var sum = discLight(s, v, frame.keyDir, frame.keySize, frame.keyColour, frame.keyStrength);
   let count = i32(frame.rigCount);
   for (var i = 0; i < count; i++) {
     let l = frame.rig[i];
-    sum += discLight(s, v, l.dir, l.size, l.colour, l.strength);
+    if (l.lamp > 0.5) { sum += lampLight(s, v, l); } else {
+      sum += discLight(s, v, l.dir, l.size, l.colour, l.strength);
+    }
   }
   // the piece's own lights, as the small spheres the raster shader takes them for
   for (var i = 0u; i < lights.count; i++) {

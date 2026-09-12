@@ -60,14 +60,38 @@ fn tapCount(full: i32, floor: i32) -> i32 {
   return max(floor, i32(round(f32(full) * frame.shadowTaps)));
 }
 /**
- * A light of the rig: a disc like the key, with its own view of the scene
- * for its shadow, kept in its own layer of the rig's shadow array.
+ * A light of the rig, in one of two kinds, with its own view of the scene for
+ * its shadow kept in its own layer of the rig's shadow array.
+ *
+ * A **disc** is a light in the sky: dir points toward it, size is its
+ * angular radius, and it lights everything the same wherever it stands — the
+ * fill and the rim of a studio.
+ *
+ * A **lamp** stands somewhere: pos is where it hangs, dir the way it
+ * points, size its radius in world units rather than an angle, and it
+ * throws a cone that is full within cosInner and nothing past cosOuter,
+ * falling away with the square of the distance and reaching reach. A
+ * jeweller's bench lamp, or a spot over a case.
+ *
+ * lamp tells them apart, and the CPU has folded the aim distance into a
+ * lamp's strength already, so that a strength means the same brightness on
+ * the thing aimed at whichever kind of light is used.
  */
 struct RigLight {
   dir: vec3f,
   strength: f32,
   colour: vec3f,
   size: f32,
+  pos: vec3f,
+  reach: f32,
+  cosInner: f32,
+  cosOuter: f32,
+  lamp: f32,
+  // What a lamp's depth bias is worth in its own map: the CPU's world-unit
+  // bias times near*far/(far-near), so the shader divides by the squared
+  // distance and has the bias in the map's own nonlinear depth. A disc's map
+  // is orthographic and its depth linear, so it wants none of this.
+  depthScale: f32,
   viewProj: mat4x4f,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -297,7 +321,7 @@ fn vogel(i: i32, count: i32, phase: f32) -> vec2f {
 // shadowing itself where the map's texels are coarser than the mesh.
 fn keyShadowAt(world: vec3f, n: vec3f) -> f32 {
   if (frame.shadowOn < 0.5 || frame.keyStrength <= 0.0) { return 1.0; }
-  return discShadow(world, n, frame.lightViewProj, frame.keySize, -1);
+  return discShadow(world, n, frame.lightViewProj, frame.keySize, -1, frame.shadowBias);
 }
 // the maps: the key's own, or a layer of the rig's
 fn shadowDims(layer: i32) -> vec2f {
@@ -312,15 +336,20 @@ fn shadowCompare(layer: i32, uv: vec2f, depth: f32) -> f32 {
   if (layer < 0) { return textureSampleCompareLevel(keyShadow, shadowSampler, uv, depth); }
   return textureSampleCompareLevel(rigShadow, shadowSampler, uv, layer, depth);
 }
-fn discShadow(world: vec3f, n: vec3f, viewProj: mat4x4f, size: f32, layer: i32) -> f32 {
+fn discShadow(world: vec3f, n: vec3f, viewProj: mat4x4f, size: f32, layer: i32, biasDepth: f32) -> f32 {
   let dims = shadowDims(layer);
   // the offsets were set for the key's map; a coarser map needs them scaled
   let coarse = f32(textureDimensions(keyShadow).x) / dims.x;
   let p = world + n * frame.shadowOffset * coarse;
-  let clip = viewProj * vec4f(p, 1.0);
+  let clipped = viewProj * vec4f(p, 1.0);
+  // divided through, so the same lookup serves an orthographic map and a
+  // lamp's perspective one; w is exactly one for the first, so nothing about
+  // the sky's discs changes
+  if (clipped.w <= 0.0) { return 1.0; }
+  let clip = clipped.xyz / clipped.w;
   let uv = vec2f(clip.x, -clip.y) * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || clip.z > 1.0) { return 1.0; }
-  let depth = clip.z - frame.shadowBias * coarse;
+  let depth = clip.z - biasDepth * coarse;
   let texel = 1.0 / dims;
   // a fixed rotation per point, so the taps' pattern is a grain, not a print
   let phase = hash13(floor(world * 23.0)) * 6.2831853;
@@ -377,11 +406,44 @@ fn rigAt(n: vec3f, v: vec3f, world: vec3f, f0: vec3f, roughness: f32, shadowN: v
   for (var i = 0; i < count; i++) {
     let l = frame.rig[i];
     if (l.strength <= 0.0) { continue; }
+    // where the light is, how big it looks from here, and how much of it
+    // reaches: a disc in the sky is all three at once and a lamp is not
+    var dir = l.dir;
+    var size = l.size;
+    var strength = l.strength;
+    var bias = frame.shadowBias;
+    if (l.lamp > 0.5) {
+      let to = l.pos - world;
+      let dist = max(length(to), 1e-4);
+      if (dist > l.reach) { continue; }
+      dir = to / dist;
+      let cone = smoothstep(l.cosOuter, l.cosInner, dot(-dir, l.dir));
+      if (cone <= 0.0) { continue; }
+      // the lamp's own width, as an angle from here: near it the penumbra is
+      // wide, far off it is a point, which is what a real lamp does and what
+      // the blocker search below is already built to use
+      size = atan(l.size / dist);
+      // A window that takes the light to nothing exactly at its reach, so a
+      // lamp has an end rather than a tail running to the horizon — but one
+      // that holds full until three quarters of the way there. A window that
+      // starts closing at the lamp itself dims the very thing it is aimed
+      // at: at a reach of two and a half times the aim distance it took a
+      // third of the light off the piece, which reads as a weak lamp and is
+      // an arbitrary one.
+      let window = clamp((1.0 - dist / l.reach) / 0.25, 0.0, 1.0);
+      strength = l.strength * cone * window / (dist * dist);
+      // A perspective map's depth is packed toward the lamp, so the bias the
+      // sky's orthographic maps use is worth some world units close in and
+      // some tens of them further out. Left unconverted it is not a bias at
+      // all: it lifts the whole shadow off the table, and the piece throws
+      // nothing while the tracer says it should.
+      bias = l.depthScale / (dist * dist);
+    }
     var lit = 1.0;
-    if (frame.shadowOn > 0.5) { lit = discShadow(world, shadowN, l.viewProj, l.size, i); }
+    if (frame.shadowOn > 0.5) { lit = discShadow(world, shadowN, l.viewProj, size, i, bias); }
     if (lit <= 0.0) { continue; }
-    out.diffuse += discDiffuse(n, l.dir, l.size, l.strength) * l.colour * lit;
-    out.specular += discSpecular(n, v, f0, roughness, l.dir, l.size, l.colour, l.strength) * lit;
+    out.diffuse += discDiffuse(n, dir, size, strength) * l.colour * lit;
+    out.specular += discSpecular(n, v, f0, roughness, dir, size, l.colour, strength) * lit;
   }
   return out;
 }
