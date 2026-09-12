@@ -1334,6 +1334,17 @@ export class Renderer {
     if (this.sceneWorker !== undefined) return this.sceneWorker;
     if (typeof Worker === 'undefined') return (this.sceneWorker = null);
     const worker = new Worker(new URL('./scene.worker.ts', import.meta.url), { type: 'module' });
+    // A worker that cannot start says nothing on its own: the traced frame
+    // simply never arrives, and the page waits for ever on a scene that is
+    // not being built. Say what happened, and go on building it here instead
+    // — slower, and on the thread, but a picture rather than a wait.
+    worker.addEventListener('error', (e) => {
+      console.error(`artshape: the traced scene's worker failed (${e.message}); building it on the main thread instead`);
+      this.sceneWorker = null;
+      this.sceneBuilding = false;
+      this.traceSceneStale = true;
+      this.dirty = true;
+    });
     worker.addEventListener('message', (e: MessageEvent<SceneResponse>) => {
       if (e.data.token !== this.sceneToken) return;
       this.sceneBuilding = false;
