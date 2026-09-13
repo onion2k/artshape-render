@@ -23,6 +23,21 @@ export interface GemSpec {
   /** Table width as a fraction of the girdle. */
   table?: number;
   segments?: number;
+  /**
+   * The brilliant's own proportions, for the round and the oval, which are
+   * built from the trade's facet layout rather than from tiers. Angles in
+   * degrees from the girdle plane; the lengths are the trade's ratios.
+   */
+  /** The bezel facets' angle. Tolkowsky's is 34.5. */
+  crownAngle?: number;
+  /** The pavilion mains' angle. 40.75 is the modern ideal. */
+  pavilionAngle?: number;
+  /** How far the star facets reach from the table edge toward the girdle, of the way. */
+  star?: number;
+  /** How far the lower-girdle facets reach from the girdle toward the culet, of the way. */
+  lowerHalf?: number;
+  /** Culet width as a fraction of the girdle width; 0 is a point. */
+  culet?: number;
 }
 
 /**
@@ -59,20 +74,35 @@ export function gem(spec: GemSpec): Part {
   const table = spec.table ?? p.table;
 
   const planes: number[] = [];
-  const mesh = cut === 'cabochon'
-    ? cabochon(halfW, crown, scaledCount(spec.segments ?? 40))
-    : faceted(cut, p, halfL, halfW, crown, pavilion, girdleT, table, spec.facets, planes);
+  let mesh: Mesh;
+  let top = crown, bottom = -pavilion;
+  let mains = p.mains;
+  if (cut === 'cabochon') {
+    mesh = cabochon(halfW, crown, scaledCount(spec.segments ?? 40));
+  } else if (cut === 'brilliant' || cut === 'oval') {
+    // the trade's layout, at the cut's own depth unless one was asked for:
+    // a depth squashes the angles, as it squashes the tiers of the others
+    const b = brilliant(halfL, halfW, {
+      table, girdle: p.girdle, squash,
+      mains: Math.max(3, Math.round((spec.facets ?? p.facets) / 2)),
+      crownAngle: spec.crownAngle ?? 34.5, pavilionAngle: spec.pavilionAngle ?? 40.75,
+      star: spec.star ?? 0.5, lowerHalf: spec.lowerHalf ?? 0.78, culet: spec.culet ?? 0,
+    }, planes);
+    mesh = b.mesh; top = b.top; bottom = b.bottom; mains = b.mains;
+  } else {
+    mesh = faceted(cut, p, halfL, halfW, crown, pavilion, girdleT, table, spec.facets, planes);
+  }
 
   const anchors: Anchor[] = [
     // first, so fastening a stone to a mount seats it by its girdle
     { name: 'seat', position: [0, 0, 0], axis: [0, 0, 1], tangent: [1, 0, 0] },
-    { name: 'table', position: [0, 0, crown], axis: [0, 0, 1], tangent: [1, 0, 0] },
-    { name: 'culet', position: [0, 0, -pavilion], axis: [0, 0, -1], tangent: [1, 0, 0] },
+    { name: 'table', position: [0, 0, top], axis: [0, 0, 1], tangent: [1, 0, 0] },
+    { name: 'culet', position: [0, 0, bottom], axis: [0, 0, -1], tangent: [1, 0, 0] },
   ];
   // solder wets metal; a stone is held, not joined
   return {
     name: spec.name ?? cut, mesh, bounds: meshBounds(mesh), anchors,
-    solderable: false, pavilionFacets: p.mains,
+    solderable: false, pavilionFacets: mains,
     // every facet as a plane, for the shader to trace light through the stone;
     // a cabochon's dome is no facet and keeps the folded-room approximation
     gemPlanes: planes.length ? new Float32Array(planes) : undefined,
@@ -98,8 +128,11 @@ interface Proportions {
 }
 
 const CUTS: Record<GemCut, Proportions> = {
-  brilliant: { table: 0.56, crown: 0.16, pavilion: 0.43, girdle: 0.03, facets: 16, ratio: 1, mains: 8 },
-  oval: { table: 0.56, crown: 0.15, pavilion: 0.42, girdle: 0.03, facets: 16, ratio: 1.4, mains: 8 },
+  // the round and the oval are built from the trade's layout (see `brilliant`
+  // below); their crown and pavilion here are what Tolkowsky's angles give
+  // over a 56 % table, and set the depth a `depth` is squashed against
+  brilliant: { table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1, mains: 8 },
+  oval: { table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1.4, mains: 8 },
   pear: { table: 0.56, crown: 0.15, pavilion: 0.42, girdle: 0.03, facets: 16, ratio: 1.5, mains: 8 },
   marquise: { table: 0.55, crown: 0.14, pavilion: 0.40, girdle: 0.03, facets: 16, ratio: 2.0, mains: 8 },
   trillion: { table: 0.58, crown: 0.15, pavilion: 0.40, girdle: 0.03, facets: 18, ratio: 1, mains: 6 },
@@ -203,6 +236,102 @@ function girdleOutline(cut: GemCut, n: number, halfL: number, halfW: number, pha
     }
   }
   return pts;
+}
+
+interface BrilliantSpec {
+  /** Table vertex radius, as a fraction of the girdle radius. */
+  table: number;
+  /** Half the girdle thickness, as a fraction of the girdle radius. */
+  girdle: number;
+  /** What a `depth` asks: 1 leaves the angles as given. */
+  squash: number;
+  mains: number;
+  crownAngle: number;
+  pavilionAngle: number;
+  star: number;
+  lowerHalf: number;
+  culet: number;
+}
+
+/**
+ * The round brilliant as the trade cuts it, and the oval as its stretch.
+ *
+ * Eight-fold, ordinarily: a table with a vertex toward each main, a star
+ * facet on each table edge, a bezel (kite) under each vertex reaching the
+ * girdle, and a pair of upper-girdle facets between each two bezels; then,
+ * under the girdle, a pair of lower-girdle facets between each two pavilion
+ * mains, and the mains meeting at the culet. Fifty-seven facets, fifty-eight
+ * with a culet, and sixteen more round the girdle.
+ *
+ * What fixes it is not tiers but two planes and four ratios. The bezel's
+ * plane is set by the crown angle through the girdle edge and the table
+ * vertex; the star's tip sits on that plane at the star length, and so do
+ * the upper halves' apexes, which is why a bezel is a kite and not a fan.
+ * The main's plane is set the same way by the pavilion angle through the
+ * girdle and the culet, and the lower halves' meeting points lie on it at
+ * the lower-half length. Everything is laid out on a circle of the girdle's
+ * half-width and then scaled along the length: an ellipse is the circle's
+ * affine image, so every facet stays a plane, which is what an oval is.
+ */
+function brilliant(halfL: number, halfW: number, b: BrilliantSpec, planes: number[]): { mesh: Mesh; top: number; bottom: number; mains: number } {
+  const m = b.mains;
+  const step = Math.PI / m;                // half a main: the azimuth of a star tip or an upper-half apex
+  const g = b.girdle;
+  const rt = Math.min(Math.max(b.table, 0.05), 0.95);
+  const rc = Math.min(Math.max(b.culet, 0), 0.9);
+  const tanA = Math.tan((b.crownAngle * Math.PI) / 180) * b.squash;
+  const tanB = Math.tan((b.pavilionAngle * Math.PI) / 180) * b.squash;
+  const hc = (1 - rt) * tanA;              // crown height over the girdle's top
+  // a point, in unit-circle terms, placed on the stone: x along the length, y across the width
+  const at = (r: number, theta: number, z: number): Vec3 => [r * Math.cos(theta) * halfL, r * Math.sin(theta) * halfW, z * halfW];
+  // heights on the bezel's and the main's planes, by projection onto their axes
+  const onBezel = (rho: number) => g + hc - (rho - rt) * tanA;
+  const onMain = (rho: number) => -g - (1 - rho) * tanB;
+  const cosHalf = Math.cos(step);
+  const rs = Math.min(rt * cosHalf + b.star * (1 - rt * cosHalf), 0.98);
+  const rl = Math.max(1 - b.lowerHalf * (1 - rc), rc + 0.02);
+  const zs = onBezel(rs * cosHalf);
+  const zl = onMain(rl * cosHalf);
+  const zc = onMain(rc);
+
+  const mb = new MeshBuilder();
+  const minZ = zc, span = Math.max(g + hc - zc, 1e-6);
+  const uvOf = (q: Vec3): Vec2 => [Math.atan2(q[1], q[0]) / (Math.PI * 2) + 0.5, (q[2] * (1 / halfW) - minZ) / span];
+  const record = (normal: Vec3, point: Vec3) => {
+    const d = normal[0] * point[0] + normal[1] * point[1] + normal[2] * point[2];
+    for (let i = 0; i < planes.length; i += 4) {
+      if (Math.abs(planes[i] - normal[0]) < 1e-5 && Math.abs(planes[i + 1] - normal[1]) < 1e-5 && Math.abs(planes[i + 2] - normal[2]) < 1e-5 && Math.abs(planes[i + 3] - d) < 1e-4) return;
+    }
+    planes.push(normal[0], normal[1], normal[2], d);
+  };
+  const emit = (pts: Vec3[], outward?: Vec3) => facet(mb, pts, uvOf, outward, record);
+
+  const tableRing: Vec3[] = [];
+  for (let k = 0; k < m; k++) {
+    const t0 = k * 2 * step, t1 = (k + 1) * 2 * step, th = t0 + step;
+    const T0 = at(rt, t0, g + hc), T1 = at(rt, t1, g + hc);
+    const S = at(rs, th, zs), Sprev = at(rs, t0 - step, zs);
+    const G0 = at(1, t0, g), Gh = at(1, th, g), G1 = at(1, t1, g);
+    tableRing.push(T0);
+    emit([T0, T1, S]);                    // star
+    emit([T0, S, G0, Sprev]);             // bezel: a kite on its plane
+    emit([S, G0, Gh]); emit([S, Gh, G1]); // upper-girdle facets
+    // the girdle, two facets a main
+    const B0 = at(1, t0, -g), Bh = at(1, th, -g), B1 = at(1, t1, -g);
+    emit([G0, Gh, Bh, B0]); emit([Gh, G1, B1, Bh]);
+    // the pavilion
+    const L = at(rl, th, zl), Lprev = at(rl, t0 - step, zl);
+    const C = at(rc, t0, zc);
+    emit([B0, L, C, Lprev]);              // main: a kite on its plane, to the culet
+    emit([L, B0, Bh]); emit([L, Bh, B1]); // lower-girdle facets
+  }
+  emit(tableRing, [0, 0, 1]);
+  if (rc > 0) {
+    const culet: Vec3[] = [];
+    for (let k = m - 1; k >= 0; k--) culet.push(at(rc, k * 2 * step, zc));
+    emit(culet, [0, 0, -1]);
+  }
+  return { mesh: mb.build(), top: (g + hc) * halfW, bottom: zc * halfW, mains: m };
 }
 
 function faceted(

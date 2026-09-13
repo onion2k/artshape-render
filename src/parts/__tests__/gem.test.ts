@@ -76,3 +76,69 @@ describe('gem: proportions actually change the geometry', () => {
     expect(height(deep)).toBeGreaterThan(height(shallow));
   });
 });
+
+describe('gem: the round brilliant is the trade\'s layout', () => {
+  /** The facets read back from the fans the builder emits: each begins where a triangle's first index changes. */
+  const facetsOf = (mesh: { indices: Uint32Array }) => {
+    let n = 0, base = -1, last = -1;
+    for (let i = 0; i < mesh.indices.length; i += 3) {
+      const a = mesh.indices[i], b = mesh.indices[i + 1];
+      if (!(a === base && b === last)) { n++; base = a; }
+      last = mesh.indices[i + 2];
+    }
+    return n;
+  };
+
+  it('has 57 facets, 16 girdle facets beside them, and one more with a culet', () => {
+    const plain = gem({ cut: 'brilliant', width: 6.5 });
+    expect(facetsOf(plain.mesh)).toBe(73);
+    expect(plain.gemPlanes!.length / 4).toBe(73);
+    const cut = gem({ cut: 'brilliant', width: 6.5, culet: 0.04 });
+    expect(facetsOf(cut.mesh)).toBe(74);
+  });
+
+  it('comes out at Tolkowsky\'s proportions: 56 % table, 15 % crown, 43 % pavilion', () => {
+    const p = gem({ cut: 'brilliant', width: 10 });
+    const table = findAnchor(p, 'table').position[2];
+    const culet = findAnchor(p, 'culet').position[2];
+    // crown over the girdle's top edge: (1 - 0.56) * tan 34.5° of the radius, plus half the girdle
+    expect(table).toBeCloseTo(0.15 + 0.44 * Math.tan((34.5 * Math.PI) / 180) * 5, 2);
+    expect(culet).toBeCloseTo(-(0.15 + Math.tan((40.75 * Math.PI) / 180) * 5), 2);
+    expect(p.bounds.max[0] - p.bounds.min[0]).toBeCloseTo(10, 6);
+  });
+
+  it('the angles asked for are the angles cut', () => {
+    const steep = gem({ cut: 'brilliant', width: 10, crownAngle: 40, pavilionAngle: 42 });
+    expect(findAnchor(steep, 'table').position[2]).toBeCloseTo(0.15 + 0.44 * Math.tan((40 * Math.PI) / 180) * 5, 2);
+    expect(findAnchor(steep, 'culet').position[2]).toBeCloseTo(-(0.15 + Math.tan((42 * Math.PI) / 180) * 5), 2);
+  });
+
+  it('a depth squashes both angles rather than the girdle', () => {
+    const p = gem({ cut: 'brilliant', width: 10, depth: 4 });
+    // to a hundredth: the squash is taken against the proportions row, which is rounded
+    expect(p.bounds.max[2] - p.bounds.min[2]).toBeCloseTo(4, 2);
+  });
+
+  it('the oval is the round stretched, so its facets stay planes and its count is the same', () => {
+    const p = gem({ cut: 'oval', width: 6, length: 9 });
+    expect(facetsOf(p.mesh)).toBe(73);
+    expect(p.gemPlanes!.length / 4).toBe(73);
+    expect(p.bounds.max[0] - p.bounds.min[0]).toBeCloseTo(9, 6);
+    expect(p.bounds.max[1] - p.bounds.min[1]).toBeCloseTo(6, 6);
+    // every corner of a facet lies on the facet's plane, to a micron
+    const pos = p.mesh.positions, nor = p.mesh.normals, idx = p.mesh.indices;
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      for (const v of [b, c]) {
+        const d = (pos[v * 3] - pos[a * 3]) * nor[a * 3] + (pos[v * 3 + 1] - pos[a * 3 + 1]) * nor[a * 3 + 1] + (pos[v * 3 + 2] - pos[a * 3 + 2]) * nor[a * 3 + 2];
+        expect(Math.abs(d)).toBeLessThan(1e-3);
+      }
+    }
+  });
+
+  it('fewer facets round the girdle make fewer mains, and the count follows', () => {
+    const six = gem({ cut: 'brilliant', width: 6, facets: 12 });
+    expect(six.pavilionFacets).toBe(6);
+    expect(facetsOf(six.mesh)).toBe(9 * 6 + 1);
+  });
+});

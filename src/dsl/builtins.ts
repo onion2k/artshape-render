@@ -596,7 +596,7 @@ const PARTS = {
       veinMetal: veinMetalName(a),
     })),
 
-  gem: define(['cut', 'width', 'length', 'depth', 'facets', 'table', 'segments'], (a) =>
+  gem: define(['cut', 'width', 'length', 'depth', 'facets', 'table', 'crownAngle', 'pavilionAngle', 'star', 'lowerHalf', 'culet', 'segments'], (a) =>
     gem({
       cut: oneOf(a, 'cut', GEM_CUTS, 'brilliant') as GemCut,
       width: a.num('width', 0),
@@ -604,6 +604,11 @@ const PARTS = {
       depth: a.num('depth', -1, 0) || undefined,
       facets: a.num('facets', -1, 0) || undefined,
       table: a.num('table', -1, 0) || undefined,
+      crownAngle: a.num('crownAngle', -1, 0) || undefined,
+      pavilionAngle: a.num('pavilionAngle', -1, 0) || undefined,
+      star: a.num('star', -1, 0) || undefined,
+      lowerHalf: a.num('lowerHalf', -1, 0) || undefined,
+      culet: a.num('culet', -1, 0) || undefined,
       segments: a.count('segments', -1, 40),
     })),
 
