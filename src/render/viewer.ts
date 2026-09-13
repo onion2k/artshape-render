@@ -422,6 +422,15 @@ export class Viewer {
     if (!drew) return;
     this.frameCount++;
     if (this.frameCount === 1) this.fenceFirst();
+    // A traced still is a sample a frame, for as long as it takes to
+    // converge: not a run to be paced, and not a still frame to be fenced.
+    // Judged as a run, a sample slower than the display's cadence stepped
+    // the ladder down, the step resized the targets, the resize changed the
+    // frame's aspect by a rounding, and that restarted the accumulation —
+    // every three hundred milliseconds, so the trace never got past a
+    // handful of samples. The gap is forgotten so the next run after the
+    // trace is not judged against a sample's.
+    else if (this.quality === 'traced' && !moving) this.lastFrameAt = 0;
     else if (!this.pace()) this.fenceStill();
     this.onFrame?.();
   };
