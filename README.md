@@ -160,7 +160,12 @@ colour are numbers on the record that a stone without them never pays
 for; spectral fire, birefringence and the like are `RendererOptions`
 that leave the shader as it was for anyone who did not set them.
 Residency is most of what a shader costs, so a feature gated by a
-uniform rather than compiled out is not opt-in at all.
+uniform rather than compiled out is not opt-in at all — unless what it
+gates is work rather than code: `gemBounces` lets a stone's paths run
+past the ordinary six, which costs a fifth more a sample on a ring with
+a stone and nothing on a scene without one, and is six unless asked.
+A test hashes the shaders a default build compiles, so a permutation
+that leaks a line into them is caught.
 
 ## Checking it
 

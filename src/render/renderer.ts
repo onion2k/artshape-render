@@ -318,6 +318,17 @@ export interface RendererOptions {
    * passes 1000 and carries the same surface as a ring in millimetres.
    */
   mmPerUnit?: number;
+  /**
+   * Bounces a traced path may take while it is at or inside a cut stone,
+   * past the ordinary six. A path in a diamond makes three to five
+   * reflections inside before it finds a facet to leave by, and at six
+   * the pavilion goes dark; sixteen recovers nearly all of the light, at a
+   * cost measured on this machine of a fifth more a sample on a ring with
+   * a stone and half again on a stone alone, and nothing on a scene without
+   * one. Six by default, the same as the ordinary budget: a consumer that
+   * looks at stones for a living raises it.
+   */
+  gemBounces?: number;
 }
 
 export class Renderer {
@@ -544,7 +555,11 @@ export class Renderer {
   private helperColour: GPUBuffer | null = null;
   private helperCount = 0;
 
+  /** What a stone's paths are allowed, handed to the tracer when it is made. */
+  private readonly gemBounces: number;
+
   constructor(ctx: Gpu, opts: RendererOptions = {}) {
+    this.gemBounces = Math.max(1, Math.round(opts.gemBounces ?? 6));
     this.ctx = ctx;
     const { device } = ctx;
     this.mmPerUnit = opts.mmPerUnit ?? 1;
@@ -1301,6 +1316,7 @@ export class Renderer {
     }
     if (!this.tracer) {
       this.tracer = new mod.PathTracer(this.ctx, this.frameLayout, this.mmPerUnit);
+      this.tracer.gemBounces = this.gemBounces;
       if (this.envSamples) this.tracer.setSky(skyDistribution(this.envSamples).cdf, this.envSamples.size);
     }
     if (this.traceSceneStale && this.groups.length) {

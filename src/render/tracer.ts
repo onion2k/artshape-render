@@ -24,7 +24,7 @@ import { shader, type Gpu } from '../gpu/context';
 import { COMMON, CUSHION_FIELD, FRAME_STRUCT, GROUND_STRUCT, MATERIAL_FIELDS, MATERIAL_STRUCT, TABLE_SURFACES } from './shaders';
 import type { TracedScene } from './bvh';
 
-const TRACE_WGSL = `
+export const TRACE_WGSL = `
 ${FRAME_STRUCT}
 ${COMMON}
 ${MATERIAL_STRUCT}
@@ -894,8 +894,10 @@ fn radiance(o0: vec3f, d0: vec3f) -> vec3f {
     // facet it can leave by, and one more for every hop off the table on
     // the way in; cut at six, those paths were dropped, and the pavilion
     // went dark for want of the light that would have come back through
-    // the crown. So a stone is allowed to run on to its own budget, and
-    // whatever the path lands on after it is held to the old one.
+    // the crown. So a stone may be allowed to run on to a budget of its
+    // own — a consumer's option, since it costs a fifth more a sample on a
+    // ring with a stone — and whatever the path lands on after it is held
+    // to the old one.
     if (!s.gem && bounce > params.bounces) { break; }
     let v = -d;
     // the table's rim: what is not table is the page's own colour, unlit, as the raster path draws it
@@ -1028,8 +1030,8 @@ export class PathTracer {
   /** Where the accumulation stops. */
   maxSamples = 1024;
   bounces = 6;
-  /** Bounces a path may take while it is inside or at a stone's surface. */
-  gemBounces = 16;
+  /** Bounces a path may take while it is inside or at a stone's surface: the ordinary budget unless a consumer raises it, see `RendererOptions`. */
+  gemBounces = 6;
   private groundBuffer: GPUBuffer | null = null;
   private cushionView: GPUTextureView | null = null;
   /** The sky's cumulative distribution, 256 texels to a row; a single texel until a sky is given. */
