@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { gem, type GemCut } from '../gem';
+import { gem, GEM_CUTS } from '../gem';
 import { findAnchor } from '../types';
 import { expectWellFormed } from '../../mesh/__tests__/helpers';
 
-const CUTS: GemCut[] = [
-  'brilliant', 'oval', 'pear', 'marquise', 'trillion', 'step', 'baguette', 'rose', 'cabochon',
-];
+const CUTS = GEM_CUTS;
 
 describe('gem: every cut is a well-formed mesh', () => {
   for (const cut of CUTS) {
@@ -140,5 +138,63 @@ describe('gem: the round brilliant is the trade\'s layout', () => {
     const six = gem({ cut: 'brilliant', width: 6, facets: 12 });
     expect(six.pavilionFacets).toBe(6);
     expect(facetsOf(six.mesh)).toBe(9 * 6 + 1);
+  });
+});
+
+describe('gem: the catalogue', () => {
+  const facetsOf = (mesh: { indices: Uint32Array }) => {
+    let n = 0, base = -1, last = -1;
+    for (let i = 0; i < mesh.indices.length; i += 3) {
+      const a = mesh.indices[i], b = mesh.indices[i + 1];
+      if (!(a === base && b === last)) { n++; base = a; }
+      last = mesh.indices[i + 2];
+    }
+    return n;
+  };
+  const height = (p: ReturnType<typeof gem>) => p.bounds.max[2] - p.bounds.min[2];
+
+  it('a princess is square, pointed, and its crown is one bevel over chevrons', () => {
+    const p = gem({ cut: 'princess', width: 6 });
+    expect(p.bounds.max[0] - p.bounds.min[0]).toBeCloseTo(6, 6);
+    expect(facetsOf(p.mesh)).toBe(41);
+    expect(p.pavilionFacets).toBe(4);
+    expect(findAnchor(p, 'culet').position[2]).toBeCloseTo(p.bounds.min[2], 6);
+  });
+
+  it('an asscher has three steps each side and an emerald cut two over three', () => {
+    expect(facetsOf(gem({ cut: 'asscher', width: 6 }).mesh)).toBe(58);
+    expect(facetsOf(gem({ cut: 'step', width: 6 }).mesh)).toBe(50);
+  });
+
+  it('the old cuts have a culet you can see, the modern brilliant none', () => {
+    const old = gem({ cut: 'oldEuropean', width: 6.5 });
+    const culetRing = old.mesh.positions.filter((_, i) => i % 3 === 2 && Math.abs(old.mesh.positions[i] - old.bounds.min[2]) < 1e-6).length;
+    expect(culetRing).toBeGreaterThan(8);
+    expect(facetsOf(old.mesh)).toBe(146);
+    expect(facetsOf(gem({ cut: 'eight', width: 2 }).mesh)).toBe(25);
+  });
+
+  it('a briolette is a drop: as tall as its length, round about its axis, with no table', () => {
+    const b = gem({ cut: 'briolette', width: 5, length: 9 });
+    expect(height(b)).toBeCloseTo(9, 6);
+    expect(b.bounds.max[0] - b.bounds.min[0]).toBeCloseTo(5, 6);
+    expect(b.bounds.max[1] - b.bounds.min[1]).toBeCloseTo(5, 6);
+    // every facet leans: nothing is flat on top or underneath
+    for (let i = 2; i < b.mesh.normals.length; i += 3) expect(Math.abs(b.mesh.normals[i])).toBeLessThan(0.999);
+  });
+
+  it('the shapes come out at their own ratios, and the half-moon wider than long', () => {
+    const ratio = (cut: Parameters<typeof gem>[0]['cut']) => { const p = gem({ cut, width: 6 }); return (p.bounds.max[0] - p.bounds.min[0]) / (p.bounds.max[1] - p.bounds.min[1]); };
+    expect(ratio('kite')).toBeCloseTo(1.6, 6);
+    expect(ratio('halfMoon')).toBeCloseTo(0.55, 6);
+    expect(ratio('hexagon')).toBeCloseTo(1.15, 6);
+    expect(ratio('tapered')).toBeCloseTo(2.0, 6);
+  });
+
+  it('a double cabochon is a lens with a girdle at its equator and no facets', () => {
+    const d = gem({ cut: 'doubleCabochon', width: 8 });
+    expect(d.gemPlanes).toBeUndefined();
+    expect(findAnchor(d, 'table').position[2]).toBeCloseTo(-findAnchor(d, 'culet').position[2], 6);
+    expect(height(d)).toBeCloseTo(4.8, 6);
   });
 });

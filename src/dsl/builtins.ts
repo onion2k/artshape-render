@@ -13,7 +13,7 @@ import {
 import { bead, bell, bud, collar, egg, pod, rivet } from '../parts/fastener';
 import { petal } from '../parts/petal';
 import { pearl } from '../parts/pearl';
-import { gem, type GemCut } from '../parts/gem';
+import { gem, GEM_CUTS, type GemCut } from '../parts/gem';
 import { setting, type SettingStyle } from '../parts/setting';
 import { shank } from '../parts/ring';
 import { clasp } from '../parts/clasp';
@@ -546,7 +546,6 @@ function oneOf<T extends string>(a: Args, name: string, allowed: readonly T[], f
   return word as T;
 }
 
-const GEM_CUTS = ['brilliant', 'oval', 'pear', 'marquise', 'trillion', 'step', 'baguette', 'rose', 'cabochon'] as const;
 const SETTING_STYLES = ['claw', 'bezel'] as const;
 const LEAF_SHAPES = ['ovate', 'lanceolate', 'elliptic', 'obovate', 'cordate', 'orbicular', 'linear', 'deltoid', 'spatulate'] as const;
 const PETAL_SHAPES = ['round', 'pointed', 'spoon', 'strap', 'lip', 'quill'] as const;

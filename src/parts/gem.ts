@@ -4,9 +4,18 @@ import { MeshBuilder, type Mesh } from '../mesh/types';
 import { revolve } from '../mesh/revolve';
 import { meshBounds, type Anchor, type Part } from './types';
 
-export type GemCut =
-  | 'brilliant' | 'oval' | 'pear' | 'marquise' | 'trillion'
-  | 'step' | 'baguette' | 'rose' | 'cabochon';
+/**
+ * Every cut, as the language names it: one word each. The brilliants first,
+ * then the step cuts, then the rest.
+ */
+export const GEM_CUTS = [
+  'brilliant', 'oval', 'pear', 'marquise', 'heart', 'trillion', 'cushion', 'princess', 'radiant',
+  'oldEuropean', 'oldMine', 'eight', 'swiss',
+  'step', 'asscher', 'baguette', 'tapered', 'carre', 'tableCut', 'french',
+  'hexagon', 'octagon', 'kite', 'lozenge', 'shield', 'halfMoon', 'bullet',
+  'rose', 'doubleRose', 'briolette', 'checkerboard', 'cabochon', 'doubleCabochon',
+] as const;
+export type GemCut = (typeof GEM_CUTS)[number];
 
 export interface GemSpec {
   name?: string;
@@ -77,9 +86,17 @@ export function gem(spec: GemSpec): Part {
   let mesh: Mesh;
   let top = crown, bottom = -pavilion;
   let mains = p.mains;
-  if (cut === 'cabochon') {
+  if (p.style === 'cabochon') {
     mesh = cabochon(halfW, crown, scaledCount(spec.segments ?? 40));
-  } else if (cut === 'brilliant' || cut === 'oval') {
+  } else if (p.style === 'lens') {
+    mesh = lens(halfW, crown, scaledCount(spec.segments ?? 40));
+    bottom = -crown;
+  } else if (p.style === 'briolette') {
+    // a drop hangs: its length is its height, and it is round about that axis
+    const height = spec.length ?? spec.width * p.ratio;
+    mesh = faceted(cut, p, halfW, halfW, height / 2, height / 2, 0, 0, spec.facets, planes);
+    top = height / 2; bottom = -height / 2;
+  } else if (p.style === 'layout') {
     // the trade's layout, at the cut's own depth unless one was asked for:
     // a depth squashes the angles, as it squashes the tiers of the others
     const b = brilliant(halfL, halfW, {
@@ -110,7 +127,20 @@ export function gem(spec: GemSpec): Part {
   };
 }
 
+/** How the girdle is drawn: a curve sampled round, or a polygon whose corners are the corners. */
+type OutlineKind =
+  | 'round' | 'pear' | 'marquise' | 'trillion' | 'heart' | 'cushion'
+  | 'rectangle' | 'square8' | 'hexagon' | 'kite' | 'lozenge' | 'shield' | 'halfMoon' | 'trapezoid' | 'bullet';
+
+/** Which stack of tiers is put over the outline; see `tiersOf`. */
+type Style =
+  | 'layout' | 'brilliant' | 'old' | 'eight' | 'princess'
+  | 'step' | 'asscher' | 'baguette' | 'tableCut' | 'french'
+  | 'rose' | 'doubleRose' | 'briolette' | 'checkerboard' | 'cabochon' | 'lens';
+
 interface Proportions {
+  outline: OutlineKind;
+  style: Style;
   /** All as fractions of the girdle width. */
   table: number;
   crown: number;
@@ -125,21 +155,52 @@ interface Proportions {
    * brilliant's eight break it into a rosette.
    */
   mains: number;
+  /** For a rectangle: how much of the shorter half-side each corner is cut off by. */
+  corner?: number;
 }
 
 const CUTS: Record<GemCut, Proportions> = {
   // the round and the oval are built from the trade's layout (see `brilliant`
   // below); their crown and pavilion here are what Tolkowsky's angles give
   // over a 56 % table, and set the depth a `depth` is squashed against
-  brilliant: { table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1, mains: 8 },
-  oval: { table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1.4, mains: 8 },
-  pear: { table: 0.56, crown: 0.15, pavilion: 0.42, girdle: 0.03, facets: 16, ratio: 1.5, mains: 8 },
-  marquise: { table: 0.55, crown: 0.14, pavilion: 0.40, girdle: 0.03, facets: 16, ratio: 2.0, mains: 8 },
-  trillion: { table: 0.58, crown: 0.15, pavilion: 0.40, girdle: 0.03, facets: 18, ratio: 1, mains: 6 },
-  step: { table: 0.62, crown: 0.14, pavilion: 0.45, girdle: 0.03, facets: 8, ratio: 1.35, mains: 4 },
-  baguette: { table: 0.72, crown: 0.10, pavilion: 0.34, girdle: 0.03, facets: 4, ratio: 2.2, mains: 4 },
-  rose: { table: 0, crown: 0.34, pavilion: 0, girdle: 0, facets: 12, ratio: 1, mains: 8 },
-  cabochon: { table: 0, crown: 0.42, pavilion: 0, girdle: 0, facets: 0, ratio: 1, mains: 24 },
+  brilliant: { outline: 'round', style: 'layout', table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1, mains: 8 },
+  oval: { outline: 'round', style: 'layout', table: 0.56, crown: 0.151, pavilion: 0.431, girdle: 0.03, facets: 16, ratio: 1.4, mains: 8 },
+  // the fancy outlines: the brilliant's tiers over a curve
+  pear: { outline: 'pear', style: 'brilliant', table: 0.56, crown: 0.15, pavilion: 0.42, girdle: 0.03, facets: 16, ratio: 1.5, mains: 8 },
+  marquise: { outline: 'marquise', style: 'brilliant', table: 0.55, crown: 0.14, pavilion: 0.40, girdle: 0.03, facets: 16, ratio: 2.0, mains: 8 },
+  heart: { outline: 'heart', style: 'brilliant', table: 0.56, crown: 0.15, pavilion: 0.42, girdle: 0.03, facets: 16, ratio: 1.0, mains: 8 },
+  trillion: { outline: 'trillion', style: 'brilliant', table: 0.58, crown: 0.15, pavilion: 0.40, girdle: 0.03, facets: 18, ratio: 1, mains: 6 },
+  cushion: { outline: 'cushion', style: 'brilliant', table: 0.58, crown: 0.14, pavilion: 0.45, girdle: 0.03, facets: 16, ratio: 1.1, mains: 8 },
+  // the square brilliants: chevrons under a bevelled crown
+  princess: { outline: 'square8', style: 'princess', table: 0.68, crown: 0.11, pavilion: 0.60, girdle: 0.03, facets: 8, ratio: 1, mains: 4 },
+  radiant: { outline: 'rectangle', style: 'princess', table: 0.64, crown: 0.13, pavilion: 0.52, girdle: 0.03, facets: 8, ratio: 1.25, mains: 4, corner: 0.22 },
+  // the old cuts: a small table, a high crown, an open culet
+  oldEuropean: { outline: 'round', style: 'old', table: 0.42, crown: 0.19, pavilion: 0.45, girdle: 0.03, facets: 16, ratio: 1, mains: 8 },
+  oldMine: { outline: 'cushion', style: 'old', table: 0.40, crown: 0.20, pavilion: 0.46, girdle: 0.03, facets: 16, ratio: 1.05, mains: 8 },
+  eight: { outline: 'round', style: 'eight', table: 0.55, crown: 0.14, pavilion: 0.43, girdle: 0.03, facets: 8, ratio: 1, mains: 8 },
+  swiss: { outline: 'round', style: 'brilliant', table: 0.55, crown: 0.15, pavilion: 0.43, girdle: 0.03, facets: 8, ratio: 1, mains: 8 },
+  // the step cuts: rows round a rectangle, and the shapes cut in rows
+  step: { outline: 'rectangle', style: 'step', table: 0.62, crown: 0.14, pavilion: 0.45, girdle: 0.03, facets: 8, ratio: 1.35, mains: 4, corner: 0.26 },
+  asscher: { outline: 'rectangle', style: 'asscher', table: 0.58, crown: 0.16, pavilion: 0.50, girdle: 0.03, facets: 8, ratio: 1, mains: 4, corner: 0.32 },
+  baguette: { outline: 'rectangle', style: 'baguette', table: 0.72, crown: 0.10, pavilion: 0.34, girdle: 0.03, facets: 4, ratio: 2.2, mains: 4, corner: 0 },
+  tapered: { outline: 'trapezoid', style: 'baguette', table: 0.70, crown: 0.10, pavilion: 0.34, girdle: 0.03, facets: 4, ratio: 2.0, mains: 4 },
+  carre: { outline: 'rectangle', style: 'step', table: 0.60, crown: 0.14, pavilion: 0.46, girdle: 0.03, facets: 4, ratio: 1, mains: 4, corner: 0 },
+  tableCut: { outline: 'rectangle', style: 'tableCut', table: 0.62, crown: 0.16, pavilion: 0.44, girdle: 0.03, facets: 4, ratio: 1, mains: 4, corner: 0.12 },
+  french: { outline: 'rectangle', style: 'french', table: 0.50, crown: 0.20, pavilion: 0.45, girdle: 0.03, facets: 4, ratio: 1, mains: 4, corner: 0 },
+  hexagon: { outline: 'hexagon', style: 'step', table: 0.60, crown: 0.14, pavilion: 0.45, girdle: 0.03, facets: 6, ratio: 1.15, mains: 6 },
+  octagon: { outline: 'rectangle', style: 'step', table: 0.60, crown: 0.14, pavilion: 0.45, girdle: 0.03, facets: 8, ratio: 1, mains: 8, corner: 0.586 },
+  kite: { outline: 'kite', style: 'step', table: 0.55, crown: 0.14, pavilion: 0.42, girdle: 0.03, facets: 4, ratio: 1.6, mains: 4 },
+  lozenge: { outline: 'lozenge', style: 'step', table: 0.55, crown: 0.14, pavilion: 0.42, girdle: 0.03, facets: 4, ratio: 1.5, mains: 4 },
+  shield: { outline: 'shield', style: 'step', table: 0.58, crown: 0.14, pavilion: 0.42, girdle: 0.03, facets: 5, ratio: 1.3, mains: 5 },
+  halfMoon: { outline: 'halfMoon', style: 'step', table: 0.58, crown: 0.13, pavilion: 0.40, girdle: 0.03, facets: 10, ratio: 0.55, mains: 5 },
+  bullet: { outline: 'bullet', style: 'step', table: 0.58, crown: 0.13, pavilion: 0.42, girdle: 0.03, facets: 5, ratio: 1.8, mains: 5 },
+  // no pavilion, or no table, or no facets
+  rose: { outline: 'round', style: 'rose', table: 0, crown: 0.34, pavilion: 0, girdle: 0, facets: 12, ratio: 1, mains: 8 },
+  doubleRose: { outline: 'round', style: 'doubleRose', table: 0, crown: 0.30, pavilion: 0.30, girdle: 0, facets: 12, ratio: 1, mains: 8 },
+  briolette: { outline: 'round', style: 'briolette', table: 0, crown: 0.9, pavilion: 0.9, girdle: 0, facets: 12, ratio: 1.8, mains: 8 },
+  checkerboard: { outline: 'cushion', style: 'checkerboard', table: 0.25, crown: 0.22, pavilion: 0.42, girdle: 0.03, facets: 12, ratio: 1.1, mains: 8 },
+  cabochon: { outline: 'round', style: 'cabochon', table: 0, crown: 0.42, pavilion: 0, girdle: 0, facets: 0, ratio: 1, mains: 24 },
+  doubleCabochon: { outline: 'round', style: 'lens', table: 0, crown: 0.3, pavilion: 0.3, girdle: 0, facets: 0, ratio: 1, mains: 24 },
 };
 
 /** One tier of the stone: the outline scaled and lifted, and how far it is turned. */
@@ -151,9 +212,9 @@ interface Tier {
   phase: number;
 }
 
-function tiersOf(cut: GemCut, crown: number, pavilion: number, girdleT: number, table: number): Tier[] {
+function tiersOf(style: Style, crown: number, pavilion: number, girdleT: number, table: number): Tier[] {
   const g = girdleT / 2;
-  switch (cut) {
+  switch (style) {
     case 'step':
       return [
         { scale: 0.22, z: -pavilion, phase: 0 },
@@ -164,10 +225,65 @@ function tiersOf(cut: GemCut, crown: number, pavilion: number, girdleT: number, 
         { scale: 0.88, z: crown * 0.52, phase: 0 },
         { scale: table, z: crown, phase: 0 },
       ];
+    case 'asscher':
+      // three rows each side and a high crown: the windmill seen through the table
+      return [
+        { scale: 0.18, z: -pavilion, phase: 0 },
+        { scale: 0.50, z: -pavilion * 0.66, phase: 0 },
+        { scale: 0.80, z: -pavilion * 0.30, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: 0.90, z: crown * 0.36, phase: 0 },
+        { scale: 0.76, z: crown * 0.72, phase: 0 },
+        { scale: table, z: crown, phase: 0 },
+      ];
     case 'baguette':
       return [
         { scale: 0.34, z: -pavilion, phase: 0 },
         { scale: 0.78, z: -pavilion * 0.45, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: table, z: crown, phase: 0 },
+      ];
+    case 'tableCut':
+      // the oldest faceting: one bevel to a table, one to a flat back
+      return [
+        { scale: 0.45, z: -pavilion, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: table, z: crown, phase: 0 },
+      ];
+    case 'french':
+      // the table turned through half a step: four triangles rise to each of its edges
+      return [
+        { scale: 0, z: -pavilion, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: table, z: crown, phase: 0.5 },
+      ];
+    case 'eight':
+      // a single cut: eight facets over, eight under, and the table
+      return [
+        { scale: 0, z: -pavilion, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: table, z: crown, phase: 0 },
+      ];
+    case 'old':
+      // the old cuts: a culet you can see, and the crown's break high and steep
+      return [
+        { scale: 0.10, z: -pavilion, phase: 0 },
+        { scale: 0.55, z: -pavilion * 0.45, phase: 0.5 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: 0.74, z: crown * 0.5, phase: 0.5 },
+        { scale: table, z: crown, phase: 0 },
+      ];
+    case 'princess':
+      // chevrons: the pavilion's tiers turned half a step against a square
+      return [
+        { scale: 0, z: -pavilion, phase: 0 },
+        { scale: 0.42, z: -pavilion * 0.55, phase: 0.5 },
         { scale: 1, z: -g, phase: 0 },
         { scale: 1, z: g, phase: 0 },
         { scale: table, z: crown, phase: 0 },
@@ -178,6 +294,39 @@ function tiersOf(cut: GemCut, crown: number, pavilion: number, girdleT: number, 
         { scale: 1, z: 0, phase: 0 },
         { scale: 0.58, z: crown * 0.5, phase: 0.5 },
         { scale: 0, z: crown, phase: 0 },
+      ];
+    case 'doubleRose':
+      return [
+        { scale: 0, z: -pavilion, phase: 0 },
+        { scale: 0.58, z: -pavilion * 0.5, phase: 0.5 },
+        { scale: 1, z: 0, phase: 0 },
+        { scale: 0.58, z: crown * 0.5, phase: 0.5 },
+        { scale: 0, z: crown, phase: 0 },
+      ];
+    case 'briolette':
+      // a drop: rings of triangles from the rounded end to the point, no girdle and no table
+      // the widest ring on the whole step, so the drop is the width it was asked for
+      return [
+        { scale: 0, z: -pavilion, phase: 0 },
+        { scale: 0.55, z: -pavilion * 0.78, phase: 0 },
+        { scale: 0.88, z: -pavilion * 0.42, phase: 0.5 },
+        { scale: 1, z: -pavilion * 0.05, phase: 0 },
+        { scale: 0.92, z: crown * 0.28, phase: 0.5 },
+        { scale: 0.70, z: crown * 0.56, phase: 0 },
+        { scale: 0.40, z: crown * 0.80, phase: 0.5 },
+        { scale: 0, z: crown, phase: 0 },
+      ];
+    case 'checkerboard':
+      // steps under, and over the girdle rows turned against each other to a small table
+      return [
+        { scale: 0.30, z: -pavilion, phase: 0 },
+        { scale: 0.68, z: -pavilion * 0.5, phase: 0 },
+        { scale: 1, z: -g, phase: 0 },
+        { scale: 1, z: g, phase: 0 },
+        { scale: 0.86, z: crown * 0.32, phase: 0.5 },
+        { scale: 0.68, z: crown * 0.62, phase: 0 },
+        { scale: 0.46, z: crown * 0.86, phase: 0.5 },
+        { scale: table, z: crown, phase: 0 },
       ];
     default:
       // the brilliant, and the outlines that borrow its tiers
@@ -194,47 +343,99 @@ function tiersOf(cut: GemCut, crown: number, pavilion: number, girdleT: number, 
 
 /** The widest the teardrop curve gets, so a pear comes out the width it was asked for. */
 const PEAR_PEAK = 0.7698;
+/** The widest the heart curve gets, and how far its centre sits from the cleft, so a heart comes out the size it was asked for. */
+const HEART_PEAK = 16;
+const HEART_SPAN: [number, number] = [-17, 12];
+
+/** A point on a curved outline at parameter t round it, in units of the half-width and half-length. */
+function curvePoint(kind: OutlineKind, t: number, halfL: number, halfW: number): Vec2 {
+  const c = Math.cos(t), sn = Math.sin(t);
+  switch (kind) {
+    case 'marquise':
+      // both ends drawn to a point: the exponent flattens the curve into a cusp
+      return [halfL * c, halfW * Math.sign(sn) * Math.pow(Math.abs(sn), 1.6)];
+    case 'pear':
+      // The teardrop curve: a cusp at one end and a full round shoulder at
+      // the other, widest about a third of the way back from the point,
+      // which is what separates a pear from an oval with one end pinched.
+      return [halfL * c, halfW * sn * Math.sin(t / 2) / PEAR_PEAK];
+    case 'trillion': {
+      const r = 1 / (1 + 0.24 * Math.cos(3 * t));
+      return [halfL * c * r, halfW * sn * r];
+    }
+    case 'heart': {
+      // the classic heart, its point along +x and its cleft along -x, scaled to the box asked for
+      const hx = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+      const hy = 16 * Math.pow(Math.sin(t), 3);
+      const x = ((hx - HEART_SPAN[0]) / (HEART_SPAN[1] - HEART_SPAN[0])) * 2 - 1;
+      return [x * halfL, (hy / HEART_PEAK) * halfW];
+    }
+    case 'cushion': {
+      // a superellipse: a square with its corners rounded to a pillow
+      const n = 2.7;
+      return [halfL * Math.sign(c) * Math.pow(Math.abs(c), 2 / n), halfW * Math.sign(sn) * Math.pow(Math.abs(sn), 2 / n)];
+    }
+    default:
+      return [halfL * c, halfW * sn];
+  }
+}
+
+/** The corners of a straight-sided outline, or null for a curve. */
+function polygonOutline(kind: OutlineKind, halfL: number, halfW: number, corner = 0): Vec2[] | null {
+  switch (kind) {
+    case 'rectangle': {
+      const c = Math.min(halfL, halfW) * corner;
+      if (c <= 0) return [[halfL, -halfW], [halfL, halfW], [-halfL, halfW], [-halfL, -halfW]];
+      return [
+        [halfL - c, -halfW], [halfL, -halfW + c], [halfL, halfW - c], [halfL - c, halfW],
+        [-halfL + c, halfW], [-halfL, halfW - c], [-halfL, -halfW + c], [-halfL + c, -halfW],
+      ];
+    }
+    case 'square8':
+      // a square with its sides' midpoints as corners too, so the chevrons have somewhere to meet
+      return [[halfL, 0], [halfL, halfW], [0, halfW], [-halfL, halfW], [-halfL, 0], [-halfL, -halfW], [0, -halfW], [halfL, -halfW]];
+    case 'hexagon':
+      return [[halfL, 0], [halfL / 2, halfW], [-halfL / 2, halfW], [-halfL, 0], [-halfL / 2, -halfW], [halfL / 2, -halfW]];
+    case 'kite':
+      return [[halfL, 0], [-halfL * 0.2, halfW], [-halfL, 0], [-halfL * 0.2, -halfW]];
+    case 'lozenge':
+      return [[halfL, 0], [0, halfW], [-halfL, 0], [0, -halfW]];
+    case 'shield':
+      return [[halfL, -halfW * 0.85], [halfL, halfW * 0.85], [0, halfW], [-halfL, 0], [0, -halfW]];
+    case 'halfMoon': {
+      // a chord along the width and an arc bulging to the length
+      const pts: Vec2[] = [];
+      for (let i = 0; i <= 8; i++) {
+        const t = -Math.PI / 2 + (i / 8) * Math.PI;
+        pts.push([-halfL + 2 * halfL * Math.cos(t), halfW * Math.sin(t)]);
+      }
+      return pts;
+    }
+    case 'trapezoid':
+      return [[halfL, -halfW * 0.6], [halfL, halfW * 0.6], [-halfL, halfW], [-halfL, -halfW]];
+    case 'bullet':
+      return [[halfL, 0], [halfL * 0.35, halfW], [-halfL, halfW], [-halfL, -halfW], [halfL * 0.35, -halfW]];
+    default:
+      return null;
+  }
+}
 
 /**
  * The girdle outline, sampled at `n` points, turned by `phase` steps.
  *
- * The step cuts return their corners instead and ignore both, because a
- * rectangle's facets are its corners: sampling it would round them off, and a
- * half-step phase would put a facet where the corner should be.
+ * A straight-sided outline returns its corners instead and ignores `n`,
+ * because a rectangle's facets are its corners: sampling it would round
+ * them off. A half-step phase on one takes the midpoints of its sides,
+ * which is what an antiprism band needs to meet.
  */
-function girdleOutline(cut: GemCut, n: number, halfL: number, halfW: number, phase: number): Vec2[] {
-  if (cut === 'step' || cut === 'baguette') {
-    const c = cut === 'step' ? Math.min(halfL, halfW) * 0.26 : 0;
-    if (c <= 0) return [[halfL, -halfW], [halfL, halfW], [-halfL, halfW], [-halfL, -halfW]];
-    return [
-      [halfL - c, -halfW], [halfL, -halfW + c], [halfL, halfW - c], [halfL - c, halfW],
-      [-halfL + c, halfW], [-halfL, halfW - c], [-halfL, -halfW + c], [-halfL + c, -halfW],
-    ];
+function girdleOutline(kind: OutlineKind, n: number, halfL: number, halfW: number, phase: number, corner = 0): Vec2[] {
+  const poly = polygonOutline(kind, halfL, halfW, corner);
+  if (poly) {
+    if (phase < 1e-6) return poly;
+    return poly.map((p, i) => { const q = poly[(i + 1) % poly.length]; return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2] as Vec2; });
   }
   const pts: Vec2[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = ((i + phase) / n) * Math.PI * 2;
-    const c = Math.cos(t), s = Math.sin(t);
-    switch (cut) {
-      case 'marquise':
-        // both ends drawn to a point: the exponent flattens the curve into a cusp
-        pts.push([halfL * c, halfW * Math.sign(s) * Math.pow(Math.abs(s), 1.6)]);
-        break;
-      case 'pear':
-        // The teardrop curve: a cusp at one end and a full round shoulder at
-        // the other, widest about a third of the way back from the point,
-        // which is what separates a pear from an oval with one end pinched.
-        pts.push([halfL * c, halfW * s * Math.sin(t / 2) / PEAR_PEAK]);
-        break;
-      case 'trillion': {
-        const r = 1 / (1 + 0.24 * Math.cos(3 * t));
-        pts.push([halfL * c * r, halfW * s * r]);
-        break;
-      }
-      default:
-        pts.push([halfL * c, halfW * s]);
-    }
-  }
+  for (let i = 0; i < n; i++) pts.push(curvePoint(kind, ((i + phase) / n) * Math.PI * 2, halfL, halfW));
   return pts;
 }
 
@@ -335,16 +536,15 @@ function brilliant(halfL: number, halfW: number, b: BrilliantSpec, planes: numbe
 }
 
 function faceted(
-  cut: GemCut, p: Proportions,
+  _cut: GemCut, p: Proportions,
   halfL: number, halfW: number,
   crown: number, pavilion: number, girdleT: number, table: number,
   requested: number | undefined,
   planes: number[] = [],
 ): Mesh {
-  const n = cut === 'step' || cut === 'baguette'
-    ? girdleOutline(cut, 0, halfL, halfW, 0).length
-    : Math.max(4, Math.round((requested ?? p.facets) / 2) * 2);
-  const tiers = tiersOf(cut, crown, pavilion, girdleT, table);
+  const polygon = polygonOutline(p.outline, halfL, halfW, p.corner ?? 0);
+  const n = polygon ? polygon.length : Math.max(4, Math.round((requested ?? p.facets) / 2) * 2);
+  const tiers = tiersOf(p.style, crown, pavilion, girdleT, table);
   const mb = new MeshBuilder();
 
   const minZ = tiers[0].z;
@@ -353,7 +553,7 @@ function faceted(
 
   const ringOf = (t: Tier): Vec3[] | null => {
     if (t.scale < 1e-6) return null;
-    return girdleOutline(cut, n, halfL, halfW, t.phase).map(([x, y]) => [x * t.scale, y * t.scale, t.z] as Vec3);
+    return girdleOutline(p.outline, n, halfL, halfW, t.phase, p.corner ?? 0).map(([x, y]) => [x * t.scale, y * t.scale, t.z] as Vec3);
   };
   const rings = tiers.map(ringOf);
   const record = (normal: Vec3, point: Vec3) => {
@@ -440,6 +640,19 @@ function facet(mb: MeshBuilder, pts: Vec3[], uvOf: (p: Vec3) => Vec2, outward?: 
 function radial(x: number, y: number): Vec3 {
   const l = Math.hypot(x, y);
   return l < 1e-9 ? [0, 0, 1] : [x / l, y / l, 0];
+}
+
+/** A double cabochon: a lens, domed both sides, sharp only at its equator. */
+function lens(radius: number, height: number, segments: number): Mesh {
+  const rows = 16;
+  const points: Vec2[] = [[0, -height]];
+  for (let i = 1; i < 2 * rows; i++) {
+    const a = -Math.PI / 2 + (i / (2 * rows)) * Math.PI;
+    points.push([radius * Math.cos(a), height * Math.sin(a)]);
+  }
+  points.push([0, height]);
+  const sharp = points.map((_, i) => i === rows);
+  return revolve({ points, sharp }, { segments });
 }
 
 /** A cabochon: no facets at all, a flat back under a polished dome. */
