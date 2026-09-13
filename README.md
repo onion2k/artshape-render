@@ -148,6 +148,20 @@ residency is most of what a shader costs: gating the still life's table
 reflection behind a uniform saved nothing measurable, where compiling it
 out saved five milliseconds a megapixel.
 
+## What may go in
+
+The material record and the tracer are shared by every consumer, and a
+loose stone under a gemmologist's loupe wants more of them than a ring on
+a bench. The rule that keeps one renderer serving both: a material may
+carry any measured property at a neutral default, and any tracer feature
+beyond the shared model is a permutation a consumer asks for, compiled
+out otherwise. A fluorescence, a pleochroic absorption, a calibrated body
+colour are numbers on the record that a stone without them never pays
+for; spectral fire, birefringence and the like are `RendererOptions`
+that leave the shader as it was for anyone who did not set them.
+Residency is most of what a shader costs, so a feature gated by a
+uniform rather than compiled out is not opt-in at all.
+
 ## Checking it
 
     npm test          920 tests, node
