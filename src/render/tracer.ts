@@ -119,7 +119,7 @@ struct Params {
   eps: f32,         // the step off a surface before the next ray: a fiftieth of a millimetre, in world units
   skyCount: u32,    // texels in the sky's distribution; 0 before there is one
   skySize: u32,     // the sample cube's face size
-  _r0: u32,
+  gemBounces: u32,  // what a path inside a stone may run to, past the ordinary budget
   _r1: u32,
 };
 @group(2) @binding(0) var<uniform> params: Params;
@@ -859,7 +859,7 @@ fn radiance(o0: vec3f, d0: vec3f) -> vec3f {
   // weighed against the sky's density, the other half of the same estimate
   var skySampled = false;
   var lastPdf = 0.0;
-  for (var bounce = 0u; bounce <= params.bounces; bounce++) {
+  for (var bounce = 0u; bounce <= params.gemBounces; bounce++) {
     let hit = trace(o, d, 1e6);
     if (hit.tri == 0xffffffffu && !hit.ground) {
       // the sky lights the piece and shows in it; behind the piece the raster
@@ -889,6 +889,14 @@ fn radiance(o0: vec3f, d0: vec3f) -> vec3f {
     dist += hit.t;
     if (inGem) { throughput *= exp(-gemAbsorb * hit.t); }
     let s = surfaceAt(hit, o, d, dist);
+    // The ordinary budget ends a path at anything but a stone. A path in a
+    // diamond makes three to five reflections inside before it finds a
+    // facet it can leave by, and one more for every hop off the table on
+    // the way in; cut at six, those paths were dropped, and the pavilion
+    // went dark for want of the light that would have come back through
+    // the crown. So a stone is allowed to run on to its own budget, and
+    // whatever the path lands on after it is held to the old one.
+    if (!s.gem && bounce > params.bounces) { break; }
     let v = -d;
     // the table's rim: what is not table is the page's own colour, unlit, as the raster path draws it
     if (s.fade < 1.0) {
@@ -1020,6 +1028,8 @@ export class PathTracer {
   /** Where the accumulation stops. */
   maxSamples = 1024;
   bounces = 6;
+  /** Bounces a path may take while it is inside or at a stone's surface. */
+  gemBounces = 16;
   private groundBuffer: GPUBuffer | null = null;
   private cushionView: GPUTextureView | null = null;
   /** The sky's cumulative distribution, 256 texels to a row; a single texel until a sky is given. */
@@ -1161,7 +1171,7 @@ export class PathTracer {
     f[20] = groundOn ? 1 : 0; f[21] = pixelAngle; u[22] = 0x51ed27; u[23] = this.triangleCount;
     f[24] = camera.shift[0]; f[25] = camera.shift[1];
     u[26] = this.cursor; f[27] = 0.02 / this.mmPerUnit;
-    u[28] = this.skyCount; u[29] = this.skySize;
+    u[28] = this.skyCount; u[29] = this.skySize; u[30] = Math.max(this.gemBounces, this.bounces);
     device.queue.writeBuffer(this.params, 0, p);
     const bind = device.createBindGroup({
       label: 'trace scene', layout: this.layout,
