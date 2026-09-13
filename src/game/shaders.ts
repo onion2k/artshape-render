@@ -54,13 +54,13 @@ struct Frame {
   // jewellery a few centimetres across and hopeless in an arena measured in
   // metres, where every light was a bright dot with nothing around it.
   sunColour: vec3f, falloffHalf: f32,
-  // albedo is the look's fallback, folded into each placement's own material
-  // by the CPU before it uploads; the shader reads the instance, not this. It
-  // stays in the struct because the layout is fixed at 128 bytes and
-  // lightCount's offset is not worth moving. The ambient term scales what
-  // the environment contributes, which is everything a scene is lit by
-  // before a single point light is added.
-  albedo: vec2f, ambient: f32, lightCount: f32,
+  // occlusion is how much of the screen-space occlusion the lights take, and
+  // whether there is any to read. It was the look's fallback albedo, which
+  // the CPU folds into each placement's material and the shader never read;
+  // the layout is fixed at 128 bytes and lightCount's offset is not worth
+  // moving. The ambient term scales what the environment contributes, which
+  // is everything a scene is lit by before a single point light is added.
+  occlusion: vec2f, ambient: f32, lightCount: f32,
 };
 /**
  * A light: where it is, how far it reaches, what it puts out, and — for a
@@ -109,6 +109,8 @@ struct Shadows {
 @group(0) @binding(6) var sunShadow: texture_depth_2d;
 @group(0) @binding(7) var spotShadow: texture_depth_2d_array;
 @group(0) @binding(8) var cmp: sampler_comparison;
+// the occlusion at half the frame, 1 in the open; a white texel when there is none
+@group(0) @binding(9) var occlusionMap: texture_2d<f32>;
 
 // How much of a light a surface takes as plain matte light, on top of the
 // highlight: the same quarter the point lights have always used, so that the
@@ -298,11 +300,22 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
     }
   }
 
+  // The occlusion: half the frame, so a pixel here is half a texel there. An
+  // odd frame's half is rounded up, which puts the far edge a pixel out, and
+  // the map is blurred smoother than a pixel. Level zero, as it is read
+  // under a branch.
+  var occluded = 1.0;
+  if (frame.occlusion.y > 0.5) {
+    let texel = vec2f(textureDimensions(occlusionMap)) * 2.0;
+    occluded = textureSampleLevel(occlusionMap, samp, in.pos.xy / texel, 0.0).r;
+  }
+  colour *= mix(1.0, occluded, frame.occlusion.x);
+
   // image based: one prefiltered tap and the split-sum lookup
   let r = reflect(-v, n);
   let pre = textureSampleLevel(envSpecular, samp, r, rough * frame.maxLod).rgb;
   let ab = textureSampleLevel(envBrdf, samp, vec2f(ndv, rough), 0.0).rg;
-  colour += pre * (f0 * ab.x + ab.y) * frame.ambient;
+  colour += pre * (f0 * ab.x + ab.y) * frame.ambient * occluded;
 
   return vec4f(colour * frame.exposure, 1.0);
 }

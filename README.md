@@ -142,11 +142,21 @@ opening values of the look and the fog, which `defaultLook(mmPerUnit)` and
 rather than a unit — the fog's density, the look's `spotSoftness` — scales
 the other way, and says so where it is declared.
 
+**Occlusion is the still life's contact shadow, run for a game.** Set the
+look's `occlusion` above nothing and each frame gains a depth pass of
+everything, the occlusion from that depth at half the frame, and a blur that
+stops at edges; the scene darkens its ambient term by all of it and its
+lights by `occlusionDirect` of it. `occlusionRadius` is the size of gap it
+darkens, in world units. The `occlusion` rung gives up the three passes.
+
 Everything the ladder can give up is a shader permutation rather than a
 uniform. A branch the compiler cannot fold leaves the code resident, and
 residency is most of what a shader costs: gating the still life's table
 reflection behind a uniform saved nothing measurable, where compiling it
-out saved five milliseconds a megapixel.
+out saved five milliseconds a megapixel. The one exception is the occlusion's
+read in the scene shader: a single texture tap under a uniform, because the
+cost of occlusion is its passes, which the rung does skip, and a
+permutation for one tap would double the scene pipelines compiled at load.
 
 ## What may go in
 

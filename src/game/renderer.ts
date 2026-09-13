@@ -30,6 +30,7 @@ import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
+import { ContactOcclusion } from '../render/ao';
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -141,6 +142,30 @@ export interface Look {
    */
   spotSoftness: number;
   /**
+   * Screen-space ambient occlusion: how dark a crease, a corner or the
+   * ground under a thing goes. 1 is the still-life renderer's contact
+   * shadow, which is a fifth dark at a right-angled corner once blurred;
+   * past 1 is a heavier hand, which a game seen from across a room wants,
+   * and the result is held at black. Nothing is no occlusion and none of
+   * its passes: a depth pass of everything, the occlusion from that depth
+   * at half the frame, and a blur that stops at edges. It darkens the
+   * ambient term fully and the lights by `occlusionDirect` of it, so it is
+   * worth most where the ambient is doing real work.
+   */
+  occlusion: number;
+  /**
+   * How far a surface looks for what shades it, in world units: about the
+   * size of the gaps it should darken. The occlusion pass holds it to 48
+   * of its half-size pixels on screen, so it stays a contact shadow up close.
+   */
+  occlusionRadius: number;
+  /**
+   * How much of the occlusion the direct light takes, 0 to 1. Nothing is
+   * the physical answer — occlusion is of the sky, not of a lamp — and a
+   * little is a look: the grime in the corners that a lit room still has.
+   */
+  occlusionDirect: number;
+  /**
    * What the frame clears to, before tonemapping. The environment lights the
    * material but is never drawn, so this is the whole of the sky the camera
    * sees past the arena's edge.
@@ -162,6 +187,10 @@ export const DEFAULT_LOOK: Look = {
   falloffHalf: 50,
   ambient: 1,
   spotSoftness: 0,
+  occlusion: 0,
+  // a hand's width: the gap under a thing and the corner where two meet
+  occlusionRadius: 300,
+  occlusionDirect: 0.25,
   background: [0.02, 0.02, 0.024],
 };
 
@@ -174,6 +203,7 @@ export function defaultLook(mmPerUnit = 1): Look {
   return {
     ...DEFAULT_LOOK,
     falloffHalf: DEFAULT_LOOK.falloffHalf / mmPerUnit,
+    occlusionRadius: DEFAULT_LOOK.occlusionRadius / mmPerUnit,
     spotSoftness: DEFAULT_LOOK.spotSoftness * mmPerUnit,
   };
 }
@@ -188,6 +218,8 @@ export interface GameEconomy extends SceneVariant {
   post?: boolean;
   /** Whether the fog is marched. Off, there is none, whatever its density says. */
   fog?: boolean;
+  /** Whether the occlusion is drawn. Off, there is none, whatever the look's strength says. */
+  occlusion?: boolean;
 }
 
 /**
@@ -206,7 +238,7 @@ export interface Post {
 
 export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
 
-export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true, fog: true };
+export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true, fog: true, occlusion: true };
 
 interface Uploaded {
   position: GPUBuffer;
@@ -265,6 +297,18 @@ export class GameRenderer {
   private fogBind: GPUBindGroup | null = null;
   private fogBlendBind: GPUBindGroup | null = null;
   private sceneBind: GPUBindGroup | null = null;
+  /** What the scene bind group was last made from, to make it again when the occlusion's texture is. */
+  private environment: { specular: GPUTexture; brdf: GPUTexture } | null = null;
+  /**
+   * The occlusion: its passes, the depth-only pipeline that draws everything
+   * into its depth at render resolution, the camera matrix that pass reads,
+   * and a white texel the scene reads in its place when there is none.
+   */
+  private occlusion: ContactOcclusion;
+  private occlusionDepthPipeline!: GPURenderPipeline;
+  private occlusionPassBuffer: GPUBuffer;
+  private occlusionPassBind: GPUBindGroup;
+  private noOcclusion: GPUTexture;
   private effectBind: GPUBindGroup | null = null;
   private compositeBind: GPUBindGroup | null = null;
 
@@ -375,6 +419,11 @@ export class GameRenderer {
       this.passBuffers.push(b);
       this.passBinds.push(device.createBindGroup({ label: `shadow pass ${i}`, layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: b } }] }));
     }
+    this.occlusion = new ContactOcclusion(ctx, DEPTH);
+    this.occlusionPassBuffer = device.createBuffer({ label: 'occlusion depth pass', size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.occlusionPassBind = device.createBindGroup({ label: 'occlusion depth pass', layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: this.occlusionPassBuffer } }] });
+    this.noOcclusion = device.createTexture({ label: 'no occlusion', size: [1, 1], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.noOcclusion }, new Uint8Array([255]), {}, [1, 1]);
 
     this.sceneLayout = device.createBindGroupLayout({
       label: 'game scene',
@@ -388,6 +437,7 @@ export class GameRenderer {
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
       ],
     });
     this.effectLayout = device.createBindGroupLayout({
@@ -500,6 +550,22 @@ export class GameRenderer {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: SHADOW, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2 },
     }).then((p) => { this.depthPipeline = p; }));
+    // the same pass for the occlusion, into the frame's depth format and with
+    // no bias: this depth is looked at, not compared against
+    waits.push(device.createRenderPipelineAsync({
+      label: 'occlusion depth',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.depthLayout] }),
+      vertex: {
+        module: dp, entryPoint: 'vsMain',
+        buffers: [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+          instance,
+        ],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
+    }).then((p) => { this.occlusionDepthPipeline = p; }));
+    waits.push(this.occlusion.ready);
 
     const fx = shader(device, EFFECT_WGSL, 'game effects');
     const additive: GPUBlendState = {
@@ -577,6 +643,22 @@ export class GameRenderer {
   /** The environment the material reads: a prefiltered cube and the split-sum lookup. */
   setEnvironment(specular: GPUTexture, brdf: GPUTexture, mips: number) {
     this.maxLod = mips - 1;
+    this.environment = { specular, brdf };
+    this.bindScene();
+    this.effectBind = this.ctx.device.createBindGroup({
+      label: 'game effects',
+      layout: this.effectLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.effectBuffer } },
+        { binding: 1, resource: { buffer: this.quadBuffer } },
+      ],
+    });
+  }
+
+  /** The scene's bind group: made with the environment, and again whenever the occlusion's texture is. */
+  private bindScene() {
+    if (!this.environment) return;
+    const { specular, brdf } = this.environment;
     this.sceneBind = this.ctx.device.createBindGroup({
       label: 'game scene',
       layout: this.sceneLayout,
@@ -590,14 +672,7 @@ export class GameRenderer {
         { binding: 6, resource: this.sunMap.createView() },
         { binding: 7, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
         { binding: 8, resource: this.shadowSampler },
-      ],
-    });
-    this.effectBind = this.ctx.device.createBindGroup({
-      label: 'game effects',
-      layout: this.effectLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.effectBuffer } },
-        { binding: 1, resource: { buffer: this.quadBuffer } },
+        { binding: 9, resource: this.occlusion.view ?? this.noOcclusion.createView() },
       ],
     });
   }
@@ -882,6 +957,8 @@ export class GameRenderer {
         { binding: 2, resource: { buffer: this.blurV } },
       ],
     });
+    this.occlusion.resize(width, height);
+    this.bindScene();
     this.compositeBind = device.createBindGroup({
       label: 'game composite', layout: this.compositeLayout,
       entries: [
@@ -901,10 +978,17 @@ export class GameRenderer {
     f.set(this.camera.position, 16); f[19] = this.look.exposure;
     f.set(this.look.sunDir, 20); f[23] = this.maxLod;
     f.set(this.look.sunColour, 24); f[27] = this.look.falloffHalf;
-    f[28] = this.look.albedo[0]; f[29] = this.look.albedo[1];
+    // what used to be the fallback albedo, which the shader never read: how
+    // much of the occlusion the lights take, and whether there is any to read
+    f[28] = Math.max(0, Math.min(1, this.look.occlusionDirect));
+    f[29] = this.occlusionOn ? 1 : 0;
     f[30] = this.look.ambient;
     f[31] = this.economy.points === false ? 0 : this.lightCount;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
+  }
+
+  private get occlusionOn(): boolean {
+    return this.economy.occlusion !== false && this.look.occlusion > 0 && !!this.occlusionDepthPipeline;
   }
 
   private get clearValue(): GPUColor {
@@ -967,6 +1051,32 @@ export class GameRenderer {
         const view = this.spotMaps.createView({ dimension: '2d', baseArrayLayer: i, arrayLayerCount: 1 });
         this.renderShadow(encoder, view, 1 + i, `spot shadow ${i}`);
       }
+    }
+
+    // The occlusion, before the scene pass that reads it: everything's depth
+    // from the camera, static and dynamic alike whatever the mode, and the
+    // occlusion worked out from that.
+    if (this.occlusionOn && this.occlusion.depthView) {
+      device.queue.writeBuffer(this.occlusionPassBuffer, 0, this.camera.viewProjection as Float32Array<ArrayBuffer>);
+      const prepass = encoder.beginRenderPass({
+        label: 'occlusion depth',
+        colorAttachments: [],
+        depthStencilAttachment: { view: this.occlusion.depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
+      });
+      prepass.setPipeline(this.occlusionDepthPipeline);
+      prepass.setBindGroup(0, this.occlusionPassBind);
+      for (const g of [...this.staticGroups, ...this.dynamicGroups]) {
+        if (!g.count) continue;
+        prepass.setVertexBuffer(0, g.position);
+        prepass.setVertexBuffer(1, g.instance);
+        prepass.setIndexBuffer(g.index, 'uint32');
+        prepass.drawIndexed(g.indexCount, g.count);
+      }
+      prepass.end();
+      this.occlusion.radius = this.look.occlusionRadius;
+      this.occlusion.strength = this.look.occlusion;
+      const { camera } = this;
+      this.occlusion.run(encoder, { fovY: (camera.fov * Math.PI) / 180, aspect: camera.aspect, near: camera.near, far: camera.far, shift: camera.shift });
     }
 
     if (mode === 'keep') {
@@ -1107,5 +1217,8 @@ export class GameRenderer {
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB, this.fogMap]) t?.destroy();
     for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, this.coneBuffer, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
+    this.occlusion.dispose();
+    this.noOcclusion.destroy();
+    this.occlusionPassBuffer.destroy();
   }
 }
