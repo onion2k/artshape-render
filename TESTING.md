@@ -76,6 +76,20 @@ of the full bake — it failed about half of full runs and never alone.
   the kept static frame matches redrawing it, and that a group can be
   moved and its live count changed without rebuilding it.
 
+  And what the frame holds before the tone map (`overflow.gpu.test.ts`):
+  it is half floats, which have nothing past 65504, and a mirror-smooth
+  face at the mirror angle to a bright lamp asks for a hundred times that.
+  An Apple GPU holds such a write at the top; a Direct3D one writes
+  infinity, which the bright pass turns into not-a-number, the blur
+  spreads, and the tone map shows as a black hole the size of the bloom.
+  So no Mac will ever show it, and the test is in two halves that any
+  machine can run: the scene never asks the frame for as much as it can
+  hold, however bright the lamp; and the bright pass and the composite,
+  handed a texture with infinity and not-a-number written into it, give
+  back numbers everywhere, infinity shown white, and neither spread.
+  `shaders.test.ts` holds every stage that writes or reads the frame to
+  going through `finite`, so a stage added later cannot forget.
+
   These are pixel checks rather than timings, deliberately. Six separate
   faults in the spike that produced this renderer's design had no symptom
   except a plausible number, and every one was caught by rendering it and

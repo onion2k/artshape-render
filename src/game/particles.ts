@@ -21,6 +21,7 @@
  */
 import { emptyBuffer, shader, type Gpu } from '../gpu/context';
 import type { Camera } from '../gpu/camera';
+import { FINITE_WGSL } from './shaders';
 
 /** Floats a particle: position and age, velocity and life, colour and
  *  alpha, then size, growth, floor and gravity. Four vec4s. */
@@ -149,7 +150,7 @@ fn unitDir(a: f32, b: f32) -> vec3f {
 
 `;
 
-const DRAW_WGSL = STRUCTS + `
+export const DRAW_WGSL = STRUCTS + FINITE_WGSL + `
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 
@@ -187,13 +188,15 @@ struct VsOut {
 
 @fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
   let r = length(in.uv);
-  let soft = smoothstep(1.0, 0.3, r) * in.fade;
+  // one less the step up: the same curve as a step from one down to 0.3,
+  // which with its edges that way round is whatever the compiler makes of it
+  let soft = (1.0 - smoothstep(0.3, 1.0, r)) * in.fade;
   if (in.alpha <= 0.0) {
     // additive: colour on, nothing hidden
-    return vec4f(in.colour * soft, 0.0);
+    return vec4f(finite(in.colour * soft), 0.0);
   }
   let a = soft * in.alpha;
-  return vec4f(in.colour * a, a);
+  return vec4f(finite(in.colour * a), a);
 }
 `;
 

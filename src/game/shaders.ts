@@ -43,7 +43,33 @@ export interface SceneVariant {
 /** How many spotlights may carry a shadow map at once. */
 export const SPOT_SHADOWS = 16;
 
-const SCENE = `
+/**
+ * The most any stage writes to the frame, and what every stage that writes
+ * or reads the frame is held by. The frame is half floats, which have
+ * nothing past 65504, and a mirror-smooth face at the mirror angle to a
+ * bright lamp asks for a hundred times that: the highlight's peak goes with
+ * the inverse fourth power of the roughness. What a GPU does with a write
+ * past the top is its own business. An Apple one holds it at the top. A
+ * Direct3D one writes infinity, the bright pass divides that by itself and
+ * has not-a-number, the blur spreads it over its kernel, and the tone map
+ * makes black of it: a hole the size of the bloom wherever something shiny
+ * caught a lamp, on Windows and nowhere else.
+ *
+ * So what is written is held just under the top, which is what the Apple
+ * GPU was doing by itself and is the look the pictures were taken with; and
+ * what is read is held again, because additive layers sum in the blend,
+ * where no shader can reach, and can still get there. The max comes first:
+ * a GPU's max gives back whichever operand is a number, so not-a-number is
+ * nothing after it, and the min then has only infinity left to deal with.
+ */
+export const FINITE_WGSL = `
+const HDR_MAX: f32 = 60000.0;
+fn finite(c: vec3f) -> vec3f {
+  return min(max(c, vec3f(0.0)), vec3f(HDR_MAX));
+}
+`;
+
+const SCENE = FINITE_WGSL + `
 struct Frame {
   viewProj: mat4x4f,
   camPos: vec3f, exposure: f32,
@@ -317,7 +343,7 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let ab = textureSampleLevel(envBrdf, samp, vec2f(ndv, rough), 0.0).rg;
   colour += pre * (f0 * ab.x + ab.y) * frame.ambient * occluded;
 
-  return vec4f(colour * frame.exposure, 1.0);
+  return vec4f(finite(colour * frame.exposure), 1.0);
 }
 `;
 
@@ -351,7 +377,7 @@ export const DEPTH_WGSL = `
  * shader doing the material's work — so effects get their own stage, and it
  * is worth about three times its own weight.
  */
-export const EFFECT_WGSL = `
+export const EFFECT_WGSL = FINITE_WGSL + `
 /**
  * A global tint over the whole batch, for a ladder that wants to fade them,
  * and the viewport's aspect — a quad square in clip space is an ellipse on a
@@ -391,9 +417,12 @@ struct Out {
 }
 
 @fragment fn fsMain(in: Out) -> @location(0) vec4f {
-  // sharp = 1 is the plain fade; higher pulls the light into a hot core
-  let a = pow(smoothstep(1.0, 0.0, length(in.uv)), in.sharp);
-  let c = fx.tint * in.tint * a;
+  // sharp = 1 is the plain fade; higher pulls the light into a hot core.
+  // One less the step up, not a step from one down to nought: the same
+  // curve, and a smoothstep with its edges the wrong way round is whatever
+  // the compiler makes of it.
+  let a = pow(1.0 - smoothstep(0.0, 1.0, length(in.uv)), in.sharp);
+  let c = finite(fx.tint * in.tint * a);
   return vec4f(c, a);
 }
 `;
@@ -436,7 +465,7 @@ const POST_STRUCT = `
 struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32 };
 `;
 
-export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + `
+export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + `
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> post: Post;
@@ -445,10 +474,12 @@ export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + `
   // four bilinear taps a half-texel out from the middle of the quarter-size
   // pixel: a 4x4 box of the source for four fetches
   let t = vec2f(post.texelX, post.texelY);
-  var c = textureSample(src, samp, in.uv + vec2f(-1.0, -1.0) * t).rgb;
-  c += textureSample(src, samp, in.uv + vec2f(1.0, -1.0) * t).rgb;
-  c += textureSample(src, samp, in.uv + vec2f(-1.0, 1.0) * t).rgb;
-  c += textureSample(src, samp, in.uv + vec2f(1.0, 1.0) * t).rgb;
+  // each held as it is read: one tap of infinity would otherwise be the
+  // whole sum, and the weight below is infinity over infinity
+  var c = finite(textureSample(src, samp, in.uv + vec2f(-1.0, -1.0) * t).rgb);
+  c += finite(textureSample(src, samp, in.uv + vec2f(1.0, -1.0) * t).rgb);
+  c += finite(textureSample(src, samp, in.uv + vec2f(-1.0, 1.0) * t).rgb);
+  c += finite(textureSample(src, samp, in.uv + vec2f(1.0, 1.0) * t).rgb);
   c *= 0.25;
   // a soft knee under the threshold, so a light does not switch on its bloom
   // as it crosses a line
@@ -499,7 +530,7 @@ struct Blur { dir: vec2f, texel: vec2f };
  * exactly what a `one`/`src-alpha` blend wants: the frame is multiplied by
  * what got through and the scattered light is added on top.
  */
-export const FOG_WGSL = POST_VERT + `
+export const FOG_WGSL = POST_VERT + FINITE_WGSL + `
 const CONE_SLOTS: u32 = ${SPOT_SHADOWS}u;
 /**
  * How many lamps one ray may carry through its march.
@@ -705,7 +736,7 @@ fn dither(p: vec3f) -> f32 {
       through *= 1.0 - taken;
     }
   }
-  return vec4f(scattered, through);
+  return vec4f(finite(scattered), through);
 }
 `;
 
@@ -719,7 +750,7 @@ export const FOG_BLEND_WGSL = POST_VERT + `
 `;
 
 /** Tonemap one source to the canvas, with the bloom, the vignette and the grain. */
-export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + `
+export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + `
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var bloom: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
@@ -731,8 +762,11 @@ fn hash(p: vec2f) -> f32 {
 }
 
 @fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
-  var c = textureLoad(src, vec2i(in.pos.xy), 0).rgb;
-  c += textureSample(bloom, samp, in.uv).rgb * post.bloom;
+  // held before the tone map: infinity over infinity and one is not a
+  // number, and showed as black where it should have been the whitest thing
+  // in the frame
+  var c = finite(textureLoad(src, vec2i(in.pos.xy), 0).rgb);
+  c += finite(textureSample(bloom, samp, in.uv).rgb) * post.bloom;
   var m = c / (c + vec3f(1.0));
   // the corners: the distance from the middle, over the half-diagonal, so a
   // corner is one whatever the frame's shape

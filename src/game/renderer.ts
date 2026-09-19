@@ -884,6 +884,17 @@ export class GameRenderer {
     this.ctx.device.queue.writeBuffer(this.effectBuffer, 0, this.effectUniform);
   }
 
+  /**
+   * The frame before the tone map, and the bloom thrown from it, for a test
+   * or a capture to read back: half floats both, and what the composite is
+   * handed. A half float holds nothing past 65504, and what is written past
+   * it is infinity, which the blur then spreads; so what is in these is worth
+   * being able to look at. Null before the first `resize`.
+   */
+  get hdr(): { colour: GPUTexture | null; bloom: GPUTexture | null } {
+    return { colour: this.colour, bloom: this.bloomA };
+  }
+
   resize(width: number, height: number) {
     width = Math.max(1, Math.floor(width));
     height = Math.max(1, Math.floor(height));
@@ -895,7 +906,8 @@ export class GameRenderer {
     const { device } = this.ctx;
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth]) t?.destroy();
     const both = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
-    this.colour = device.createTexture({ label: 'game colour', size: [width, height], format: HDR, usage: both | GPUTextureUsage.COPY_DST });
+    // COPY_SRC so the frame before the tone map can be read back: see `hdr`
+    this.colour = device.createTexture({ label: 'game colour', size: [width, height], format: HDR, usage: both | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
     // TEXTURE_BINDING because the fog reads it: a march has to know where
     // the scene stopped it
     this.depth = device.createTexture({ label: 'game depth', size: [width, height], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING });
@@ -929,7 +941,7 @@ export class GameRenderer {
     // group that reads the frame or them: remade with the frame.
     for (const t of [this.bloomA, this.bloomB]) t?.destroy();
     const bw = Math.max(1, Math.ceil(width / 4)), bh = Math.max(1, Math.ceil(height / 4));
-    this.bloomA = device.createTexture({ label: 'bloom a', size: [bw, bh], format: HDR, usage: both });
+    this.bloomA = device.createTexture({ label: 'bloom a', size: [bw, bh], format: HDR, usage: both | GPUTextureUsage.COPY_SRC });
     this.bloomB = device.createTexture({ label: 'bloom b', size: [bw, bh], format: HDR, usage: both });
     device.queue.writeBuffer(this.blurH, 0, new Float32Array([1, 0, 1 / bw, 1 / bh]));
     device.queue.writeBuffer(this.blurV, 0, new Float32Array([0, 1, 1 / bw, 1 / bh]));
