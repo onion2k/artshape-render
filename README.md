@@ -130,6 +130,12 @@ What the measurements settled, so nobody has to re-argue it:
 - **`'keep'` holds the static half's colour and depth** rather than
   redrawing it — worth almost all of a heavy arena's cost, and worth
   nothing if the lights that reach it move, because then it is stale.
+- **A pattern is a permutation, not a branch.** A group given `patterns`,
+  eight floats a placement (`PATTERN_STRIDE`: kind, scale, seed, then a
+  second colour), draws through a build of the scene shader with the pattern
+  code in it — a swirl, bands, marbling or speckle, mixed into the albedo
+  from where on the thing a fragment is, so it turns with the thing — and
+  every other group through a build without it, which pays nothing.
 
 **A world unit is the game's to choose.** `new GameRenderer(gpu, lights,
 effects, particles, mmPerUnit)` says how many millimetres one of them is, and

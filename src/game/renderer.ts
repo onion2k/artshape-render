@@ -86,7 +86,19 @@ export interface GameGroup {
   albedo?: [number, number, number];
   /** The whole group's roughness. 0 is a mirror, 1 is chalk. */
   roughness?: number;
+  /**
+   * A pattern per placement, `PATTERN_STRIDE` floats each: its kind (1 a
+   * swirl, 2 bands, 3 marbling, 4 speckle, 0 none), how many times over the
+   * thing's own units it repeats, a seed from 0 to 1 that shifts it, a spare,
+   * and then the second colour it mixes in and a spare. Drawn from where on
+   * the thing a fragment is, so it turns with the thing. Left out, the group
+   * draws through a shader with no pattern code in it at all.
+   */
+  patterns?: Float32Array;
 }
+
+/** Eight floats a placement's pattern: kind, scale, seed and a spare, then the second colour and a spare. */
+export const PATTERN_STRIDE = 8;
 
 /** Four floats a placement: colour and roughness, as the shader reads them. */
 export const MATERIAL_STRIDE = 4;
@@ -246,6 +258,10 @@ interface Uploaded {
   index: GPUBuffer;
   instance: GPUBuffer;
   material: GPUBuffer;
+  /** Every placement's pattern, all nought where the group has none, since every build of the shader reads it. */
+  pattern: GPUBuffer;
+  /** Whether the group has patterns, and draws through the build with the pattern code in it. */
+  patterned: boolean;
   indexCount: number;
   capacity: number;
   count: number;
@@ -503,13 +519,22 @@ export class GameRenderer {
       arrayStride: 16, stepMode: 'instance',
       attributes: [{ shaderLocation: 8, offset: 0, format: 'float32x4' as GPUVertexFormat }],
     };
-    // Every permutation is built up front. There are four, they compile in
-    // parallel with each other, and a ladder that had to wait for a compile
-    // before it could step would step too late to matter.
+    const pattern: GPUVertexBufferLayout = {
+      arrayStride: PATTERN_STRIDE * 4, stepMode: 'instance',
+      attributes: [
+        { shaderLocation: 9, offset: 0, format: 'float32x4' as GPUVertexFormat },
+        { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
+      ],
+    };
+    // Every permutation is built up front, each with and without patterns.
+    // They compile in parallel with each other, and a ladder that had to wait
+    // for a compile before it could step would step too late to matter.
     const variants: SceneVariant[] = [];
-    for (const shadows of [true, false]) {
-      for (const points of [true, false]) {
-        for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows });
+    for (const patterned of [false, true]) {
+      for (const shadows of [true, false]) {
+        for (const points of [true, false]) {
+          for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows, patterned });
+        }
       }
     }
     const waits: Promise<unknown>[] = variants.map((v) => {
@@ -524,6 +549,7 @@ export class GameRenderer {
             { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
             instance,
             material,
+            pattern,
           ],
         },
         fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
@@ -637,7 +663,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}`;
   }
 
   /** The environment the material reads: a prefiltered cube and the split-sum lookup. */
@@ -691,12 +717,23 @@ export class GameRenderer {
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
       device.queue.writeBuffer(material, 0, this.materialsFor(g, capacity));
+      const pattern = device.createBuffer({
+        label: 'patterns', size: Math.max(PATTERN_STRIDE * 4, capacity * PATTERN_STRIDE * 4),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      if (g.patterns) {
+        const out = new Float32Array(Math.max(PATTERN_STRIDE, capacity * PATTERN_STRIDE));
+        out.set(g.patterns.subarray(0, out.length));
+        device.queue.writeBuffer(pattern, 0, out);
+      }
       return {
         position: bufferFrom(device, g.mesh.positions, GPUBufferUsage.VERTEX, 'positions'),
         normal: bufferFrom(device, g.mesh.normals, GPUBufferUsage.VERTEX, 'normals'),
         index: bufferFrom(device, g.mesh.indices, GPUBufferUsage.INDEX, 'indices'),
         instance,
         material,
+        pattern,
+        patterned: !!g.patterns,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -721,7 +758,7 @@ export class GameRenderer {
   private static release(groups: Uploaded[]) {
     for (const g of groups) {
       g.position.destroy(); g.normal.destroy(); g.index.destroy();
-      g.instance.destroy(); g.material.destroy();
+      g.instance.destroy(); g.material.destroy(); g.pattern.destroy();
     }
   }
 
@@ -1008,21 +1045,29 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private get scenePipeline() {
-    return this.scenePipelines.get(GameRenderer.key(this.economy));
+  private scenePipeline(patterned: boolean) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned }));
   }
 
   private draw(pass: GPURenderPassEncoder, groups: Uploaded[]) {
-    const pipeline = this.scenePipeline;
-    if (!pipeline || !this.sceneBind) return;
-    pass.setPipeline(pipeline);
+    const plain = this.scenePipeline(false);
+    const patterned = this.scenePipeline(true);
+    if (!plain || !patterned || !this.sceneBind) return;
     pass.setBindGroup(0, this.sceneBind);
+    // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
+    let on: GPURenderPipeline | null = null;
     for (const g of groups) {
       if (!g.count) continue;
+      const want = g.patterned ? patterned : plain;
+      if (want !== on) {
+        pass.setPipeline(want);
+        on = want;
+      }
       pass.setVertexBuffer(0, g.position);
       pass.setVertexBuffer(1, g.normal);
       pass.setVertexBuffer(2, g.instance);
       pass.setVertexBuffer(3, g.material);
+      pass.setVertexBuffer(4, g.pattern);
       pass.setIndexBuffer(g.index, 'uint32');
       pass.drawIndexed(g.indexCount, g.count);
     }

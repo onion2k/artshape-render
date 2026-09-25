@@ -38,6 +38,14 @@ export interface SceneVariant {
    * its diffuse term either way.
    */
   shadows?: boolean;
+  /**
+   * Whether the pattern code is built in: a placement's pattern — its kind,
+   * scale and seed, and a second colour — mixed into its albedo, from where
+   * the fragment is on the thing itself, so a pattern turns with what it is
+   * on. A group with no patterns draws through a build without it, so the
+   * field noise it costs is paid only where a pattern is.
+   */
+  patterned?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -194,6 +202,10 @@ struct VsOut {
   @location(1) normal: vec3f,
   @location(2) albedo: vec3f,
   @location(3) roughness: f32,
+  // where on the thing itself, before it is placed: what a pattern is drawn from, so it turns with the thing
+  @location(4) local: vec3f,
+  @location(5) @interpolate(flat) pattern: vec4f,
+  @location(6) @interpolate(flat) second: vec3f,
 };
 
 @vertex fn vsMain(
@@ -203,6 +215,8 @@ struct VsOut {
   // moving a thing and recolouring it are separate writes: a game moves
   // everything every frame and recolours a few things occasionally
   @location(8) material: vec4f,
+  // the placement's pattern, kind, scale and seed, and its second colour: all nought where it has none
+  @location(9) pattern: vec4f, @location(10) second: vec4f,
 ) -> VsOut {
   let model = mat4x4f(m0, m1, m2, m3);
   let world = model * vec4f(position, 1.0);
@@ -212,7 +226,52 @@ struct VsOut {
   out.normal = (model * vec4f(normal, 0.0)).xyz;
   out.albedo = material.rgb;
   out.roughness = material.a;
+  out.local = position;
+  out.pattern = pattern;
+  out.second = second.rgb;
   return out;
+}
+
+fn cellHash(c: vec3f) -> f32 {
+  return fract(sin(dot(c, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+/** Value noise, smooth between the corners of a unit lattice: 0 to 1. */
+fn valueNoise(p: vec3f) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = mix(mix(cellHash(i), cellHash(i + vec3f(1.0, 0.0, 0.0)), u.x),
+              mix(cellHash(i + vec3f(0.0, 1.0, 0.0)), cellHash(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y);
+  let b = mix(mix(cellHash(i + vec3f(0.0, 0.0, 1.0)), cellHash(i + vec3f(1.0, 0.0, 1.0)), u.x),
+              mix(cellHash(i + vec3f(0.0, 1.0, 1.0)), cellHash(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y);
+  return mix(a, b, u.z);
+}
+
+/**
+ * How much of a pattern's second colour shows at \`local\`: 0 to 1. Kind 1 is
+ * a swirl, stripes that twist round the axis as a cat's-eye's do; 2 is bands
+ * round the middle; 3 is marbling, thin veins through a turbulence; 4 is
+ * speckle. Every kind is worked out and one chosen, and its edge softened by
+ * how fast it changes across the pixel, since a derivative is only defined in
+ * uniform control flow and a branch on the kind is not: an edge a pixel wide
+ * is what keeps a small ball from shimmering.
+ */
+fn patternMix(local: vec3f, pattern: vec4f) -> f32 {
+  let kind = pattern.x;
+  let p = local * pattern.y + vec3f(pattern.z * 7.13, pattern.z * 3.71, pattern.z * 5.29);
+  let q = local * pattern.y;
+  let swirl = sin(atan2(q.y, q.x) * 3.0 + q.z * 4.0 + pattern.z * 6.2831853);
+  let bands = sin(q.z * 7.0 + pattern.z * 6.2831853);
+  let turb = valueNoise(p * 2.0) * 0.6 + valueNoise(p * 4.0) * 0.3 + valueNoise(p * 8.0) * 0.1;
+  let veins = 0.3 - abs(sin((q.x + q.y * 0.6) * 3.0 + turb * 7.0));
+  let speckle = valueNoise(p * 9.0) - 0.68;
+  var field = select(0.0, swirl, kind > 0.5 && kind < 1.5);
+  field = select(field, bands, kind > 1.5 && kind < 2.5);
+  field = select(field, veins, kind > 2.5 && kind < 3.5);
+  field = select(field, speckle, kind > 3.5);
+  let w = max(fwidth(field), 1e-4);
+  return select(0.0, smoothstep(-w, w, field), kind > 0.5);
 }
 
 fn fresnel(f0: vec3f, cosine: f32) -> vec3f {
@@ -237,7 +296,11 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   // a roughness of zero is a mirror with no width to its highlight, which
   // sparkles into aliasing; 0.03 is as sharp as is worth drawing
   let rough = clamp(in.roughness, 0.03, 1.0);
-  let f0 = in.albedo;
+  // a pattern mixes the placement's second colour into its first, in the build that has patterns at all
+  var f0 = in.albedo;
+  if (PATTERNED) {
+    f0 = mix(f0, in.second, patternMix(in.local, in.pattern));
+  }
   let a = rough * rough;
   let a2 = a * a;
   let k = a * 0.5;
@@ -347,9 +410,9 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
 }
 `;
 
-export function sceneSource({ cullLights = true, points = true, shadows = true }: SceneVariant = {}): string {
+export function sceneSource({ cullLights = true, points = true, shadows = true, patterned = false }: SceneVariant = {}): string {
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
-    + `const SHADOWS: bool = ${shadows};\nconst SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
+    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
 }
 
 /**

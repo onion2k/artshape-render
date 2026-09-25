@@ -42,6 +42,15 @@ describe('the scene shader is a permutation of itself', () => {
     }
   });
 
+  it('builds the patterns in only where a group has them, by a constant and not a branch on a uniform', () => {
+    // a pattern is per placement, so its kind is read from the placement; but whether the pattern code is there at
+    // all is the permutation's, so a group with none draws through a shader with none, and pays nothing for it
+    expect(sceneSource()).toContain('const PATTERNED: bool = false;');
+    expect(sceneSource({ patterned: true })).toContain('const PATTERNED: bool = true;');
+    const body = (s: string) => s.slice(s.indexOf('struct Frame'));
+    expect(body(sceneSource({ patterned: true }))).toBe(body(sceneSource()));
+  });
+
   it('folds the shadow lookups to a constant when the ladder gives them up', () => {
     expect(sceneSource({ shadows: false })).toContain('const SHADOWS: bool = false;');
     expect(sceneSource()).toContain('const SHADOWS: bool = true;');
