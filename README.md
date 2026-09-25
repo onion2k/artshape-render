@@ -136,6 +136,14 @@ What the measurements settled, so nobody has to re-argue it:
   code in it — a swirl, bands, marbling or speckle, mixed into the albedo
   from where on the thing a fragment is, so it turns with the thing — and
   every other group through a build without it, which pays nothing.
+- **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
+  group through a permutation that lights a surface in three flat bands at
+  its own colour and tints the sky's light by it, where the physically
+  based shading takes a quarter of the colour and adds the sky's light grey
+  over it; and `post.tone = 'clamp'` shows the frame straight, held at
+  white, where the filmic curve holds a bright colour short of white and
+  pulls it toward grey. Together they are a bright, flat, saturated world.
+  Left out, both are what they always were, to the pixel.
 - **Sprites are particles the game places.** `setSprites(data, count)`,
   eight floats each (`SPRITE_STRIDE`: position and size, colour and alpha),
   draws soft camera-facing puffs where the game says, every frame, with the

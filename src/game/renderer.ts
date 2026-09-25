@@ -114,6 +114,11 @@ export type FrameMode =
   | 'keep';
 
 export interface Look {
+  /**
+   * How surfaces are shaded: physically based, as a real surface is, or toon,
+   * in a few flat bands at their own colour. Left out, physically based.
+   */
+  shading?: 'pbr' | 'toon';
   /** What a group that names no colour of its own is given. */
   albedo: [number, number, number];
   /** What a group that names no roughness of its own is given. */
@@ -246,6 +251,12 @@ export interface Post {
   knee: number;
   vignette: number;
   grain: number;
+  /**
+   * How the frame is brought to the screen: the filmic curve, which holds a
+   * bright colour short of white, or straight, held at white, for a toon
+   * world's chosen colours. Left out, filmic.
+   */
+  tone?: 'filmic' | 'clamp';
 }
 
 export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
@@ -285,7 +296,7 @@ export class GameRenderer {
   private bright!: GPURenderPipeline;
   private blur!: GPURenderPipeline;
   private postBuffer: GPUBuffer;
-  private postData = new Float32Array(8);
+  private postData = new Float32Array(12);
   private blurH: GPUBuffer;
   private blurV: GPUBuffer;
   private postSampler: GPUSampler;
@@ -501,7 +512,7 @@ export class GameRenderer {
     });
     this.fogBuffer = device.createBuffer({ label: 'fog', size: FOG_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.coneBuffer = device.createBuffer({ label: 'fog cones', size: SPOT_SHADOWS * CONE_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.postBuffer = device.createBuffer({ label: 'post', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.postBuffer = device.createBuffer({ label: 'post', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurH = device.createBuffer({ label: 'blur across', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.blurV = device.createBuffer({ label: 'blur down', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.postSampler = device.createSampler({ label: 'post', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
@@ -526,14 +537,16 @@ export class GameRenderer {
         { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
       ],
     };
-    // Every permutation is built up front, each with and without patterns.
+    // Every permutation is built up front, each with and without patterns and toon shading.
     // They compile in parallel with each other, and a ladder that had to wait
     // for a compile before it could step would step too late to matter.
     const variants: SceneVariant[] = [];
-    for (const patterned of [false, true]) {
-      for (const shadows of [true, false]) {
-        for (const points of [true, false]) {
-          for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows, patterned });
+    for (const toon of [false, true]) {
+      for (const patterned of [false, true]) {
+        for (const shadows of [true, false]) {
+          for (const points of [true, false]) {
+            for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows, patterned, toon });
+          }
         }
       }
     }
@@ -663,7 +676,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.toon ? '-toon' : ''}`;
   }
 
   /** The environment the material reads: a prefiltered cube and the split-sum lookup. */
@@ -1061,7 +1074,7 @@ export class GameRenderer {
   }
 
   private scenePipeline(patterned: boolean) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned }));
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, toon: this.look.shading === 'toon' }));
   }
 
   private draw(pass: GPURenderPassEncoder, groups: Uploaded[]) {
@@ -1243,7 +1256,7 @@ export class GameRenderer {
     const pd = this.postData;
     pd[0] = bloomOn ? this.post.bloom : 0; pd[1] = this.post.threshold; pd[2] = this.post.knee;
     pd[3] = doPost ? this.post.vignette : 0; pd[4] = doPost ? this.post.grain : 0; pd[5] = this.postTime;
-    pd[6] = 1 / this.width; pd[7] = 1 / this.height;
+    pd[6] = 1 / this.width; pd[7] = 1 / this.height; pd[8] = this.post.tone === 'clamp' ? 1 : 0;
     device.queue.writeBuffer(this.postBuffer, 0, pd);
     if (bloomOn) {
       const steps: [GPURenderPipeline, GPUBindGroup, GPUTexture, string][] = [

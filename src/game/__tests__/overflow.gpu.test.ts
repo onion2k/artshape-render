@@ -221,8 +221,9 @@ describe('the passes that read the frame, handed what is not a number', () => {
       primitive: { topology: 'triangle-list' },
     });
     // bloom, threshold, knee, vignette, grain, time, and the source's texel
-    const knobs = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    gpu.queue.writeBuffer(knobs, 0, new Float32Array([0.45, 1.25, 0.5, 0, 0, 0, 1 / SIDE, 1 / SIDE]));
+    // the post chain's knobs as the renderer writes them, the tone last: the filmic curve
+    const knobs = gpu.device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    gpu.queue.writeBuffer(knobs, 0, new Float32Array([0.45, 1.25, 0.5, 0, 0, 0, 1 / SIDE, 1 / SIDE, 0, 0, 0, 0]));
     const sampler = gpu.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     const out = gpu.device.createTexture({ size: [side, side], format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
     const n = textures.length;

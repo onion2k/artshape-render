@@ -46,6 +46,13 @@ export interface SceneVariant {
    * field noise it costs is paid only where a pattern is.
    */
   patterned?: boolean;
+  /**
+   * Whether it is shaded as a cartoon is rather than as a real surface:
+   * the sun in a few flat bands at the surface's own colour, the sky's light
+   * tinted by the colour rather than added grey over it, and a hard small
+   * highlight. For a bright, flat, saturated world; a look chooses it.
+   */
+  toon?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -152,6 +159,13 @@ struct Shadows {
 // why a bright day was a bright overcast one — the ground was lit by the
 // environment and the sun only glinted off it.
 const DIFFUSE: f32 = 0.25;
+// Toon shading's bands: the share of the sun a surface takes turned half
+// away and in shadow, and how much of the sun and the sky it takes at all,
+// since a band at the whole colour is the colour and not a quarter of it.
+const TOON_MID: f32 = 0.8;
+const TOON_SHADE: f32 = 0.6;
+const TOON_SUN: f32 = 0.4;
+const TOON_SKY: f32 = 0.5;
 
 // Four compared taps at half-texel offsets, each of which the hardware
 // bilinearly compares over four texels: sixteen texels' worth of edge for
@@ -327,6 +341,14 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   }
   let sunSpec = ggx(n, v, l, ndv, a2, k) * fresnel(f0, max(dot(normalize(l + v), v), 0.0));
   var colour = (sunSpec + f0 * DIFFUSE) * frame.sunColour * ndl * lit;
+  if (TOON) {
+    // the sun in three flat bands, at the surface's own colour and not a quarter of it: full in the light, less
+    // turned away, and a floor in shadow that is still the colour and not a grey; and a hard small highlight
+    let into = ndl * lit;
+    let band = select(select(TOON_SHADE, TOON_MID, into > 0.05), 1.0, into > 0.45);
+    let glint = select(0.0, 0.3 * (1.0 - rough), ggx(n, v, l, ndv, a2, k) * into > 2.0);
+    colour = f0 * band * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
+  }
 
   if (POINT_LIGHTS) {
     let count = u32(frame.lightCount);
@@ -404,15 +426,24 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   let r = reflect(-v, n);
   let pre = textureSampleLevel(envSpecular, samp, r, rough * frame.maxLod).rgb;
   let ab = textureSampleLevel(envBrdf, samp, vec2f(ndv, rough), 0.0).rg;
-  colour += pre * (f0 * ab.x + ab.y) * frame.ambient * occluded;
+  if (TOON) {
+    // the sky's light by its brightness alone, tinted by the surface's colour, where the physically based term adds
+    // a grey that washes every colour out; and a gleam of the sky on what is smooth
+    let sky = textureSampleLevel(envSpecular, samp, n, frame.maxLod).rgb;
+    colour += f0 * dot(sky, vec3f(0.3333)) * frame.ambient * TOON_SKY * occluded;
+    colour += pre * ab.y * (1.0 - rough) * frame.ambient * 0.25 * occluded;
+  } else {
+    colour += pre * (f0 * ab.x + ab.y) * frame.ambient * occluded;
+  }
 
   return vec4f(finite(colour * frame.exposure), 1.0);
 }
 `;
 
-export function sceneSource({ cullLights = true, points = true, shadows = true, patterned = false }: SceneVariant = {}): string {
+export function sceneSource({ cullLights = true, points = true, shadows = true, patterned = false, toon = false }: SceneVariant = {}): string {
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
-    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
+    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\n`
+    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
 }
 
 /**
@@ -525,7 +556,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
  * and the source's texel size for the bright pass to sample around.
  */
 const POST_STRUCT = `
-struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32 };
+struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32, tone: f32, _p0: f32, _p1: f32, _p2: f32 };
 `;
 
 export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + `
@@ -830,7 +861,12 @@ fn hash(p: vec2f) -> f32 {
   // in the frame
   var c = finite(textureLoad(src, vec2i(in.pos.xy), 0).rgb);
   c += finite(textureSample(bloom, samp, in.uv).rgb) * post.bloom;
+  // the filmic curve, which holds a bright colour short of white and pulls it toward grey as it goes; or the colour
+  // straight, held at white, for a flat bright world whose colours are what was chosen
   var m = c / (c + vec3f(1.0));
+  if (post.tone > 0.5) {
+    m = min(c, vec3f(1.0));
+  }
   // the corners: the distance from the middle, over the half-diagonal, so a
   // corner is one whatever the frame's shape
   let r = length(in.uv - vec2f(0.5)) / 0.7071;

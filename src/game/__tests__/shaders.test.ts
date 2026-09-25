@@ -51,6 +51,13 @@ describe('the scene shader is a permutation of itself', () => {
     expect(body(sceneSource({ patterned: true }))).toBe(body(sceneSource()));
   });
 
+  it('builds toon shading in as a constant of its own permutation, the body the same either way', () => {
+    expect(sceneSource()).toContain('const TOON: bool = false;');
+    expect(sceneSource({ toon: true })).toContain('const TOON: bool = true;');
+    const body = (s: string) => s.slice(s.indexOf('struct Frame'));
+    expect(body(sceneSource({ toon: true }))).toBe(body(sceneSource()));
+  });
+
   it('folds the shadow lookups to a constant when the ladder gives them up', () => {
     expect(sceneSource({ shadows: false })).toContain('const SHADOWS: bool = false;');
     expect(sceneSource()).toContain('const SHADOWS: bool = true;');
