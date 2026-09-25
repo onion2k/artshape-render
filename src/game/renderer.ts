@@ -915,6 +915,21 @@ export class GameRenderer {
     return this.particles.emit(e);
   }
 
+  /**
+   * The sprites to draw from now on, `SPRITE_STRIDE` floats each: soft puffs
+   * the game places itself, where particles are born and aged on the GPU and
+   * move only when a frame is drawn. Drawn with the particles, and with them
+   * given up when the ladder turns particles off.
+   */
+  setSprites(data: Float32Array, count: number) {
+    this.particles.setSprites(data, count);
+  }
+
+  /** How many sprites a frame may have. */
+  get spriteCapacity(): number {
+    return this.particles.spriteCapacity;
+  }
+
   /** A tint over every effect layer at once. White leaves them as they are. */
   setEffectTint(colour: [number, number, number]) {
     this.effectUniform.set(colour, 0);

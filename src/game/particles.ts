@@ -28,6 +28,10 @@ import { FINITE_WGSL } from './shaders';
 export const PARTICLE_STRIDE = 16;
 /** Floats an emitter: six vec4s, the last a spare. */
 export const EMITTER_STRIDE = 24;
+/** Floats a sprite: position and size, colour and alpha. Two vec4s. */
+export const SPRITE_STRIDE = 8;
+/** How many sprites a frame may have. */
+export const SPRITE_CAPACITY = 256;
 
 /** What the game asks for: a burst of particles from one place. */
 export interface Emit {
@@ -200,6 +204,50 @@ struct VsOut {
 }
 `;
 
+/**
+ * Sprites: the same soft, camera-facing quad as a particle, but placed by the
+ * game every frame rather than born and aged here, for what has to be where
+ * the game's own clock says, and the same whether a frame was drawn between
+ * or not: smoke rising from a chimney in a game that steps its own time. Its
+ * alpha is the game's, and it is drawn over what is behind it, never added.
+ */
+export const SPRITE_WGSL = STRUCTS + FINITE_WGSL + `
+struct Sprite { pos: vec3f, size: f32, colour: vec3f, alpha: f32 };
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var<storage, read> sprites: array<Sprite>;
+
+struct VsOut {
+  @builtin(position) pos: vec4f,
+  @location(0) uv: vec2f,
+  @location(1) colour: vec3f,
+  @location(2) alpha: f32,
+};
+
+@vertex fn vsMain(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> VsOut {
+  var out: VsOut;
+  let s = sprites[i];
+  var corners = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
+    vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
+  );
+  let c = corners[v];
+  let world = s.pos + (frame.right * c.x + frame.up * c.y) * s.size;
+  out.pos = frame.viewProj * vec4f(world, 1.0);
+  out.uv = c;
+  out.colour = s.colour;
+  out.alpha = s.alpha;
+  return out;
+}
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  let r = length(in.uv);
+  // thickest in the middle and thinning to nothing at the edge, as a puff is: no rim to show it is a disc
+  let soft = exp(-3.0 * r * r) * (1.0 - smoothstep(0.75, 1.0, r));
+  let a = soft * in.alpha;
+  return vec4f(finite(in.colour * a), a);
+}
+`;
+
 export class Particles {
   readonly capacity: number;
   readonly maxEmitters: number;
@@ -208,6 +256,12 @@ export class Particles {
   drag = 2.4;
 
   private pool: GPUBuffer;
+  private spriteBuffer: GPUBuffer;
+  private spriteBind!: GPUBindGroup;
+  private spritePipe!: GPURenderPipeline;
+  private spriteCount = 0;
+  /** How many sprites a frame may have: what `setSprites` is given past this is left out. */
+  readonly spriteCapacity = SPRITE_CAPACITY;
   private emitterBuffer: GPUBuffer;
   private frameBuffer: GPUBuffer;
   private frameData = new Float32Array(32);
@@ -244,6 +298,7 @@ export class Particles {
     this.pool = emptyBuffer(device, this.capacity * PARTICLE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'particles');
     this.emitterBuffer = emptyBuffer(device, this.maxEmitters * EMITTER_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'emitters');
     this.frameBuffer = device.createBuffer({ label: 'particle frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.spriteBuffer = emptyBuffer(device, SPRITE_CAPACITY * SPRITE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'sprites');
 
     const computeLayout = device.createBindGroupLayout({
       label: 'particle compute',
@@ -276,8 +331,17 @@ export class Particles {
       ],
     });
 
+    // a sprite reads the same frame, and a list of its own that the game writes
+    this.spriteBind = device.createBindGroup({
+      label: 'sprite draw', layout: drawLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.frameBuffer } },
+        { binding: 1, resource: { buffer: this.spriteBuffer } },
+      ],
+    });
     const module = shader(device, COMPUTE_WGSL, 'particles compute');
     const drawModule = shader(device, DRAW_WGSL, 'particles draw');
+    const spriteModule = shader(device, SPRITE_WGSL, 'sprites draw');
     const compute = device.createPipelineLayout({ bindGroupLayouts: [computeLayout] });
     const premultiplied: GPUBlendState = {
       color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -297,6 +361,14 @@ export class Particles {
         // tested against the scene, never written: a puff does not hide a puff
         depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
       }).then((p) => { this.drawPipe = p; }),
+      device.createRenderPipelineAsync({
+        label: 'sprite draw',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout] }),
+        vertex: { module: spriteModule, entryPoint: 'vsMain' },
+        fragment: { module: spriteModule, entryPoint: 'fsMain', targets: [{ format: colourFormat, blend: premultiplied }] },
+        primitive: { topology: 'triangle-list' },
+        depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
+      }).then((p) => { this.spritePipe = p; }),
     ]).then(() => { this.compiled = true; });
   }
 
@@ -377,9 +449,25 @@ export class Particles {
   /** How many slots of the ring may hold a live particle right now. */
   get live() { return this.liveCount; }
 
-  /** Every live particle, as a quad, into the pass that drew the scene. */
+  /**
+   * This frame's sprites, `SPRITE_STRIDE` floats each, replacing the last
+   * frame's: the first `count` of `data`, as many of them as there is room for.
+   */
+  setSprites(data: Float32Array, count: number) {
+    this.spriteCount = Math.max(0, Math.min(Math.floor(count), this.spriteCapacity, Math.floor(data.length / SPRITE_STRIDE)));
+    if (this.spriteCount)
+      this.ctx.device.queue.writeBuffer(this.spriteBuffer, 0, data as Float32Array<ArrayBuffer>, 0, this.spriteCount * SPRITE_STRIDE);
+  }
+
+  /** Every live particle, and every sprite, as a quad, into the pass that drew the scene. */
   draw(pass: GPURenderPassEncoder) {
-    if (!this.compiled || !this.liveCount) return;
+    if (!this.compiled) return;
+    if (this.spriteCount) {
+      pass.setPipeline(this.spritePipe);
+      pass.setBindGroup(0, this.spriteBind);
+      pass.draw(6, this.spriteCount);
+    }
+    if (!this.liveCount) return;
     pass.setPipeline(this.drawPipe);
     pass.setBindGroup(0, this.drawBind);
     // the live run, in two pieces where it wraps the end of the ring
@@ -389,6 +477,6 @@ export class Particles {
   }
 
   dispose() {
-    for (const b of [this.pool, this.emitterBuffer, this.frameBuffer]) b.destroy();
+    for (const b of [this.pool, this.emitterBuffer, this.frameBuffer, this.spriteBuffer]) b.destroy();
   }
 }

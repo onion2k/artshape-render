@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, sceneSource } from '../shaders';
-import { DRAW_WGSL } from '../particles';
+import { DRAW_WGSL, SPRITE_WGSL } from '../particles';
 
 describe('the scene shader is a permutation of itself', () => {
   it('puts what the ladder gives up in constants, not uniforms', () => {
@@ -62,7 +62,7 @@ describe('the frame is half floats, and every stage is held to what they have', 
   // only that nobody has added a stage and forgotten: a stage that writes
   // colour to the frame writes it through `finite`, and one that reads the
   // frame reads it through `finite`.
-  const writes = { scene: sceneSource(), effects: EFFECT_WGSL, particles: DRAW_WGSL, fog: FOG_WGSL };
+  const writes = { scene: sceneSource(), effects: EFFECT_WGSL, particles: DRAW_WGSL, sprites: SPRITE_WGSL, fog: FOG_WGSL };
   const reads = { bright: BRIGHT_WGSL, composite: COMPOSITE_WGSL };
 
   for (const [name, src] of Object.entries(writes)) {

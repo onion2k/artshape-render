@@ -136,6 +136,13 @@ What the measurements settled, so nobody has to re-argue it:
   code in it — a swirl, bands, marbling or speckle, mixed into the albedo
   from where on the thing a fragment is, so it turns with the thing — and
   every other group through a build without it, which pays nothing.
+- **Sprites are particles the game places.** `setSprites(data, count)`,
+  eight floats each (`SPRITE_STRIDE`: position and size, colour and alpha),
+  draws soft camera-facing puffs where the game says, every frame, with the
+  particles' blending and under their rung of the ladder. For what has to
+  follow the game's own clock — smoke in a game that steps its own time —
+  where a particle is born and aged on the GPU and moves only when a frame is
+  drawn.
 
 **A world unit is the game's to choose.** `new GameRenderer(gpu, lights,
 effects, particles, mmPerUnit)` says how many millimetres one of them is, and
