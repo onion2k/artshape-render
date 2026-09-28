@@ -9,7 +9,7 @@
  *
  * The time is throughput: thirty frames submitted, the queue waited on, and
  * the wall time shared among them; the median of seven such runs after ten
- * to warm up. It includes the submission and not the display, which is the
+ * to warm up, and three hundred before the first scene of all. It includes the submission and not the display, which is the
  * part of a frame the renderer owns. Two runs of the same tree on an M4 Pro
  * agreed within 1–6%.
  */
@@ -31,6 +31,15 @@ const UPDATE = !!import.meta.env.VITE_PERF_UPDATE;
 /** What the golf field may add to the standard scene's frame, on the reference adapter: the spec's budget. */
 const GRASS_BUDGET_MS = 2.0;
 const REFERENCE = 'apple/metal-3';
+/**
+ * Frames drawn before the first scene is timed. A GPU that has sat idle
+ * while the renderer was set up runs slow for a while: the scene timed
+ * first read 0.70 ms against its 0.60 in four of eight runs on a quiet
+ * machine, and every scene after it read steady. Three hundred frames
+ * first held it at 0.59-0.60 in six of six. Each scene's own ten are enough
+ * once the GPU is going.
+ */
+const WARM_UP = 300;
 
 /** A flat square of `size`, facing up. */
 function plane(size: number): Mesh {
@@ -151,6 +160,9 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
 
   it('holds each scene to its baseline on this adapter', async () => {
     const measured: Record<string, number> = {};
+    const view = target.createView();
+    for (let i = 0; i < WARM_UP; i++) r.frame(view);
+    await gpu.queue.onSubmittedWorkDone();
     measured.standard = await time();
 
     // the golf field over the same scene, its ground painted the rough's colour as a game would

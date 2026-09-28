@@ -251,7 +251,11 @@ the adapter within 15% both ways. Another app on the GPU (an image
 generator was seen to) moves every scene 10-30% together; when the
 standard scene, which has no grass, moves as much as the rest, it is the
 machine. Judge a change against its parent commit run alternately instead,
-and take baselines only when it is quiet.
+and take baselines only when it is quiet. And warm the GPU before timing
+anything: one that sat idle while the renderer was set up runs slow for a
+while, and the scene timed first read a sixth over its baseline in half of
+the runs on a quiet machine until three hundred frames were drawn before
+it.
 
 ## Volumetric fog on the game path
 
