@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, sceneSource } from '../shaders';
+import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, sceneSource, sceneWith } from '../shaders';
 import { DRAW_WGSL, SPRITE_WGSL } from '../particles';
 
 describe('the scene shader is a permutation of itself', () => {
@@ -56,6 +56,18 @@ describe('the scene shader is a permutation of itself', () => {
     expect(sceneSource({ toon: true })).toContain('const TOON: bool = true;');
     const body = (s: string) => s.slice(s.indexOf('struct Frame'));
     expect(body(sceneSource({ toon: true }))).toBe(body(sceneSource()));
+  });
+
+  it('lights another vertex stage with the same fragment stage, so a blade and a box are shaded alike', () => {
+    // a thing built in its own vertex stage is lit by the group's fragment stage, not a copy of it that could drift
+    const other = '@vertex fn vsMain(@builtin(vertex_index) v: u32) -> VsOut { var out: VsOut; return out; }\n';
+    const tail = (s: string) => s.slice(s.indexOf('fn cellHash'));
+    for (const toon of [false, true]) {
+      const built = sceneWith(other, { toon });
+      expect(built).toContain(other);
+      expect(built).not.toContain('@location(4) m0: vec4f');
+      expect(tail(built)).toBe(tail(sceneSource({ toon })));
+    }
   });
 
   it('folds the shadow lookups to a constant when the ladder gives them up', () => {
