@@ -232,7 +232,7 @@ that leaks a line into them is caught.
 ## Checking it
 
     npm test          1,024 tests, node
-    npm run test:gpu  125 tests, headless Chrome with a real device
+    npm run test:gpu  128 tests, headless Chrome with a real device
     npm run perf:gpu  the game path's frame, held to a baseline for this GPU
     npm run typecheck
 
