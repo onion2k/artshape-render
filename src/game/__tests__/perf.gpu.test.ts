@@ -22,11 +22,15 @@ import { bakeEnvironment } from '../../render/env';
 import { FULL_ECONOMY, GameRenderer, type GameGroup } from '../renderer';
 import { noFog } from '../fog';
 import { LightPool } from '../lights';
+import { grassGround, type GrassField, type GrassKind } from '../grass';
 import { judge, median, recorded } from './perf';
 
 const W = 1280, H = 800;
 const BASELINE = 'src/game/__tests__/perf-baseline.json';
 const UPDATE = !!import.meta.env.VITE_PERF_UPDATE;
+/** What the golf field may add to the standard scene's frame, on the reference adapter: the spec's budget. */
+const GRASS_BUDGET_MS = 2.0;
+const REFERENCE = 'apple/metal-3';
 
 /** A flat square of `size`, facing up. */
 function plane(size: number): Mesh {
@@ -76,6 +80,25 @@ export function standardScene(): GameGroup[] {
     { mesh: plane(600), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), albedo: [0.1, 0.42, 0.08], roughness: 0.85 },
     { mesh: box(), matrices: boxes, albedo: [0.58, 0.3, 0.13], roughness: 0.55 },
   ];
+}
+
+const GREEN: GrassKind = { density: 150, height: 0.15, width: 0.05, base: [0.05, 0.3, 0.04], tip: [0.25, 0.7, 0.15], lean: 0.25, give: 0.1, stripes: { width: 6, angle: 0, shade: 0.2 } };
+const ROUGH: GrassKind = { density: 12, height: 0.8, width: 0.09, base: [0.04, 0.2, 0.05], tip: [0.2, 0.5, 0.12], lean: 0.15, give: 1 };
+
+/**
+ * The standard golf field: ooergolf's largest green, 27 by 39 units, with
+ * the cup cut from it, in a grid eighty units square at a quarter unit a
+ * cell, rough everywhere else and beyond it to the far distance.
+ */
+export function golfField(): GrassField {
+  const cols = 320, rows = 320;
+  const mask = new Uint8Array(cols * rows).fill(2);
+  for (let j = 0; j < rows; j++)
+    for (let i = 0; i < cols; i++) {
+      const x = -40 + (i + 0.5) * 0.25, y = -40 + (j + 0.5) * 0.25;
+      if (Math.abs(x) < 13.5 && Math.abs(y) < 19.5) mask[j * cols + i] = Math.hypot(x, y - 12) < 1.45 ? 0 : 1;
+    }
+  return { origin: [-40, -40], cell: 0.25, cols, rows, mask, heights: new Float32Array(cols * rows), kinds: [GREEN, ROUGH], outside: { kind: 1, height: 0 }, seed: 1 };
 }
 
 describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
@@ -130,6 +153,22 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     const measured: Record<string, number> = {};
     measured.standard = await time();
 
+    // the golf field over the same scene, its ground painted the rough's colour as a game would
+    const [ground, boxes] = standardScene();
+    r.setStatic([{ ...ground, albedo: grassGround(ROUGH) }, boxes]);
+    await r.setGrass(golfField());
+    measured.golf = await time();
+    const home = await r.grassDrawn();
+    r.camera.position = [0, -Math.sin(0.78) * 30, Math.cos(0.78) * 30];
+    measured['golf near'] = await time();
+    r.camera.position = [0, -Math.sin(0.78) * 62, Math.cos(0.78) * 62];
+    r.economy = { ...FULL_ECONOMY, shadows: true, grass: 0.5 };
+    measured['golf half'] = await time();
+    r.economy = { ...FULL_ECONOMY, shadows: true };
+    await r.setGrass(null);
+    r.setStatic(standardScene());
+    console.log(`blades drawn at the home view: ${home.near} near, ${home.far} far`);
+
     const file = await server.commands.readFile(BASELINE).catch(() => '');
     const key = gpu.adapter.key;
     const verdicts = judge(measured, recorded(file, key));
@@ -141,5 +180,6 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
       return;
     }
     expect(verdicts.filter((v) => !v.ok).map((v) => `${v.scene}: ${v.why}`)).toEqual([]);
+    if (key === REFERENCE) expect(measured.golf - measured.standard, 'the golf field over the standard scene, in ms').toBeLessThanOrEqual(GRASS_BUDGET_MS);
   }, 180_000);
 });

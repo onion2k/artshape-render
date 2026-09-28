@@ -9,9 +9,9 @@
 import { describe, expect, it } from 'vitest';
 import { Camera } from '../../gpu/camera';
 import {
-  BAND, CHUNK, MAX_SIDE, PRESSES_A_FRAME, STILL, Trample,
-  bend, bladesIn, checkField, chunkKinds, frustumPlanes, grassGround, gust, hash, keep, lattice, levels, shrink,
-  visibleChunks, widen,
+  BAND, CHUNK, GRASS_FLOATS, KIND_FLOATS, MAX_KINDS, MAX_SIDE, PRESSES_A_FRAME, STILL, Trample,
+  bend, bladesIn, checkField, chunkKinds, frustumPlanes, grassGround, grassUniform, gust, hash, keep, kindsUniform, lattice,
+  levels, shrink, visibleChunks, widen,
   type GrassField, type GrassKind,
 } from '../grass';
 
@@ -389,5 +389,37 @@ describe('the trample', () => {
     }
     expect(t.data).toBe(data);
     expect(t.data.length).toBe(40 * 40 * 4);
+  });
+});
+
+describe('what the pass is handed', () => {
+  it('packs the uniform where the struct reads it, the seed and capacity as integers', () => {
+    const f = field(32, 16, { seed: 0xdeadbeef, outside: { kind: 1, height: -3 } });
+    const planes = new Float32Array(24).map((_, i) => i + 100);
+    const out = grassUniform(new Float32Array(GRASS_FLOATS), f, { trample: { origin: [1, 2], cell: 0.5, cols: 7, rows: 9, recovery: 4 } },
+      { eye: [1, 2, 3], planes, pixel: 0.001, density: 0.5, wind: { direction: [0, 2], strength: 0.7, gustSize: 15, gustSpeed: 3 }, time: 12 }, 4096);
+    expect([...out.subarray(0, 4)]).toEqual([1, 2, 3, 40]);
+    expect([...out.subarray(4, 8)]).toEqual([0, 0, 0.25, 88]);
+    expect([...out.subarray(8, 12)]).toEqual([32, 16, 4, 300]);
+    expect([...out.subarray(12, 16)].map((x) => Math.fround(x))).toEqual([1, -3, 0.5, Math.fround(0.001)]);
+    expect([...new Uint32Array(out.buffer, 16 * 4, 2)]).toEqual([0xdeadbeef, 4096]);
+    expect([...out.subarray(20, 24)].map((x) => Math.fround(x))).toEqual([0, 1, Math.fround(0.7), 15]);
+    expect([...out.subarray(24, 28)]).toEqual([3, 12, Math.fround(0.7), 4]);
+    expect([...out.subarray(28, 36)]).toEqual([1, 2, 0.5, 1, 7, 9, 0, 0]);
+    expect([...out.subarray(36, 60)]).toEqual([...planes]);
+    expect(out.length).toBe(60);
+  });
+
+  it('says there is no outside and no trample when there are none', () => {
+    const out = grassUniform(new Float32Array(GRASS_FLOATS), field(), {}, { eye: [0, 0, 0], planes: new Float32Array(24), pixel: 0, density: 1, wind: STILL, time: 0 }, 1);
+    expect(out[12]).toBe(-1);
+    expect(out[31]).toBe(0);
+  });
+
+  it('packs each kind into five vec4s, with its defaults', () => {
+    const out = kindsUniform([GREEN, { ...ROUGH, stripes: { width: 6, angle: 0.5, offset: 1, shade: 0.2 }, lean: 0.4, give: 0.5 }]);
+    expect(out.length).toBe(MAX_KINDS * KIND_FLOATS);
+    expect([...out.subarray(0, 20)].map((x) => Math.fround(x))).toEqual([0.05, 0.25, 0.04, 0.15, 0.2, 0.6, 0.15, 0.3, 0.05, 0.15, 0.85, 0.2, 1, 0, 0, 0, 0, 0, 0, 0].map(Math.fround));
+    expect([...out.subarray(31, 37)].map((x) => Math.fround(x))).toEqual([0.4, 0.5, 6, 0.5, 1, 0.2].map(Math.fround));
   });
 });

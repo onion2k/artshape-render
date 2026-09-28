@@ -31,6 +31,11 @@ import { Particles, type Emit } from './particles';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
 import { ContactOcclusion } from '../render/ao';
+import { STILL, checkField, type GrassField, type GrassOptions } from './grass';
+import { GrassPass } from './grass-pass';
+
+/** A blade the GPU grew this frame: where its root is, and its id. */
+export interface DrawnBlade { x: number; y: number; z: number; id: number }
 
 const HDR: GPUTextureFormat = 'rgba16float';
 const DEPTH: GPUTextureFormat = 'depth24plus';
@@ -237,6 +242,12 @@ export interface GameEconomy extends SceneVariant {
   fog?: boolean;
   /** Whether the occlusion is drawn. Off, there is none, whatever the look's strength says. */
   occlusion?: boolean;
+  /**
+   * The share of the grass's blades drawn: 1 all of them, 0 none and no
+   * grass passes. Half keeps the same blades the distance would, so a step
+   * down the ladder thins the field and never reshuffles it. Left out, all.
+   */
+  grass?: number;
 }
 
 /**
@@ -378,6 +389,10 @@ export class GameRenderer {
   private height = 0;
 
   private staticGroups: Uploaded[] = [];
+  /** The grass, made when a game first asks for it and not before. */
+  private grass: GrassPass | null = null;
+  /** Whether the grass was grown this frame, and so is drawn in it. */
+  private grassGrown = false;
   private dynamicGroups: Uploaded[] = [];
   /** Whether the kept frame still matches the static half. */
   private keptStale = true;
@@ -908,6 +923,7 @@ export class GameRenderer {
         rp.drawIndexed(g.indexCount, g.count);
       }
     }
+    if (pass === 0 && this.grassGrown && this.grass?.casts) this.grass.drawShadow(rp);
     rp.end();
   }
 
@@ -1123,6 +1139,10 @@ export class GameRenderer {
     if (!this.compiled || !this.sceneBind || !this.compositeBind || !this.colour || !this.depth) return false;
     this.writeFrame();
     const encoder = device.createCommandEncoder({ label: 'game frame' });
+
+    // The grass grown first: the sun's map may want its blades, and the scene pass does.
+    const density = Math.max(0, Math.min(1, this.economy.grass ?? 1));
+    this.grassGrown = !!this.grass?.live && this.grass.grow(encoder, this.camera, this.height, density, STILL, 0);
     const colourView = this.colour.createView();
     const depthView = this.depth.createView();
 
@@ -1193,6 +1213,8 @@ export class GameRenderer {
     });
     if (mode === 'redraw') this.draw(pass, this.staticGroups);
     this.draw(pass, this.dynamicGroups);
+    // the grass moves every frame, so it is drawn with the movers and never kept with the static half
+    if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' });
     if (particles) this.particles.draw(pass);
     const layers = Math.round(this.effectQuads * Math.max(0, Math.min(1, this.economy.effects)));
     if (layers && this.effectBind) {
@@ -1296,12 +1318,42 @@ export class GameRenderer {
     return true;
   }
 
+  /**
+   * The grass to grow: a field of it (see `grass.ts`), replacing any other,
+   * or null for none, which destroys everything the last one made. The
+   * first call compiles the grass's pipelines, which a game that never
+   * asks for grass never pays for; the promise resolves when they are in,
+   * and until then the frame is drawn without it. A field that cannot be
+   * what it says throws here.
+   */
+  async setGrass(field: GrassField | null, options: GrassOptions = {}): Promise<void> {
+    if (!field) {
+      this.grass?.clear();
+      return;
+    }
+    checkField(field, options);
+    this.grass ??= new GrassPass(this.ctx, this.sceneLayout, HDR, DEPTH, SHADOW);
+    this.grass.setField(field, options, this.passBuffers[0]);
+    await this.grass.ready;
+  }
+
+  /** How many blades of grass the last frame drew, near and far, read back from the GPU: for a test or a gate. */
+  async grassDrawn(): Promise<{ near: number; far: number }> {
+    return this.grass ? this.grass.drawn() : { near: 0, far: 0 };
+  }
+
+  /** The blades of grass the last frame drew, read back from the GPU: for a test. */
+  async grassBlades(): Promise<{ near: DrawnBlade[]; far: DrawnBlade[] }> {
+    return this.grass ? this.grass.blades() : { near: [], far: [] };
+  }
+
   dispose() {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB, this.fogMap]) t?.destroy();
     for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, this.coneBuffer, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
+    this.grass?.dispose();
     this.occlusion.dispose();
     this.noOcclusion.destroy();
     this.occlusionPassBuffer.destroy();

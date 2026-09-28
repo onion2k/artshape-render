@@ -191,14 +191,24 @@ export function lattice(kind: GrassKind, size: number): number {
   return Math.max(1, Math.min(MAX_LATTICE, Math.round(size * Math.sqrt(kind.density))));
 }
 
-/** A blade as it grows: where its root is, which kind it is, its key, and its rank for thinning. */
+/**
+ * A blade as it grows: where its root is, which kind it is, its id, and
+ * its rank for thinning. The id is its key with the kind in its lowest
+ * three bits, which is all the GPU keeps of a blade besides where it
+ * stands: everything else about it is hashed from the id again.
+ */
 export interface Blade {
   x: number;
   y: number;
   z: number;
   kind: number;
-  key: number;
+  id: number;
   rank: number;
+}
+
+/** A blade's id: its key with its kind in the lowest three bits. */
+export function bladeId(key: number, kind: number): number {
+  return ((key & ~7) | kind) >>> 0;
 }
 
 /**
@@ -217,7 +227,8 @@ export function bladesIn(f: GrassField, cx: number, cy: number, kind: number): B
       const key = bladeKey(f.seed, cx, cy, kind, a, b);
       const at = bladeAt(f, cx, cy, n, key, a, b);
       if (!at || at.kind !== kind) continue;
-      out.push({ x: at.x, y: at.y, z: at.z, kind, key, rank: unit(hash((key + 1) >>> 0)) });
+      const id = bladeId(key, kind);
+      out.push({ x: at.x, y: at.y, z: at.z, kind, id, rank: unit(hash((id + 1) >>> 0)) });
     }
   return out;
 }
@@ -244,16 +255,24 @@ function bladeAt(f: GrassField, cx: number, cy: number, n: number, key: number, 
   return { x, y, z, kind };
 }
 
-/** Which kinds grow in each chunk of the grid, a bit each, so the CPU sends the GPU only chunks with something in them. */
-export function chunkKinds(f: GrassField): { cols: number; rows: number; bits: Uint8Array } {
+/**
+ * Which kinds grow in each chunk of the grid, a bit each, so the CPU sends
+ * the GPU only chunks with something in them; and the lowest and highest
+ * the ground goes, outside included, which bound every chunk's box. Worked
+ * out once when a field is set, not every frame.
+ */
+export function chunkKinds(f: GrassField): { cols: number; rows: number; bits: Uint8Array; lo: number; hi: number } {
   const cols = Math.ceil(f.cols / CHUNK), rows = Math.ceil(f.rows / CHUNK);
   const bits = new Uint8Array(cols * rows);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < f.heights.length; i++) { lo = Math.min(lo, f.heights[i]); hi = Math.max(hi, f.heights[i]); }
+  if (f.outside) { lo = Math.min(lo, f.outside.height); hi = Math.max(hi, f.outside.height); }
   for (let j = 0; j < f.rows; j++)
     for (let i = 0; i < f.cols; i++) {
       const m = f.mask[j * f.cols + i];
       if (m) bits[Math.floor(j / CHUNK) * cols + Math.floor(i / CHUNK)] |= 1 << (m - 1);
     }
-  return { cols, rows, bits };
+  return { cols, rows, bits, lo, hi };
 }
 
 /**
@@ -286,10 +305,8 @@ export function frustumPlanes(m: Float32Array, out = new Float32Array(24)): Floa
 export function visibleChunks(f: GrassField, chunks: ReturnType<typeof chunkKinds>, planes: Float32Array, eye: Vec3 | number[], far: number, out: Int32Array): number {
   const size = CHUNK * f.cell;
   const cap = Math.floor(out.length / 4);
-  let lo = Infinity, hi = -Infinity;
-  for (let i = 0; i < f.heights.length; i++) { lo = Math.min(lo, f.heights[i]); hi = Math.max(hi, f.heights[i]); }
-  if (f.outside) { lo = Math.min(lo, f.outside.height); hi = Math.max(hi, f.outside.height); }
-  hi += Math.max(...f.kinds.map((k) => k.height * (1 + (k.heightSpread ?? 0.3)))) + size * 0.25;
+  const lo = chunks.lo;
+  const hi = chunks.hi + Math.max(...f.kinds.map((k) => k.height * (1 + (k.heightSpread ?? 0.3)))) + size * 0.25;
   const [ox, oy] = f.origin;
   let x0 = Math.floor((eye[0] - far - ox) / size), x1 = Math.floor((eye[0] + far - ox) / size);
   let y0 = Math.floor((eye[1] - far - oy) / size), y1 = Math.floor((eye[1] + far - oy) / size);
@@ -397,9 +414,17 @@ export function bend(give: number, wind: Wind, x: number, y: number, time: numbe
   return s * (0.25 + 0.75 * gust(x, y, wind, time)) + 0.1 * s * Math.sin(2 * Math.PI * (3 * time + phase));
 }
 
-/** The colour a blade of `kind` averages to, root to tip: what the game should paint the ground under it, so gaps and the far fade do not show. */
+/**
+ * The colour a blade of `kind` averages to, root to tip: what the game
+ * should paint the ground under it, so the gaps between blades and the
+ * fade past the far distance do not show. A blade's colour runs along
+ * u^0.7, which averages to 1/1.7 of the way. Weighing it by the blade's
+ * area, widest at its dark root, was tried and matched the screen worse
+ * (seven levels off the bare ground against one and a half), since from
+ * three-quarters above more of a blade's upper part is seen than its area
+ * says; `grass.gpu.test.ts` holds the match on screen.
+ */
 export function grassGround(kind: GrassKind): Rgb {
-  // a blade's colour runs root to tip along u^0.7, which averages to 1/1.7 of the way
   return [0, 1, 2].map((c) => kind.base[c] + (kind.tip[c] - kind.base[c]) / 1.7) as Rgb;
 }
 
@@ -494,4 +519,68 @@ export class Trample {
     this.presses = 0;
     return d;
   }
+}
+
+/** Floats in the pass's uniform: see `grassUniform` for what is where. */
+export const GRASS_FLOATS = 60;
+/** Floats a kind in the pass's table of kinds: five vec4s. */
+export const KIND_FLOATS = 20;
+
+/** What the pass is told each frame besides the field: where the eye is and what it sees, and the game's own moment. */
+export interface GrassFrame {
+  eye: Vec3 | number[];
+  planes: Float32Array;
+  /** World units a pixel spans at a distance of one, so a blade can be widened to a pixel wherever it is. */
+  pixel: number;
+  /** The economy's share of the blades. */
+  density: number;
+  wind: Wind;
+  time: number;
+}
+
+/**
+ * The pass's uniform, as the WGSL struct `Grass` reads it: the eye and the
+ * near distance; the grid's origin, cell and the middle distance; its size,
+ * a chunk's and the far distance; the outside's kind (-1 for none) and
+ * height, the density and a pixel's span; the seed and the capacity as
+ * integers; the wind; its gusts' speed, the time, the press's shade and
+ * the trample's recovery; the trample's rectangle and whether there is
+ * one; and the six planes of the frustum.
+ */
+export function grassUniform(out: Float32Array, f: GrassField, options: GrassOptions, frame: GrassFrame, capacity: number): Float32Array {
+  const { near, mid, far } = levels(f, options);
+  const w = frame.wind;
+  const l = Math.hypot(w.direction[0], w.direction[1]);
+  const t = options.trample;
+  out.fill(0);
+  out.set([frame.eye[0], frame.eye[1], frame.eye[2], near], 0);
+  out.set([f.origin[0], f.origin[1], f.cell, mid], 4);
+  out.set([f.cols, f.rows, CHUNK * f.cell, far], 8);
+  out.set([f.outside ? f.outside.kind : -1, f.outside?.height ?? 0, frame.density, frame.pixel], 12);
+  new Uint32Array(out.buffer, out.byteOffset + 16 * 4, 2).set([f.seed >>> 0, capacity >>> 0]);
+  out.set([l > 0 ? w.direction[0] / l : 1, l > 0 ? w.direction[1] / l : 0, w.strength, Math.max(w.gustSize, 1e-6)], 20);
+  out.set([w.gustSpeed, frame.time, options.pressShade ?? 0.7, t?.recovery ?? 6], 24);
+  if (t) {
+    out.set([t.origin[0], t.origin[1], t.cell, 1], 28);
+    out.set([t.cols, t.rows], 32);
+  }
+  out.set(frame.planes.subarray(0, 24), 36);
+  return out;
+}
+
+/**
+ * The table of kinds, as the WGSL array of `Kind` reads it, five vec4s
+ * each: the root colour and height; the tip colour and the height's
+ * spread; the width, the variation, the roughness and the lean at rest;
+ * the give, and the stripes' width (nought for none), angle and offset;
+ * and the stripes' shade.
+ */
+export function kindsUniform(kinds: GrassKind[], out = new Float32Array(MAX_KINDS * KIND_FLOATS)): Float32Array {
+  out.fill(0);
+  kinds.forEach((k, i) => {
+    const o = i * KIND_FLOATS, st = k.stripes;
+    out.set([...k.base, k.height, ...k.tip, k.heightSpread ?? 0.3, k.width, k.variation ?? 0.15, k.roughness ?? 0.85, k.lean ?? 0.2,
+      k.give ?? 1, st ? st.width : 0, st?.angle ?? 0, st?.offset ?? 0, st?.shade ?? 0], o);
+  });
+  return out;
 }
