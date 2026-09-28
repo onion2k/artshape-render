@@ -428,6 +428,56 @@ describe('grass on the game renderer', () => {
     expect(differing(still7, calm1), 'and standing as it does with none').toBe(0);
   });
 
+  it('is pressed flat and darker where the game presses it, and stands again over its recovery', async () => {
+    const trample = { origin: [0, 0] as [number, number], cell: 0.25, cols: 32, rows: 32, recovery: 6 };
+    await r.setGrass(field({ kinds: [FAIRWAY] }, false), { trample });
+    look(r, 4, 4, 8);
+    r.time = 20;
+    const never = await draw(r);
+    expect(r.press(4, 4, 1.2, 1, 0), 'a press on the grid').toBe(true);
+    r.time = 20.05;
+    const fresh = await draw(r, 'redraw', 'grass-pressed');
+    // the blades in the disc, lighter or darker than the same blades never pressed
+    const inDisc = (px: Pixels) => bladeLight(px, [4, 4, 0], 8, 5);
+    expect(inDisc(fresh) / inDisc(never), 'pressed darker').toBeLessThan(0.9);
+    expect(bladeLight(fresh, [1.2, 6.5, 0], 6, 4) / bladeLight(never, [1.2, 6.5, 0], 6, 4), 'and nowhere else').toBeGreaterThan(0.98);
+    r.time = 23;
+    const half = await draw(r);
+    expect(inDisc(half)).toBeGreaterThan(inDisc(fresh));
+    expect(inDisc(half)).toBeLessThan(inDisc(never));
+    r.time = 26;
+    expect(differing(await draw(r), never), 'recovered, as never pressed').toBe(0);
+    r.time = 30;
+    r.press(4, 4, 1.2, 0, 1);
+    expect(differing(await draw(r), never), 'pressed again').toBeGreaterThan(200);
+    r.clearPresses();
+    expect(differing(await draw(r), never), 'cleared, as never pressed').toBe(0);
+  });
+
+  it('presses nothing beyond its trample, however near the edge the press', async () => {
+    // a trample over the left half of the field only, pressed right at its edge: the texels past it do not exist, and
+    // the blades beyond must not read the edge's
+    const trample = { origin: [0, 0] as [number, number], cell: 0.25, cols: 16, rows: 32, recovery: 6 };
+    await r.setGrass(field({ kinds: [FAIRWAY] }, false), { trample });
+    look(r, 4, 4, 8);
+    r.time = 5;
+    const never = await draw(r);
+    expect(r.press(3.9, 4, 1.2, 0, 1)).toBe(true);
+    r.time = 5.05;
+    const pressed = await draw(r);
+    expect(bladeLight(pressed, [3.4, 4, 0], 4, 3) / bladeLight(never, [3.4, 4, 0], 4, 3), 'inside it, pressed').toBeLessThan(0.95);
+    expect(bladeLight(pressed, [6.5, 4, 0], 6, 3) / bladeLight(never, [6.5, 4, 0], 6, 3), 'beyond it, not').toBeGreaterThan(0.98);
+  });
+
+  it('refuses a press off its grid, and any press where the field has no trample', async () => {
+    await r.setGrass(field({ kinds: [FAIRWAY] }, false), { trample: { origin: [0, 0], cell: 0.25, cols: 32, rows: 32 } });
+    expect(r.press(40, 40, 1, 1, 0)).toBe(false);
+    await r.setGrass(field({ kinds: [FAIRWAY] }, false));
+    expect(r.press(4, 4, 1, 1, 0)).toBe(false);
+    await r.setGrass(null);
+    expect(r.press(4, 4, 1, 1, 0)).toBe(false);
+  });
+
   it('draws each kind, for looking at', async () => {
     for (const [name, kind] of [['green', { ...GREEN, stripes: { width: 2, angle: 0, shade: 0.25 } }], ['fairway', FAIRWAY], ['rough', ROUGH]] as const) {
       const f = field({ kinds: [kind as GrassKind] }, name === 'green');

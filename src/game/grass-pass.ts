@@ -27,7 +27,7 @@ import { emptyBuffer, shader, type Gpu } from '../gpu/context';
 import type { Camera } from '../gpu/camera';
 import { sceneWith, type SceneVariant } from './shaders';
 import {
-  BAND, CAPACITY, CHUNK, GRASS_FLOATS, MAX_BEND, MAX_KINDS, chunkKinds, frustumPlanes, grassUniform, kindsUniform,
+  BAND, CAPACITY, CHUNK, GRASS_FLOATS, MAX_BEND, MAX_KINDS, Trample, chunkKinds, frustumPlanes, grassUniform, kindsUniform,
   visibleChunks, type GrassField, type GrassOptions, type Wind,
 } from './grass';
 
@@ -157,6 +157,8 @@ override FAR: bool = false;
 @group(1) @binding(2) var<storage, read> blades: array<vec4u>;
 // what the blade is drawn through: the camera's matrix, or the sun's for its shadow
 @group(1) @binding(3) var<uniform> through: mat4x4f;
+// where the game has pressed it: when, how deep, and which way it lies, a texel each; see Trample in grass.ts
+@group(1) @binding(4) var trample: texture_2d<f32>;
 
 // The near blade: three rows and a tip, each row narrower, as fifteen corners of five triangles.
 const NEAR_U = array<f32, 15>(0.0, 0.0, 0.4, 0.0, 0.4, 0.4, 0.4, 0.4, 0.75, 0.4, 0.75, 0.75, 0.75, 0.75, 1.0);
@@ -226,6 +228,20 @@ fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
   if (grass.wind.z > 0.0) {
     bent += grass.wind.xy * windBend(root.xy, k.motion.x, grassUnit(grassHash(id + 6u)));
   }
+  // pressed: laid toward the way it was pressed, as flat as it is deep, and darker; the depth worked out from how long ago,
+  // so it stands again by itself, and exactly as it was once the recovery is over
+  var pressed = 0.0;
+  if (grass.trample.w > 0.5) {
+    let t = vec2i(floor((root.xy - grass.trample.xy) / grass.trample.z));
+    if (all(t >= vec2i(0)) && t.x < i32(grass.trampleSize.x) && t.y < i32(grass.trampleSize.y)) {
+      let p = textureLoad(trample, t, 0);
+      let age = grass.gust.y - p.x;
+      if (p.y > 0.0 && age >= 0.0) {
+        pressed = p.y * (1.0 - smoothstep(0.0, grass.gust.w, age));
+        bent = mix(bent, p.zw * MAX_BEND, pressed);
+      }
+    }
+  }
   let theta = min(length(bent), MAX_BEND);
   let dir = select(facing, bent / max(length(bent), 1e-6), length(bent) > 1e-6);
 
@@ -248,7 +264,7 @@ fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
   o.pos = through * vec4f(world, 1.0);
   o.world = world;
   o.normal = n;
-  o.albedo = mix(k.base.rgb, k.tip.rgb, pow(u, 0.7)) * vary * patchy * shade;
+  o.albedo = mix(k.base.rgb, k.tip.rgb, pow(u, 0.7)) * vary * patchy * shade * mix(1.0, grass.gust.z, pressed);
   o.roughness = k.shape.z;
   o.local = vec3f(0.0);
   o.pattern = vec4f(0.0);
@@ -278,6 +294,9 @@ interface Resources {
   blades: GPUBuffer;
   counts: GPUBuffer;
   camera: GPUBuffer;
+  /** Where the game may press, and its texture: a texel of nothing when there is no trample, since the binding must be filled. */
+  pressing: Trample | null;
+  pressed: GPUTexture;
   grow: GPUBindGroup;
   draw: GPUBindGroup;
   shadow: GPUBindGroup | null;
@@ -328,6 +347,7 @@ export class GrassPass {
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX, texture: { sampleType: 'unfilterable-float' } },
       ],
     });
     this.emptyLayout = device.createBindGroupLayout({ label: 'grass nothing', entries: [] });
@@ -401,6 +421,11 @@ export class GrassPass {
     const counts = device.createBuffer({ label: 'grass counts', size: COUNTS_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     device.queue.writeBuffer(counts, 0, COUNTS_RESET);
     const camera = device.createBuffer({ label: 'grass camera', size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const pressing = options.trample ? new Trample(options.trample) : null;
+    const pressed = device.createTexture({
+      label: 'grass trample', size: pressing ? [pressing.rect.cols, pressing.rect.rows] : [1, 1],
+      format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
     const grow = device.createBindGroup({
       label: 'grass grow', layout: this.growLayout,
       entries: [
@@ -420,11 +445,12 @@ export class GrassPass {
         { binding: 1, resource: { buffer: kinds } },
         { binding: 2, resource: { buffer: blades } },
         { binding: 3, resource: { buffer: through, size: 64 } },
+        { binding: 4, resource: pressed.createView() },
       ],
     });
     this.res = {
       field, options, capacity, chunks: chunkKinds(field),
-      uniform, kinds, chunkBuffer, mask, heights, blades, counts, camera,
+      uniform, kinds, chunkBuffer, mask, heights, blades, counts, camera, pressing, pressed,
       grow, draw: drawWith(camera, 'grass draw'), shadow: options.shadows ? drawWith(sunPass, 'grass shadow') : null,
     };
   }
@@ -434,7 +460,7 @@ export class GrassPass {
     const r = this.res;
     if (!r) return;
     for (const b of [r.uniform, r.kinds, r.chunkBuffer, r.blades, r.counts, r.camera]) b.destroy();
-    for (const t of [r.mask, r.heights]) t.destroy();
+    for (const t of [r.mask, r.heights, r.pressed]) t.destroy();
     this.res = null;
     this.grown = false;
   }
@@ -456,6 +482,15 @@ export class GrassPass {
     device.queue.writeBuffer(r.uniform, 0, this.uniformData);
     device.queue.writeBuffer(r.counts, 0, COUNTS_RESET);
     device.queue.writeBuffer(r.camera, 0, camera.viewProjection as Float32Array<ArrayBuffer>);
+    // what the game pressed since the last frame, as one rectangle of the trample
+    const d = r.pressing?.take();
+    if (r.pressing && d) {
+      const cols = r.pressing.rect.cols;
+      device.queue.writeTexture(
+        { texture: r.pressed, origin: [d.x0, d.y0] }, r.pressing.data as Float32Array<ArrayBuffer>,
+        { offset: (d.y0 * cols + d.x0) * 16, bytesPerRow: cols * 16 }, [d.x1 - d.x0, d.y1 - d.y0],
+      );
+    }
     if (n) {
       device.queue.writeBuffer(r.chunkBuffer, 0, this.chunkData, 0, n * 4);
       const pass = encoder.beginComputePass({ label: 'grass grow' });
@@ -493,6 +528,16 @@ export class GrassPass {
       pass.setPipeline(this.shadowPipelines[far ? 1 : 0]);
       pass.drawIndirect(r.counts, far ? 16 : 0);
     }
+  }
+
+  /** Press the grass down in a disc at (x, y), lying toward (dx, dy), at `time`. False where there is no trample, or off it. */
+  press(x: number, y: number, radius: number, dx: number, dy: number, time: number): boolean {
+    return this.res?.pressing?.press(x, y, radius, dx, dy, time) ?? false;
+  }
+
+  /** Nothing pressed anywhere, for a new hole. */
+  clearPresses() {
+    this.res?.pressing?.clear();
   }
 
   /** How many blades the last frame drew, near and far: read back, for a test or a gate. */

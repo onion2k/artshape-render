@@ -1349,6 +1349,23 @@ export class GameRenderer {
     await this.grass.ready;
   }
 
+  /**
+   * Press the grass down in a disc of `radius` at (x, y), the blades lying
+   * toward (dx, dy), at the renderer's `time`: full inside half the radius,
+   * softening to nothing at it, and standing again over the trample's
+   * recovery. Nothing is kept but the trample's own fixed grid, so a ball
+   * can press every frame for ever. False, and nothing done, where the
+   * field has no trample, off it, or past 64 presses in a frame.
+   */
+  press(x: number, y: number, radius: number, dx: number, dy: number): boolean {
+    return this.grass?.press(x, y, radius, dx, dy, this.time) ?? false;
+  }
+
+  /** Nothing pressed anywhere, for a new hole: the grass stands as it was. */
+  clearPresses() {
+    this.grass?.clearPresses();
+  }
+
   /** How many blades of grass the last frame drew, near and far, read back from the GPU: for a test or a gate. */
   async grassDrawn(): Promise<{ near: number; far: number }> {
     return this.grass ? this.grass.drawn() : { near: 0, far: 0 };
