@@ -158,6 +158,8 @@ describe('grass on the game renderer', () => {
 
   // every test starts from the same frame, whatever the one before left
   beforeEach(() => {
+    r.time = 0;
+    r.wind = { direction: [1, 0], strength: 0, gustSize: 20, gustSpeed: 4 };
     r.setStatic([ground]);
     r.setSunShadow(null);
     r.fog = noFog(100);
@@ -393,6 +395,37 @@ describe('grass on the game renderer', () => {
     for (const m of made) { const f = m.destroy.bind(m); m.destroy = () => { destroyed.add(m); f(); }; }
     await r.setGrass(null);
     expect(made.filter((m) => !destroyed.has(m)).length).toBe(0);
+  });
+
+  it('bends in the wind by the game\'s own time: two moments differ, the same moment twice does not', async () => {
+    await r.setGrass(field({ kinds: [ROUGH] }, false));
+    look(r, 4, 4, 8);
+    r.wind = { direction: [1, 0.5], strength: 1, gustSize: 6, gustSpeed: 3 };
+    r.time = 10;
+    const a = await draw(r, 'redraw', 'grass-wind-10');
+    r.time = 11.5;
+    const b = await draw(r, 'redraw', 'grass-wind-11');
+    expect(differing(a, b), 'two moments').toBeGreaterThan(2000);
+    r.time = 10;
+    // however many frames, and whatever step each was, between: only the moment counts
+    for (let i = 0; i < 5; i++) r.frame(target.createView(), 'redraw', 0.1 * i);
+    expect(differing(await draw(r), a), 'the same moment again').toBe(0);
+  });
+
+  it('stands still with no wind, or on the rung that gives the wind up', async () => {
+    await r.setGrass(field({ kinds: [ROUGH] }, false));
+    look(r, 4, 4, 8);
+    r.wind = { direction: [1, 0], strength: 0, gustSize: 6, gustSpeed: 3 };
+    r.time = 1;
+    const calm1 = await draw(r);
+    r.time = 7;
+    expect(differing(await draw(r), calm1), 'no wind').toBe(0);
+    r.wind = { direction: [1, 0], strength: 1, gustSize: 6, gustSpeed: 3 };
+    r.economy = { ...FULL_ECONOMY, shadows: true, wind: false };
+    const still7 = await draw(r);
+    r.time = 1;
+    expect(differing(await draw(r), still7), 'the rung off').toBe(0);
+    expect(differing(still7, calm1), 'and standing as it does with none').toBe(0);
   });
 
   it('draws each kind, for looking at', async () => {

@@ -31,7 +31,7 @@ import { Particles, type Emit } from './particles';
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
 import { ContactOcclusion } from '../render/ao';
-import { STILL, checkField, type GrassField, type GrassOptions } from './grass';
+import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from './grass';
 import { GrassPass } from './grass-pass';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
@@ -248,6 +248,8 @@ export interface GameEconomy extends SceneVariant {
    * down the ladder thins the field and never reshuffles it. Left out, all.
    */
   grass?: number;
+  /** Whether the grass bends in the wind. Off, it stands at its lean at rest, and a press still shows. Left out, on. */
+  wind?: boolean;
 }
 
 /**
@@ -410,6 +412,15 @@ export class GameRenderer {
   readonly particles: Particles;
   /** The earth's, in the caller's units, unless the game says otherwise. */
   gravity: number;
+  /**
+   * The game's own clock, in seconds, which the grass's wind reads: the
+   * game sets it each frame from the time it steps, so a paused game, or a
+   * test that sets the same moment twice, draws the same picture. The
+   * renderer never reads a clock for it. Nought until it is set.
+   */
+  time = 0;
+  /** The wind the grass bends in, which the game drives. Still until it is set. */
+  wind: Wind = { ...STILL };
 
   /**
    * How many millimetres one world unit is. The world itself — meshes,
@@ -1142,7 +1153,8 @@ export class GameRenderer {
 
     // The grass grown first: the sun's map may want its blades, and the scene pass does.
     const density = Math.max(0, Math.min(1, this.economy.grass ?? 1));
-    this.grassGrown = !!this.grass?.live && this.grass.grow(encoder, this.camera, this.height, density, STILL, 0);
+    const wind = this.economy.wind === false ? STILL : this.wind;
+    this.grassGrown = !!this.grass?.live && this.grass.grow(encoder, this.camera, this.height, density, wind, this.time);
     const colourView = this.colour.createView();
     const depthView = this.depth.createView();
 

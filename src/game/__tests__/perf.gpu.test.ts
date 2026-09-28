@@ -159,6 +159,10 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.setGrass(golfField());
     measured.golf = await time();
     const home = await r.grassDrawn();
+    r.wind = { direction: [1, 0.3], strength: 1, gustSize: 20, gustSpeed: 4 };
+    r.time = 37.5;
+    measured['golf windy'] = await time();
+    r.wind = { ...r.wind, strength: 0 };
     r.camera.position = [0, -Math.sin(0.78) * 30, Math.cos(0.78) * 30];
     measured['golf near'] = await time();
     r.camera.position = [0, -Math.sin(0.78) * 62, Math.cos(0.78) * 62];

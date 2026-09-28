@@ -164,8 +164,8 @@ const NEAR_ACROSS = array<f32, 15>(-0.5, 0.5, 0.4, -0.5, 0.4, -0.4, -0.4, 0.4, 0
 const FAR_U = array<f32, 3>(0.0, 0.0, 1.0);
 const FAR_ACROSS = array<f32, 3>(-0.5, 0.5, 0.0);
 
-/** Value noise over the ground, nought to one: patches of darker and lighter grass. */
-fn patchNoise(p: vec2f) -> f32 {
+/** Value noise over the ground, nought to one, as noise2 in grass.ts: patches of grass, and the gusts. */
+fn groundNoise(p: vec2f) -> f32 {
   let i = floor(p);
   let f = p - i;
   let s = f * f * (3.0 - 2.0 * f);
@@ -176,6 +176,21 @@ fn patchNoise(p: vec2f) -> f32 {
   let c = grassUnit(grassHash(grassHash(ix) + iy + 1u));
   let d = grassUnit(grassHash(grassHash(ix + 1u) + iy + 1u));
   return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+/**
+ * How far the wind bends a blade of the give it has, rooted at p, in radians, as
+ * bend() in grass.ts: the gust there, carried downwind by the game's time,
+ * and a flutter at the blade's own phase. wind is its direction, strength
+ * and gust size; gust.xy its gusts' speed and the time.
+ */
+fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
+  let s = give * grass.wind.z;
+  let dir = grass.wind.xy;
+  let u = (dot(p, dir) - grass.gust.x * grass.gust.y) / grass.wind.w;
+  let v = dot(p, vec2f(-dir.y, dir.x)) / grass.wind.w;
+  let g = 0.65 * groundNoise(vec2f(u, v)) + 0.35 * groundNoise(vec2f(2.0 * u + 5.2, 2.0 * v + 1.3));
+  return s * (0.25 + 0.75 * g) + 0.1 * s * sin(6.2831853 * (3.0 * grass.gust.y + phase));
 }
 
 @vertex fn vsMain(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
@@ -206,7 +221,11 @@ fn patchNoise(p: vec2f) -> f32 {
     lean = along * (odd * 2.0 - 1.0) * k.shape.w * 1.5707963;
     shade = 1.0 + (odd - 0.5) * k.extra.x;
   }
-  let bent = lean;
+  // the wind on top, downwind; nothing when it is still, which is also how the rung that gives it up is told
+  var bent = lean;
+  if (grass.wind.z > 0.0) {
+    bent += grass.wind.xy * windBend(root.xy, k.motion.x, grassUnit(grassHash(id + 6u)));
+  }
   let theta = min(length(bent), MAX_BEND);
   let dir = select(facing, bent / max(length(bent), 1e-6), length(bent) > 1e-6);
 
@@ -224,7 +243,7 @@ fn patchNoise(p: vec2f) -> f32 {
   n = normalize(mix(n, vec3f(0.0, 0.0, 1.0), 0.6));
 
   let vary = 1.0 + k.shape.y * (grassUnit(grassHash(id + 4u)) * 2.0 - 1.0);
-  let patchy = 1.0 + k.shape.y * (patchNoise(root.xy / 3.0) * 2.0 - 1.0);
+  let patchy = 1.0 + k.shape.y * (groundNoise(root.xy / 3.0) * 2.0 - 1.0);
   var o: VsOut;
   o.pos = through * vec4f(world, 1.0);
   o.world = world;
