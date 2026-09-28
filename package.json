@@ -18,7 +18,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:gpu": "vitest run --config vitest.browser.config.ts"
+    "test:gpu": "vitest run --config vitest.browser.config.ts",
+    "perf:gpu": "VITE_PERF=1 vitest run --config vitest.browser.config.ts src/game/__tests__/perf.gpu.test.ts",
+    "perf:gpu:update": "VITE_PERF=1 VITE_PERF_UPDATE=1 vitest run --config vitest.browser.config.ts src/game/__tests__/perf.gpu.test.ts"
   },
   "dependencies": {
     "earcut": "^3.2.3"

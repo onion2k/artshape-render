@@ -13,13 +13,16 @@ here, or that nothing does.
     npm test            the node suite: Vitest, src/**/*.test.ts, jsdom where a DOM is wanted (~5 s)
     npm run test:gpu    the GPU suite: src/**/*.gpu.test.ts in the machine's own Chrome, headless,
                         WebGPU on (vitest.browser.config.ts); VITE_FRAME_DIR=dir writes its frames as PNGs
+    npm run perf:gpu    the game path's frame timed on this GPU and held to perf-baseline.json (~5 s)
+    npm run perf:gpu:update   writes this GPU's figures as its baseline
 
 There is no `check` script, no pre-commit hook, no lint and no formatter.
 Until there are:
 
 - **The quick check** is `npm run typecheck && npm test`. It is what CI runs
   on every push and pull request (`.github/workflows/check.yml`).
-- **The full check** is the quick check and `npm run test:gpu`. It runs only on a machine
+- **The full check** is the quick check, `npm run test:gpu` and
+  `npm run perf:gpu`. It runs only on a machine
   with a real GPU: a runner's only adapter is SwiftShader, some two hundred
   times slower, so it stays local. Run it before committing anything that
   draws.
@@ -119,8 +122,10 @@ A library's test API is its own constructors, run headless:
 - **The still-life renderer** has `pending`, which a test waits on until
   bakes have landed. It never counts frames.
 
-What a test cannot do yet is time a frame and hold it to a number. See the
-gates.
+- **Timing a frame:** `perf.gpu.test.ts` times `standardScene()` (a
+  ground, four hundred boxes, ooergolf's toon daylight look from its home
+  view, at 1280×800) as a median of throughput runs, and `perf.ts` judges
+  it. A feature's own scene joins it there.
 
 ## Edge-case checklist
 
@@ -159,13 +164,14 @@ For anything new on the game path, say what it does:
 | typecheck | every source compiles, GPU tests included | none | exact |
 | node suite | the maths, meshes, parts and DSL; 973 tests at v0.18.0 | none | exact |
 | GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow; 103 tests in 20 files at v0.18.0, ~20 s on an M4 Pro | none: no golden pictures | per test |
+| perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. |
 
 **Missing, and each is a house rule this project does not yet meet:**
 
-- **No performance gate.** Nothing holds a frame to a budget or a baseline.
+- **No performance gate for the still-life renderer, and none in CI.**
   `headroom.gpu.test.ts` prints stage times for the still-life renderer and
-  holds none of them. The game path's frame costs quoted in comments come
-  from a spike and are not re-measured.
+  holds none of them. `perf:gpu` holds the game path, on a machine that has
+  a baseline, and SwiftShader would say nothing true about it.
 - **No look gate.** No picture is held. The GPU tests assert properties of
   pixels, which catch a broken feature but not a changed look.
 - **No full-check script, no pre-commit hook, no lint, no formatter.**
