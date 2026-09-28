@@ -222,6 +222,41 @@ the gamma lifts every black pixel it lands on to a grey — the particle
 tests, which take a black frame as their zero, caught it — so it is added
 to the displayed value and weighted to the midtones.
 
+## Grass on the game path
+
+`src/game/__tests__/grass.test.ts` holds what grass is without a device: a
+field refused where it cannot be what it says; the blades grown from a seed,
+only in their own kind's cells, at the density asked, anchored so that
+changing one patch of the mask leaves every other blade where it was; the
+chunks a camera sees; the share kept at a distance, falling without a step,
+and a blade shrinking to nothing before it goes; the gust carried downwind;
+and the trample, pressed, recovered, refusing what it should and never
+growing. `grass.gpu.test.ts` holds it on a device: that the GPU grows the
+very blades `grass.ts` does (the same hash in both languages, held equal to
+1e-4); that a game never asking compiles the 46 pipelines v0.18.0 did and
+draws the same frame; the mask, the stripes, the thinning, the rungs, the
+capacity, the kept frame, the sun's shadow and the fog; the wind at two
+moments and the same moment twice; and the trample, pressed, halfway and
+recovered to the pixel. `VITE_FRAME_DIR` writes a picture of each kind.
+
+**Measure blades, not windows.** A green's blades cover a third of what is
+under them from three-quarters above, so a mean over a window is mostly the
+earth between them, which does not change; the stripes and the shadow tests
+read the blades' own pixels. And a camera sweep cannot tell a blade that
+blinks out from one that shrinks, since the camera's own movement swamps
+both: the shrinking is held by one blade at a known rank.
+
+**`perf:gpu` wants a quiet GPU.** It holds each scene to a baseline for
+the adapter within 15% both ways. Another app on the GPU (an image
+generator was seen to) moves every scene 10-30% together; when the
+standard scene, which has no grass, moves as much as the rest, it is the
+machine. Judge a change against its parent commit run alternately instead,
+and take baselines only when it is quiet. And warm the GPU before timing
+anything: one that sat idle while the renderer was set up runs slow for a
+while, and the scene timed first read a sixth over its baseline in half of
+the runs on a quiet machine until three hundred frames were drawn before
+it.
+
 ## Volumetric fog on the game path
 
 `src/game/__tests__/fog.gpu.test.ts` marches fog through an otherwise black

@@ -1,0 +1,9 @@
+{
+  "apple/metal-3": {
+    "standard": 0.597,
+    "golf": 0.96,
+    "golf windy": 1.11,
+    "golf near": 1.22,
+    "golf half": 0.77
+  }
+}

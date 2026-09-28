@@ -84,7 +84,18 @@ fn finite(c: vec3f) -> vec3f {
 }
 `;
 
-const SCENE = FINITE_WGSL + `
+/**
+ * The scene shader in four pieces, joined in order: what every stage reads
+ * (the frame, the lights, the shadows and what the vertex stage hands on),
+ * the vertex stage a group's placements are drawn through, the material's
+ * functions, and the fragment stage that lights a surface. Joined, they are
+ * the shader as it always was, to the byte. Apart, a thing drawn some other
+ * way (a blade of grass, built from where it grows rather than from a mesh)
+ * has a vertex stage of its own and is lit by the same fragment stage: the
+ * same toon bands, shadows, lights and occlusion, with no second copy of any
+ * of them to drift from the first.
+ */
+const SCENE_HEAD = FINITE_WGSL + `
 struct Frame {
   viewProj: mat4x4f,
   camPos: vec3f, exposure: f32,
@@ -222,7 +233,10 @@ struct VsOut {
   @location(6) @interpolate(flat) second: vec3f,
 };
 
-@vertex fn vsMain(
+`;
+
+/** The vertex stage of a group: a mesh's vertices, placed by a matrix per placement. */
+const SCENE_VERTEX = `@vertex fn vsMain(
   @location(0) position: vec3f, @location(1) normal: vec3f,
   @location(4) m0: vec4f, @location(5) m1: vec4f, @location(6) m2: vec4f, @location(7) m3: vec4f,
   // colour and roughness per placement, in their own instance buffer so that
@@ -246,7 +260,10 @@ struct VsOut {
   return out;
 }
 
-fn cellHash(c: vec3f) -> f32 {
+`;
+
+/** What the fragment stage shades with: the pattern field, the Fresnel term and the highlight. */
+const SCENE_MATERIAL = `fn cellHash(c: vec3f) -> f32 {
   return fract(sin(dot(c, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
 }
 
@@ -303,7 +320,10 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
   return d * g / max(4.0 * ndl * ndv, 1e-4);
 }
 
-@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+`;
+
+/** The fragment stage: a surface lit by the sun, the lights, the occlusion and the sky, whatever drew it. */
+const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
   let n = normalize(in.normal);
   let v = normalize(frame.camPos - in.world);
   let ndv = max(dot(n, v), 1e-4);
@@ -440,10 +460,19 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, ndv: f32, a2: f32, k: f32) -> f32 {
 }
 `;
 
-export function sceneSource({ cullLights = true, points = true, shadows = true, patterned = false, toon = false }: SceneVariant = {}): string {
+export function sceneSource(variant: SceneVariant = {}): string {
+  return sceneWith(SCENE_VERTEX, variant);
+}
+
+/**
+ * The scene shader with `vertex` in place of a group's vertex stage: any
+ * vertex stage that fills in a `VsOut` is lit as a group is, in the same
+ * build. `sceneSource` is this with a group's own.
+ */
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false }: SceneVariant = {}): string {
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\n`
-    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE;
+    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE_HEAD + vertex + SCENE_MATERIAL + SCENE_FRAGMENT;
 }
 
 /**
