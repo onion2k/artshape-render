@@ -188,16 +188,20 @@ await game.prepare();                          // the four-sample builds, and FX
 game.economy = { ...game.economy, antialias: 'fxaa' };   // a slower machine's rung
 ```
 
-**Toon light has depth when a look asks.** Four settings of a toon look,
+**Toon light has depth when a look asks.** Five settings of a toon look,
 each off unless set, and each a few instructions a pixel: `bandSoftness`
 eases the bands' edges (and the glint's) so a band's edge on a curve is a
 clean line; `shadeColour` tints the shaded band and the sun's shadow toward
 a colour instead of a darker grey; `rim`, `rimColour` and `rimWidth` put a
 bright edge where a surface turns from the camera; and `skyLight` and
 `groundLight` light a surface from above in the one and from below in the
-other, in place of the environment's grey. The grass is lit by the same
-fragment stage, so it takes them too. A physically based look ignores all
-four: its Fresnel term is its rim, and its environment its sky.
+other, in place of the environment's grey; and `form` keeps some of the
+sun's fall-off in the top band, so a slope turned from the sun is a little
+darker than flat ground and one facing it a little brighter, and a gentle
+hill, which a high sun would otherwise light as brightly as the flat, shows
+its shape. The grass is lit by the same fragment stage, so it takes them
+too. A physically based look ignores all five: its Fresnel term is its rim,
+its environment its sky, and its fall-off is the sun's own.
 
 ```ts
 game.look = {
@@ -206,6 +210,7 @@ game.look = {
   shadeColour: [0.5, 0.52, 0.8],            // a cool blue-violet shade
   rim: 0.5, rimColour: [1, 0.95, 0.85], rimWidth: 0.3,
   skyLight: [0.42, 0.5, 0.62], groundLight: [0.45, 0.4, 0.28],
+  form: 1.5,                                 // slopes shaded by the sun they take
 };
 ```
 
@@ -219,6 +224,7 @@ GPU other programs were using:
 | `antialias: 'msaa'` | +0.14 ms (0.10 to 0.22) | +0.43 ms (0.37 to 0.58) |
 | `antialias: 'fxaa'` | +0.04 ms | +0.13 ms |
 | the toon light's four, together | +0.01 ms, rounds spread ±0.07 | +0.03 ms, rounds spread ±0.1 |
+| `form: 1.5` (0.21.0) | +0.003 ms, rounds spread -0.06 to 0.03 | +0.04 ms, rounds spread -0.03 to 0.11 |
 
 Each of the toon light's settings alone read under 0.01 ms on the standard
 scene, which is to say no cost could be told from the noise. Alternating

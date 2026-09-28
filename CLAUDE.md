@@ -116,7 +116,7 @@ What to copy the shape of:
   depth). `antialias.gpu.test.ts` holds that a look which does not ask
   compiles nothing more, and draws each rung.
 - **A setting of the look read under a uniform:** the toon light
-  (`bandSoftness`, `shadeColour`, `rim`, `skyLight`). A few instructions a
+  (`bandSoftness`, `shadeColour`, `rim`, `skyLight`, `form`). A few instructions a
   pixel, so a uniform and not a permutation; `toonUniform` packs a look that
   asks for none of it as noughts, and every branch reading it is skipped.
   `toonlight.gpu.test.ts` holds that each moves only what it says.

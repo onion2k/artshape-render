@@ -112,7 +112,7 @@ describe('the toon look\'s own light on the game renderer', () => {
 
   it('draws each asked for as nothing as a look that never mentions it', async () => {
     const nothing = await draw({});
-    const said = await draw({ bandSoftness: 0, rim: 0, rimColour: [1, 0, 0], rimWidth: 0.8, shadeColour: undefined, skyLight: undefined, groundLight: undefined });
+    const said = await draw({ bandSoftness: 0, rim: 0, rimColour: [1, 0, 0], rimWidth: 0.8, shadeColour: undefined, skyLight: undefined, groundLight: undefined, form: 0 });
     expect(differing(nothing, said)).toBe(0);
     expect(covered(nothing).length).toBeGreaterThan(3000);
   });
@@ -121,7 +121,7 @@ describe('the toon look\'s own light on the game renderer', () => {
     const pbr: Partial<Look> = { shading: 'pbr' };
     const plain = await draw(pbr, [ball, floor]);
     r.setSunShadow({ min: [-300, -300, -80], max: [300, 300, 60] });
-    const all = { ...pbr, bandSoftness: 0.1, shadeColour: SHADE, rim: 1, skyLight: [0, 0, 1] as [number, number, number], groundLight: [1, 0, 0] as [number, number, number] };
+    const all = { ...pbr, bandSoftness: 0.1, shadeColour: SHADE, rim: 1, skyLight: [0, 0, 1] as [number, number, number], groundLight: [1, 0, 0] as [number, number, number], form: 2 };
     const shadowed = await draw(pbr, [ball, floor]);
     expect(differing(shadowed, await draw(all, [ball, floor]))).toBe(0);
     r.setSunShadow(null);
@@ -215,6 +215,38 @@ describe('the toon look\'s own light on the game renderer', () => {
     expect(tilt(lit, bottom), 'the underside, toward the ground').toBeLessThan(-40);
     // where the environment's grey was nearly even either way
     expect(Math.abs(tilt(plain, top) - tilt(plain, bottom))).toBeLessThan(40);
+  });
+
+  it('shades the top band by the sun a surface takes against flat ground, and leaves flat ground and the lower bands as they were', async () => {
+    // lit by the sun alone, so each band is one colour and can be told by it
+    const sunOnly: Partial<Look> = { ambient: 0 };
+    const plain = await draw(sunOnly, [ball, floor], 'form off');
+    const formed = await draw({ ...sunOnly, form: 1.5 }, [ball, floor], 'form on');
+    // the ball's two brightest levels as a plain toon look draws it: the top band, and the one below it
+    const onBall = covered(await draw(sunOnly, [ball]));
+    const count = new Map<number, number>();
+    for (const i of onBall) count.set(lum(plain, i), (count.get(lum(plain, i)) ?? 0) + 1);
+    const levels = [...count.entries()].filter(([, n]) => n > 150).map(([l]) => l).sort((a, b) => b - a);
+    const [top, mid] = levels;
+    const inTop = onBall.filter((i) => lum(plain, i) === top),
+      inMid = onBall.filter((i) => lum(plain, i) === mid);
+    expect(inTop.length, 'pixels of the top band').toBeGreaterThan(500);
+    expect(inMid.length, 'and of the one below').toBeGreaterThan(300);
+    // turned from the sun more than flat ground is, darker; facing it more, brighter; the lower band as it was
+    expect(inTop.filter((i) => lum(formed, i) < top - 6).length, 'darker, turned from the sun').toBeGreaterThan(300);
+    expect(inTop.filter((i) => lum(formed, i) > top + 6).length, 'brighter, facing it').toBeGreaterThan(100);
+    expect(unchanged(plain, formed, inMid), 'the band below').toBe(0);
+    // and never darker than the band below, so the top band meets it without a step down
+    expect(Math.min(...inTop.map((i) => lum(formed, i)))).toBeGreaterThanOrEqual(mid - 3);
+    // flat ground in the sun takes what flat ground takes, so it is as it was: the floor's commonest colour
+    const floorCount = new Map<number, number>();
+    const key = (px: Pixels, i: number) => (px.rgb[i * 3] << 16) | (px.rgb[i * 3 + 1] << 8) | px.rgb[i * 3 + 2];
+    const onFloor = [...Array(SIZE * SIZE).keys()].filter((i) => !onBall.includes(i));
+    for (const i of onFloor) floorCount.set(key(plain, i), (floorCount.get(key(plain, i)) ?? 0) + 1);
+    const commonest = [...floorCount.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const sunnyFloor = onFloor.filter((i) => key(plain, i) === commonest);
+    expect(sunnyFloor.length, 'pixels of flat ground in the sun').toBeGreaterThan(5000);
+    expect(unchanged(plain, formed, sunnyFloor)).toBe(0);
   });
 
   it('lights the grass by the same light, since it is shaded by the same fragment stage', async () => {

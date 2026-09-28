@@ -125,6 +125,9 @@ struct Frame {
   rim: vec3f, rimWidth: f32,
   sky: vec3f, hemisphere: f32,
   ground: vec3f, shaded: f32,
+  // form is how much of the sun's fall-off the top band keeps, against what
+  // flat ground takes; the spares keep the struct a whole number of rows
+  form: f32, spare0: f32, spare1: f32, spare2: f32,
 };
 /**
  * A light: where it is, how far it reaches, what it puts out, and — for a
@@ -391,6 +394,21 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
       let gleam = ggx(n, v, l, ndv, a2, k) * into;
       let g = 0.5 * max(fwidth(gleam), 1e-4);
       glint = 0.3 * (1.0 - rough) * smoothstep(2.0 - g, 2.0 + g, gleam);
+    }
+    // The top band shaded by the sun a surface takes against what flat
+    // ground, facing straight up, takes, so a hill shows its form: never
+    // below the band beneath, so the two meet without a step down, and only
+    // the top band's share of an eased edge. Asked for nothing, the bands
+    // above, to the bit.
+    if (frame.form > 0.0) {
+      let flat = max(l.z, 0.1);
+      let top = clamp(1.0 + frame.form * (into - flat) / flat, TOON_MID, 1.25);
+      var inTop = select(0.0, 1.0, into > 0.45);
+      if (frame.softness > 0.0) {
+        let w = 0.5 * max(frame.softness, fwidth(into));
+        inTop = smoothstep(0.45 - w, 0.45 + w, into);
+      }
+      band = band + (top - 1.0) * inTop;
     }
     colour = f0 * band * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
     // The shade tinted toward the look's colour rather than only darker, and
