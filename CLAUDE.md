@@ -96,6 +96,13 @@ What to copy the shape of:
   It is `look.occlusion` (0 is none and no passes) and `economy.occlusion`,
   and `occlusion.gpu.test.ts` checks that it darkens where it should, and
   does not with the strength at nothing or the rung off.
+- **Something a game sees that the GPU grows:** grass. `grass.ts` is the
+  thing without its picture (the field, the blades' growth, the thinning,
+  the wind, the trample), and `grass-pass.ts` grows and draws it, lit by the
+  scene's own fragment stage through `sceneWith`. The WGSL grows the same
+  blades as the TypeScript, and a GPU test holds the two equal. It is made
+  only when a game first calls `setGrass`. Its tests are `grass.test.ts` and
+  `grass.gpu.test.ts`, and its cost is the `golf` scenes in `perf:gpu`.
 - **A shader variant:** toon (`SceneVariant.toon`). It is a module constant
   in the WGSL and not a uniform, so every build of the scene shader is
   compiled up front. `toon.gpu.test.ts` holds that a look which says

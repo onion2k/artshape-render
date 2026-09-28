@@ -93,7 +93,7 @@ deliberate — where the sketches live is the application's business.
     src/assembly/   placements, grouping by mesh, body counting
     src/render/     the renderer, the tracer, the bakes, materials, the viewer
     src/dsl/        the language: lexer, parser, evaluator, builtins
-    src/game/       the other renderer: forward, every frame, many lights
+    src/game/       the other renderer: forward, every frame, many lights, grass
 
 ## The game path
 
@@ -170,6 +170,37 @@ stops at edges; the scene darkens its ambient term by all of it and its
 lights by `occlusionDirect` of it. `occlusionRadius` is the size of gap it
 darkens, in world units. The `occlusion` rung gives up the three passes.
 
+**Grass is its own pass, and the one thing here that culls and thins.** A
+game hands `setGrass` a field: a grid over its ground saying which of up to
+eight kinds grows in each cell (none where a cup is cut or a rail stands)
+and how high the ground is there, what grows beyond it, and a seed. No blade
+is ever listed. Each frame the CPU picks the chunks in view, a compute pass
+grows every blade in them from the seed and the mask and keeps those in
+view and kept at their distance, and two indirect draws put five triangles
+on a near blade and one on a far; they never come back to the CPU. A blade
+is lit by the scene's own fragment stage, so the look reaches it as it
+reaches anything, but it is drawn into neither the sun's map (unless asked)
+nor the occlusion's prepass, which were half of what blades cost as a
+group: a million of those measured 7.8 ms on an M4 Pro at 1280x800.
+
+```ts
+import { grassGround, type GrassField } from 'artshape-render/game/grass';
+
+await game.setGrass(field, { trample: { origin, cell: 0.25, cols, rows } });
+game.time = gameTime;             // the game's own clock: the wind and the trample read it
+game.wind = { direction: [1, 0.3], strength: 0.6, gustSize: 20, gustSpeed: 4 };
+game.press(ball.x, ball.y, 1, vx, vy);   // the grass laid flat behind a rolling ball, standing again in six seconds
+```
+
+It thins as `(near / d)²` past `near`, so a field to the horizon costs what
+its near part does, and a blade sinks into the ground as the camera draws
+back rather than blinking out; `economy.grass` thins it by the same ranks
+and `economy.wind` stills it. The golf field (a 27 by 39 green and rough to
+300 units, 92,000 blades at the home view) adds about 0.36 ms. A game that
+never calls `setGrass` compiles nothing more and draws the same frame.
+`grassGround(kind)` is the colour to paint the ground under a kind, so the
+gaps between blades do not show.
+
 Everything the ladder can give up is a shader permutation rather than a
 uniform. A branch the compiler cannot fold leaves the code resident, and
 residency is most of what a shader costs: gating the still life's table
@@ -200,8 +231,9 @@ that leaks a line into them is caught.
 
 ## Checking it
 
-    npm test          920 tests, node
-    npm run test:gpu  75 tests, headless Chrome with a real device
+    npm test          1,024 tests, node
+    npm run test:gpu  125 tests, headless Chrome with a real device
+    npm run perf:gpu  the game path's frame, held to a baseline for this GPU
     npm run typecheck
 
 The GPU suite runs in the machine's own Chrome through Vitest's browser
