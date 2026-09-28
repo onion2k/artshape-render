@@ -90,6 +90,18 @@ of the full bake — it failed about half of full runs and never alone.
   `shaders.test.ts` holds every stage that writes or reads the frame to
   going through `finite`, so a stage added later cannot forget.
 
+  The environment's bake (`src/render/__tests__/env.gpu.test.ts`) is held
+  to a rule Chrome does not enforce: no pipeline is asked for a bind group
+  its shader does not have. The split-sum table's shader has no bindings,
+  and the bake used to ask its pipeline for the layout at group nought;
+  Chrome hands one back regardless, Firefox makes the group invalid, and
+  the pass shared its encoder with the sky and the prefilter, so in
+  Firefox the whole bake was dropped and no scene had its sky. The GPU
+  suite runs in Chrome, which would never have shown it, so the test
+  watches what the bake asks for rather than waiting for an error. It was
+  found by running a game in Firefox and reading its console, which is
+  worth doing again whenever a pass or a pipeline is added.
+
   These are pixel checks rather than timings, deliberately. Six separate
   faults in the spike that produced this renderer's design had no symptom
   except a plausible number, and every one was caught by rendering it and
