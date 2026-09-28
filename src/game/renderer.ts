@@ -28,7 +28,10 @@ import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
-import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, SPOT_SHADOWS, sceneSource, type SceneVariant } from './shaders';
+import {
+  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, sceneSource,
+  type SceneVariant,
+} from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
 import { ContactOcclusion } from '../render/ao';
 import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from './grass';
@@ -193,6 +196,158 @@ export interface Look {
    * sees past the arena's edge.
    */
   background: [number, number, number];
+  /**
+   * How the edges of things are smoothed, so a rail, a string or a pole has
+   * no stair steps and a thin thing does not shimmer as the camera moves.
+   * Left out, or 'none', neither, as it always was.
+   *
+   * 'msaa' draws the scene at four samples a pixel, colour and depth, and
+   * resolves it before the fog and the post chain see it: everything drawn
+   * into the scene (groups, grass, particles, sprites, effect layers, and
+   * the static half a kept frame holds) is smoothed where it covers part of
+   * a pixel, and nothing inside a surface changes. The fog marches the
+   * first sample of each pixel's depth; the occlusion takes its own depth
+   * pass at one sample, as it always did, and is blurred at half the frame
+   * anyway. It costs the most, in time and in memory: at 1280x800 the
+   * multisampled colour and depth are 49 MB, and as much again for a kept
+   * frame once `keep` is drawn with it.
+   *
+   * 'fxaa' smooths the finished frame in one pass instead (see FXAA_WGSL):
+   * cheaper, and softer, and it softens a little of what is sharp on purpose.
+   *
+   * The builds either needs are compiled the first time a frame is asked
+   * for with it, never before, so a game that does not ask compiles nothing
+   * more; `prepare` compiles them and says when they are in, and until then
+   * a frame is drawn with what is. The ladder holds it down with
+   * `economy.antialias`.
+   *
+   * Measured on an M4 Pro at 1280x800, alternated with none in nine rounds
+   * on a shared GPU: four samples added 0.14 ms to `perf:gpu`'s standard
+   * scene (0.10 to 0.22) and 0.43 ms to its golf field (0.37 to 0.58), whose
+   * every blade is drawn into them; FXAA added 0.04 ms and 0.13, more where
+   * more of the frame is edges.
+   */
+  antialias?: Antialias;
+  /**
+   * Toon only: the width the bands' edges are eased over, as a share of the
+   * sun a surface takes (the bands change at 0.05 and 0.45 of it), so a
+   * band's edge on a curve is a smooth line and not a stair. It is never
+   * eased over less than the share changes across a pixel, and the glint's
+   * edge, a stair of its own, is eased over a pixel with it. Held to 0.1,
+   * past which a surface in the sun's own shadow would lift off the deepest
+   * band. Left out, or nought, the hard steps they always were. A few
+   * instructions a pixel, and no cost could be told from the noise: a
+   * median under 0.01 ms over nine rounds on the standard scene at 1280x800,
+   * the rounds spread about 0.07 either way.
+   */
+  bandSoftness?: number;
+  /**
+   * Toon only: what a surface's colour is multiplied by in the deepest shade,
+   * turned from the sun or in its shadow, so the shade is a colour of its
+   * own and not a darker grey: a cool blue-violet such as [0.5, 0.52, 0.8]
+   * for a sunny day. The band between the shade and the light is tinted half
+   * as far, and a softened edge by as far as it is eased. Left out, the
+   * bands' grey as it always was, which is as if it were [0.6, 0.6, 0.6]. A
+   * few instructions a pixel, and no cost could be told from the noise: a
+   * median under 0.01 ms over nine rounds on the standard scene at
+   * 1280x800, the rounds spread about 0.07 either way.
+   */
+  shadeColour?: [number, number, number];
+  /**
+   * Toon only: how bright a rim of light is where a surface turns from the
+   * camera, so a thing stands off whatever is behind it. It is added, at
+   * `rimColour` times this, and is brightest edge-on, falling to nothing
+   * `rimWidth` in. A flat ground seen at a grazing angle is all edge, so it
+   * takes the rim too: a width under the ground's own at the game's views
+   * keeps it off. Left out, or nought, no rim. A few instructions a pixel,
+   * and no cost could be told from the noise: a median under 0.01 ms over
+   * nine rounds on the standard scene at 1280x800, the rounds spread about
+   * 0.07 either way.
+   */
+  rim?: number;
+  /** The rim's colour. Left out, white. */
+  rimColour?: [number, number, number];
+  /**
+   * How far in from the edge the rim reaches, from nothing to one: the
+   * share of the way from edge-on to facing the camera, by the cosine of the
+   * angle between them. On a ball, 0.3 is the outer twentieth of its radius
+   * and 0.5 the outer seventh. Left out, 0.35.
+   */
+  rimWidth?: number;
+  /**
+   * Toon only: the light from above and the light from below, in place of
+   * the environment's brightness, which toon takes as a grey. A surface
+   * facing straight up takes `skyLight`, one facing straight down
+   * `groundLight` (a warm bounce off the grass, say), and one between a mix
+   * by how far it faces up; each times the surface's colour and the look's
+   * `ambient`. The environment still gives the gleam on what is smooth.
+   * Either left out takes the other; both left out, the environment's grey,
+   * which is the environment's brightness in that direction halved. A few
+   * instructions a pixel, and no cost could be told from the noise: a
+   * median under 0.01 ms over nine rounds on the standard scene at 1280x800,
+   * the rounds spread about 0.07 either way.
+   */
+  skyLight?: [number, number, number];
+  /** The light from below: see `skyLight`. */
+  groundLight?: [number, number, number];
+}
+
+/**
+ * How the edges of things are smoothed: see `Look.antialias`. In the order
+ * of their cost, so a ladder that steps down takes the next one along.
+ */
+export type Antialias = 'none' | 'fxaa' | 'msaa';
+const ANTIALIAS: readonly Antialias[] = ['none', 'fxaa', 'msaa'];
+
+/** Samples a pixel when the scene is multisampled: four, which every WebGPU device has for these formats. */
+export const SAMPLES = 4;
+
+/**
+ * The antialiasing a frame is drawn with: what the look asks for, held to
+ * what the economy allows. The economy never raises it: a look that asks
+ * for none gets none on every rung.
+ */
+export function antialiasFor(look: Pick<Look, 'antialias'>, economy: Pick<GameEconomy, 'antialias'>): Antialias {
+  const asked = Math.max(0, ANTIALIAS.indexOf(look.antialias ?? 'none'));
+  const allowed = economy.antialias === undefined ? ANTIALIAS.length - 1 : Math.max(0, ANTIALIAS.indexOf(economy.antialias));
+  return ANTIALIAS[Math.min(asked, allowed)];
+}
+
+/** Floats the toon look's own light takes in the frame's uniform, after the thirty-two it always had. */
+export const TOON_FLOATS = 16;
+/** The widest the toon bands' edges may be eased over. */
+export const MAX_BAND_SOFTNESS = 0.1;
+/** How far in the rim reaches when the look does not say. */
+export const RIM_WIDTH = 0.35;
+
+/**
+ * The toon look's own light, packed as the scene shader's `Frame` reads it
+ * after `lightCount`: the shade colour and the bands' softness, the rim's
+ * colour at its strength and its width, the sky's light and whether there
+ * is a sky and ground at all, and the ground's light and whether there is a
+ * shade colour. A look that asks for none of it packs noughts, and every
+ * branch in the shader that reads them is skipped: the frame is as it was.
+ * What is not a number is taken as not asked.
+ */
+export function toonUniform(out: Float32Array, look: Look, offset = 0): Float32Array {
+  const num = (x: number | undefined, fallback: number) => (x !== undefined && Number.isFinite(x) ? x : fallback);
+  const colour = (c: [number, number, number] | undefined) => (c && c.every(Number.isFinite) ? c : undefined);
+  const shade = colour(look.shadeColour);
+  out.set(shade ?? [0, 0, 0], offset);
+  out[offset + 3] = Math.min(MAX_BAND_SOFTNESS, Math.max(0, num(look.bandSoftness, 0)));
+  const strength = Math.max(0, num(look.rim, 0));
+  const width = Math.min(1, Math.max(0, num(look.rimWidth, RIM_WIDTH)));
+  const rim = colour(look.rimColour) ?? [1, 1, 1];
+  const lit = strength > 0 && width > 0;
+  out.set(lit ? [rim[0] * strength, rim[1] * strength, rim[2] * strength] : [0, 0, 0], offset + 4);
+  out[offset + 7] = lit ? width : 0;
+  const sky = colour(look.skyLight) ?? colour(look.groundLight);
+  const ground = colour(look.groundLight) ?? sky;
+  out.set(sky ?? [0, 0, 0], offset + 8);
+  out[offset + 11] = sky ? 1 : 0;
+  out.set(ground ?? [0, 0, 0], offset + 12);
+  out[offset + 15] = shade ? 1 : 0;
+  return out;
 }
 
 /**
@@ -236,7 +391,11 @@ export interface GameEconomy extends SceneVariant {
   effects: number;
   /** Whether the particle pool is simulated and drawn. Off, it is neither. */
   particles?: boolean;
-  /** Whether the post chain runs. Off, the frame is tonemapped and nothing else. */
+  /**
+   * Whether the post chain runs. Off, the frame is tonemapped and nothing
+   * else of it: no bloom, vignette or grain. The antialiasing has a rung of
+   * its own.
+   */
   post?: boolean;
   /** Whether the fog is marched. Off, there is none, whatever its density says. */
   fog?: boolean;
@@ -250,6 +409,14 @@ export interface GameEconomy extends SceneVariant {
   grass?: number;
   /** Whether the grass bends in the wind. Off, it stands at its lean at rest, and a press still shows. Left out, on. */
   wind?: boolean;
+  /**
+   * The most antialiasing the frame may spend (see `Look.antialias`):
+   * 'msaa' whatever the look asks, 'fxaa' the cheaper pass in place of four
+   * samples a pixel, 'none' neither. It never gives more than the look asks.
+   * Left out, whatever the look asks. Both builds stay compiled once asked
+   * for, so a step either way is the next frame.
+   */
+  antialias?: Antialias;
 }
 
 /**
@@ -276,6 +443,39 @@ export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vign
 
 export const FULL_ECONOMY: GameEconomy = { cullLights: true, points: true, effects: 1, particles: true, post: true, fog: true, occlusion: true };
 
+/** A placement's matrix, the four columns of it, one placement a step. */
+const INSTANCE_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: 64, stepMode: 'instance',
+  attributes: [4, 5, 6, 7].map((loc, k) => ({ shaderLocation: loc, offset: k * 16, format: 'float32x4' as GPUVertexFormat })),
+};
+// Material rides in its own instance buffer rather than alongside the
+// matrix, so that moving a thing and recolouring it stay separate writes.
+// A game moves everything every frame and recolours a handful of things
+// when they are hit; one write of sixteen floats a placement is cheap
+// where one of twenty, every frame, is a quarter more traffic for nothing.
+const MATERIAL_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: 16, stepMode: 'instance',
+  attributes: [{ shaderLocation: 8, offset: 0, format: 'float32x4' as GPUVertexFormat }],
+};
+const PATTERN_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: PATTERN_STRIDE * 4, stepMode: 'instance',
+  attributes: [
+    { shaderLocation: 9, offset: 0, format: 'float32x4' as GPUVertexFormat },
+    { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
+  ],
+};
+/** Every build of the scene shader, each with and without patterns and toon shading. */
+const SCENE_VARIANTS: SceneVariant[] = [];
+for (const toon of [false, true]) {
+  for (const patterned of [false, true]) {
+    for (const shadows of [true, false]) {
+      for (const points of [true, false]) {
+        for (const cullLights of [true, false]) SCENE_VARIANTS.push({ cullLights, points, shadows, patterned, toon });
+      }
+    }
+  }
+}
+
 interface Uploaded {
   position: GPUBuffer;
   normal: GPUBuffer;
@@ -297,7 +497,38 @@ export class GameRenderer {
   readonly ready: Promise<void>;
 
   private scenePipelines = new Map<string, GPURenderPipeline>();
+  /** The scene shader's builds and their layout, kept to make the multisampled pipelines from when a look first asks for them. */
+  private sceneModules = new Map<string, GPUShaderModule>();
+  private sceneLayoutPipeline: GPUPipelineLayout;
+  private effectModule: GPUShaderModule;
   private effect!: GPURenderPipeline;
+  private effectMsaa: GPURenderPipeline | null = null;
+
+  // The antialiasing: how much of it the look has asked for so far (an
+  // index into ANTIALIAS), the builds each needs, compiled once when first
+  // asked for and never before, and what each draws into, made at the
+  // frame's size once its builds are in. The multisampled colour's samples
+  // are thrown away once resolved; the depth's are kept for the fog.
+  private antialiasAsked = 0;
+  private antialiasBuilt: Promise<void> = Promise.resolve();
+  private msaaBuild: Promise<void> | null = null;
+  private fxaaBuild: Promise<void> | null = null;
+  private msaaCompiled = false;
+  private fxaaCompiled = false;
+  private msaaColour: GPUTexture | null = null;
+  private msaaDepth: GPUTexture | null = null;
+  private msaaKeptColour: GPUTexture | null = null;
+  private msaaKeptDepth: GPUTexture | null = null;
+  /** Whether the kept frame at four samples a pixel still matches the static half. */
+  private keptStaleMsaa = true;
+  private fogMsaaLayout: GPUBindGroupLayout | null = null;
+  private fogMsaaPipeline: GPURenderPipeline | null = null;
+  private fogMsaaBind: GPUBindGroup | null = null;
+  private fxaaLayout: GPUBindGroupLayout | null = null;
+  private fxaaPipeline: GPURenderPipeline | null = null;
+  private fxaaBind: GPUBindGroup | null = null;
+  /** The frame as shown, before FXAA reads it: the composite's target when FXAA is on. */
+  private shown: GPUTexture | null = null;
   private composite!: GPURenderPipeline;
   private compiled = false;
 
@@ -353,7 +584,7 @@ export class GameRenderer {
   private compositeBind: GPUBindGroup | null = null;
 
   private frameBuffer: GPUBuffer;
-  private frameData = new Float32Array(32);
+  private frameData = new Float32Array(32 + TOON_FLOATS);
   private lightBuffer: GPUBuffer;
   private effectBuffer: GPUBuffer;
   private quadBuffer: GPUBuffer;
@@ -444,7 +675,7 @@ export class GameRenderer {
     this.fog = noFog(this.mmPerUnit);
     this.gravity = this.mm(EARTH_MM);
     this.particles = new Particles(ctx, particleCapacity, 128, HDR, DEPTH);
-    this.frameBuffer = device.createBuffer({ label: 'game frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.frameBuffer = device.createBuffer({ label: 'game frame', size: (32 + TOON_FLOATS) * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = emptyBuffer(device, Math.max(1, lightCapacity) * LIGHT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'point lights');
     this.effectBuffer = device.createBuffer({ label: 'effect', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.effectBuffer, 0, this.effectUniform);
@@ -543,58 +774,15 @@ export class GameRenderer {
     this.blurV = device.createBuffer({ label: 'blur down', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.postSampler = device.createSampler({ label: 'post', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
 
-    const instance: GPUVertexBufferLayout = {
-      arrayStride: 64, stepMode: 'instance',
-      attributes: [4, 5, 6, 7].map((loc, k) => ({ shaderLocation: loc, offset: k * 16, format: 'float32x4' as GPUVertexFormat })),
-    };
-    // Material rides in its own instance buffer rather than alongside the
-    // matrix, so that moving a thing and recolouring it stay separate writes.
-    // A game moves everything every frame and recolours a handful of things
-    // when they are hit; one write of sixteen floats a placement is cheap
-    // where one of twenty, every frame, is a quarter more traffic for nothing.
-    const material: GPUVertexBufferLayout = {
-      arrayStride: 16, stepMode: 'instance',
-      attributes: [{ shaderLocation: 8, offset: 0, format: 'float32x4' as GPUVertexFormat }],
-    };
-    const pattern: GPUVertexBufferLayout = {
-      arrayStride: PATTERN_STRIDE * 4, stepMode: 'instance',
-      attributes: [
-        { shaderLocation: 9, offset: 0, format: 'float32x4' as GPUVertexFormat },
-        { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
-      ],
-    };
     // Every permutation is built up front, each with and without patterns and toon shading.
     // They compile in parallel with each other, and a ladder that had to wait
     // for a compile before it could step would step too late to matter.
-    const variants: SceneVariant[] = [];
-    for (const toon of [false, true]) {
-      for (const patterned of [false, true]) {
-        for (const shadows of [true, false]) {
-          for (const points of [true, false]) {
-            for (const cullLights of [true, false]) variants.push({ cullLights, points, shadows, patterned, toon });
-          }
-        }
-      }
-    }
-    const waits: Promise<unknown>[] = variants.map((v) => {
+    this.sceneLayoutPipeline = device.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout] });
+    const waits: Promise<unknown>[] = SCENE_VARIANTS.map((v) => {
       const module = shader(device, sceneSource(v), `game scene ${GameRenderer.key(v)}`);
-      return device.createRenderPipelineAsync({
-        label: `game scene ${GameRenderer.key(v)}`,
-        layout: device.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout] }),
-        vertex: {
-          module, entryPoint: 'vsMain',
-          buffers: [
-            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
-            instance,
-            material,
-            pattern,
-          ],
-        },
-        fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
-        primitive: { topology: 'triangle-list', cullMode: 'none' },
-        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
-      }).then((p) => { this.scenePipelines.set(GameRenderer.key(v), p); });
+      this.sceneModules.set(GameRenderer.key(v), module);
+      return device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1))
+        .then((p) => { this.scenePipelines.set(GameRenderer.key(v), p); });
     });
 
     // The depth pass: position and placement in, depth out, nothing else.
@@ -609,7 +797,7 @@ export class GameRenderer {
         module: dp, entryPoint: 'vsMain',
         buffers: [
           { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-          instance,
+          INSTANCE_LAYOUT,
         ],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -624,7 +812,7 @@ export class GameRenderer {
         module: dp, entryPoint: 'vsMain',
         buffers: [
           { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-          instance,
+          INSTANCE_LAYOUT,
         ],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -632,20 +820,8 @@ export class GameRenderer {
     }).then((p) => { this.occlusionDepthPipeline = p; }));
     waits.push(this.occlusion.ready);
 
-    const fx = shader(device, EFFECT_WGSL, 'game effects');
-    const additive: GPUBlendState = {
-      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-      alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-    };
-    waits.push(device.createRenderPipelineAsync({
-      label: 'game effects',
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.effectLayout] }),
-      vertex: { module: fx, entryPoint: 'vsMain' },
-      fragment: { module: fx, entryPoint: 'fsMain', targets: [{ format: HDR, blend: additive }] },
-      primitive: { topology: 'triangle-list' },
-      // tested but never written: no layer may reject another
-      depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'less-equal' },
-    }).then((p) => { this.effect = p; }));
+    this.effectModule = shader(device, EFFECT_WGSL, 'game effects');
+    waits.push(device.createRenderPipelineAsync(this.effectDescriptor(1)).then((p) => { this.effect = p; }));
 
     for (const [label, code, target] of [['game bright', BRIGHT_WGSL, HDR], ['game blur', BLUR_WGSL, HDR]] as const) {
       const m = shader(device, code, label);
@@ -701,8 +877,214 @@ export class GameRenderer {
     this.ready = Promise.all(waits).then(() => { this.compiled = true; });
   }
 
-  private static key(v: SceneVariant) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.toon ? '-toon' : ''}`;
+  private static key(v: SceneVariant, samples = 1) {
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+  }
+
+  /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
+  private sceneDescriptor(v: SceneVariant, module: GPUShaderModule, samples: number): GPURenderPipelineDescriptor {
+    return {
+      label: `game scene ${GameRenderer.key(v, samples)}`,
+      layout: this.sceneLayoutPipeline,
+      vertex: {
+        module, entryPoint: 'vsMain',
+        buffers: [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+          { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
+          INSTANCE_LAYOUT,
+          MATERIAL_LAYOUT,
+          PATTERN_LAYOUT,
+        ],
+      },
+      fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
+      multisample: { count: samples },
+    };
+  }
+
+  /** The effect layers' pipeline, at one sample a pixel or several. */
+  private effectDescriptor(samples: number): GPURenderPipelineDescriptor {
+    const additive: GPUBlendState = {
+      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+      alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+    };
+    return {
+      label: samples > 1 ? `game effects x${samples}` : 'game effects',
+      layout: this.ctx.device.createPipelineLayout({ bindGroupLayouts: [this.effectLayout] }),
+      vertex: { module: this.effectModule, entryPoint: 'vsMain' },
+      fragment: { module: this.effectModule, entryPoint: 'fsMain', targets: [{ format: HDR, blend: additive }] },
+      primitive: { topology: 'triangle-list' },
+      // tested but never written: no layer may reject another
+      depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'less-equal' },
+      multisample: { count: samples },
+    };
+  }
+
+  /**
+   * Compiles whatever the look asks for that is not compiled yet, and
+   * resolves when it is in: today, the antialiasing's builds, which are
+   * made the first time a look asks for them and never before. `frame`
+   * starts them itself and draws with what is compiled until they are in,
+   * so a game that wants its first frame antialiased awaits this after
+   * setting its look, as it awaits `ready`; one that does not is
+   * antialiased a few frames in. Four samples a pixel compile everything
+   * that draws into the scene again (the scene's builds, the effect layers,
+   * the particles, the grass if there is any, and the fog's march), and
+   * FXAA compiles one pass; with them in, the ladder steps between them in
+   * a frame.
+   */
+  async prepare(): Promise<void> {
+    await this.ready;
+    this.askAntialias();
+    await this.antialiasBuilt;
+  }
+
+  /** Starts the builds the look's antialiasing needs, each once; every other time, nothing. */
+  private askAntialias() {
+    const asked = Math.max(0, ANTIALIAS.indexOf(this.look.antialias ?? 'none'));
+    if (asked <= this.antialiasAsked) return;
+    this.antialiasAsked = asked;
+    // FXAA as well as four samples, since the ladder steps down to it
+    const builds = [this.buildFxaa()];
+    if (ANTIALIAS[asked] === 'msaa') builds.push(this.buildMsaa());
+    this.antialiasBuilt = Promise.all(builds).then(() => undefined);
+  }
+
+  /** What this frame is antialiased with: what the look asks, held to the economy's rung and to what has compiled. */
+  private get antialiasing(): Antialias {
+    const want = antialiasFor(this.look, this.economy);
+    const grass = !this.grass?.live || this.grass.multisampled;
+    if (want === 'msaa' && this.msaaCompiled && this.msaaColour && grass) return 'msaa';
+    if (want !== 'none' && this.fxaaCompiled && this.shown) return 'fxaa';
+    return 'none';
+  }
+
+  private buildMsaa(): Promise<void> {
+    this.msaaBuild ??= this.compileMsaa();
+    return this.msaaBuild;
+  }
+
+  private async compileMsaa() {
+    const { device } = this.ctx;
+    const waits: Promise<unknown>[] = SCENE_VARIANTS.map((v) =>
+      device.createRenderPipelineAsync(this.sceneDescriptor(v, this.sceneModules.get(GameRenderer.key(v))!, SAMPLES))
+        .then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
+    waits.push(device.createRenderPipelineAsync(this.effectDescriptor(SAMPLES)).then((p) => { this.effectMsaa = p; }));
+    // the march reads the multisampled depth, which is a binding of another type
+    this.fogMsaaLayout = device.createBindGroupLayout({
+      label: 'game fog x4',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', multisampled: true } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+      ],
+    });
+    const fog = shader(device, FOG_MSAA_WGSL, 'game fog x4');
+    waits.push(device.createRenderPipelineAsync({
+      label: 'game fog x4',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.fogMsaaLayout] }),
+      vertex: { module: fog, entryPoint: 'vsMain' },
+      fragment: { module: fog, entryPoint: 'fsMain', targets: [{ format: HDR }] },
+      primitive: { topology: 'triangle-list' },
+    }).then((p) => { this.fogMsaaPipeline = p; }));
+    waits.push(this.particles.multisample(SAMPLES));
+    if (this.grass) waits.push(this.grass.multisample(SAMPLES));
+    await Promise.all(waits);
+    this.msaaCompiled = true;
+    this.makeMsaaTargets();
+  }
+
+  private buildFxaa(): Promise<void> {
+    this.fxaaBuild ??= this.compileFxaa();
+    return this.fxaaBuild;
+  }
+
+  private async compileFxaa() {
+    const { device } = this.ctx;
+    this.fxaaLayout = device.createBindGroupLayout({
+      label: 'game fxaa',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+    const m = shader(device, FXAA_WGSL, 'game fxaa');
+    this.fxaaPipeline = await device.createRenderPipelineAsync({
+      label: 'game fxaa',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.fxaaLayout] }),
+      vertex: { module: m, entryPoint: 'vsMain' },
+      fragment: { module: m, entryPoint: 'fsMain', targets: [{ format: this.ctx.format }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.fxaaCompiled = true;
+    this.makeFxaaTargets();
+  }
+
+  /**
+   * The multisampled colour and depth at the frame's size, and the fog's
+   * bind group over that depth: made once the builds are in, and again on a
+   * resize. A kept frame's pair is dropped with them and made again when
+   * `keep` is next drawn.
+   */
+  private makeMsaaTargets() {
+    if (!this.msaaCompiled || !this.width || !this.fogMsaaLayout) return;
+    const { device } = this.ctx;
+    for (const t of [this.msaaColour, this.msaaDepth, this.msaaKeptColour, this.msaaKeptDepth]) t?.destroy();
+    this.msaaKeptColour = this.msaaKeptDepth = null;
+    const size = [this.width, this.height];
+    // COPY_DST both, so a kept frame can be copied in
+    this.msaaColour = device.createTexture({
+      label: 'game colour x4', size, format: HDR, sampleCount: SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+    });
+    this.msaaDepth = device.createTexture({
+      label: 'game depth x4', size, format: DEPTH, sampleCount: SAMPLES,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.fogMsaaBind = device.createBindGroup({
+      label: 'game fog x4', layout: this.fogMsaaLayout,
+      entries: [
+        { binding: 0, resource: this.msaaDepth.createView() },
+        { binding: 1, resource: this.sunMap.createView() },
+        { binding: 2, resource: this.shadowSampler },
+        { binding: 3, resource: { buffer: this.fogBuffer } },
+        { binding: 4, resource: { buffer: this.coneBuffer } },
+        { binding: 5, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
+      ],
+    });
+    this.keptStaleMsaa = true;
+  }
+
+  /** The kept static half at four samples a pixel: made the first time `keep` is drawn with them, since a game that never keeps never needs it. */
+  private makeMsaaKept() {
+    if (this.msaaKeptColour) return;
+    const { device } = this.ctx;
+    const size = [this.width, this.height];
+    const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
+    this.msaaKeptColour = device.createTexture({ label: 'kept colour x4', size, format: HDR, sampleCount: SAMPLES, usage });
+    this.msaaKeptDepth = device.createTexture({ label: 'kept depth x4', size, format: DEPTH, sampleCount: SAMPLES, usage });
+    this.keptStaleMsaa = true;
+  }
+
+  /** What the composite draws into for FXAA to read, at the frame's size, and FXAA's bind group over it. */
+  private makeFxaaTargets() {
+    if (!this.fxaaCompiled || !this.width || !this.fxaaLayout) return;
+    this.shown?.destroy();
+    this.shown = this.ctx.device.createTexture({
+      label: 'game shown', size: [this.width, this.height], format: this.ctx.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.fxaaBind = this.ctx.device.createBindGroup({
+      label: 'game fxaa', layout: this.fxaaLayout,
+      entries: [
+        { binding: 0, resource: this.shown.createView() },
+        { binding: 1, resource: this.postSampler },
+      ],
+    });
   }
 
   /** The environment the material reads: a prefiltered cube and the split-sum lookup. */
@@ -806,6 +1188,7 @@ export class GameRenderer {
     GameRenderer.release(this.staticGroups);
     this.staticGroups = this.upload(groups);
     this.keptStale = true;
+    this.keptStaleMsaa = true;
   }
 
   /** The movers. Their pool is fixed here; `move` writes into it afterwards. */
@@ -1073,6 +1456,9 @@ export class GameRenderer {
       ],
     });
     this.keptStale = true;
+    // and the antialiasing's own, if it has been asked for
+    this.makeMsaaTargets();
+    this.makeFxaaTargets();
   }
 
   private writeFrame() {
@@ -1088,6 +1474,7 @@ export class GameRenderer {
     f[29] = this.occlusionOn ? 1 : 0;
     f[30] = this.look.ambient;
     f[31] = this.economy.points === false ? 0 : this.lightCount;
+    toonUniform(f, this.look, 32);
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
   }
 
@@ -1100,13 +1487,13 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private scenePipeline(patterned: boolean) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, toon: this.look.shading === 'toon' }));
+  private scenePipeline(patterned: boolean, samples: number) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, toon: this.look.shading === 'toon' }, samples));
   }
 
-  private draw(pass: GPURenderPassEncoder, groups: Uploaded[]) {
-    const plain = this.scenePipeline(false);
-    const patterned = this.scenePipeline(true);
+  private draw(pass: GPURenderPassEncoder, groups: Uploaded[], samples = 1) {
+    const plain = this.scenePipeline(false, samples);
+    const patterned = this.scenePipeline(true, samples);
     if (!plain || !patterned || !this.sceneBind) return;
     pass.setBindGroup(0, this.sceneBind);
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
@@ -1128,17 +1515,20 @@ export class GameRenderer {
     }
   }
 
-  /** Draw the static half once into the kept pair, for `keep` to start from. */
-  private bakeKept(encoder: GPUCommandEncoder) {
-    if (!this.keptColour || !this.keptDepth) return;
+  /** Draw the static half once into the kept pair for this many samples a pixel, for `keep` to start from. */
+  private bakeKept(encoder: GPUCommandEncoder, samples = 1) {
+    const colour = samples > 1 ? this.msaaKeptColour : this.keptColour;
+    const depth = samples > 1 ? this.msaaKeptDepth : this.keptDepth;
+    if (!colour || !depth) return;
     const pass = encoder.beginRenderPass({
       label: 'game static',
-      colorAttachments: [{ view: this.keptColour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.clearValue }],
-      depthStencilAttachment: { view: this.keptDepth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+      colorAttachments: [{ view: colour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.clearValue }],
+      depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
-    this.draw(pass, this.staticGroups);
+    this.draw(pass, this.staticGroups, samples);
     pass.end();
-    this.keptStale = false;
+    if (samples > 1) this.keptStaleMsaa = false;
+    else this.keptStale = false;
   }
 
   /**
@@ -1149,14 +1539,23 @@ export class GameRenderer {
     const { device } = this.ctx;
     if (!this.compiled || !this.sceneBind || !this.compositeBind || !this.colour || !this.depth) return false;
     this.writeFrame();
+    // what the frame is antialiased with: the look's ask, held to the rung and to what has compiled
+    this.askAntialias();
+    const aa = this.antialiasing;
+    const samples = aa === 'msaa' ? SAMPLES : 1;
+    const multisampled = samples > 1;
     const encoder = device.createCommandEncoder({ label: 'game frame' });
 
     // The grass grown first: the sun's map may want its blades, and the scene pass does.
     const density = Math.max(0, Math.min(1, this.economy.grass ?? 1));
     const wind = this.economy.wind === false ? STILL : this.wind;
     this.grassGrown = !!this.grass?.live && this.grass.grow(encoder, this.camera, this.height, density, wind, this.time);
+    // Four samples a pixel are drawn into their own colour and depth and
+    // resolved into the frame's colour at the end of the scene pass, which
+    // is what everything after it reads; the fog reads their depth.
     const colourView = this.colour.createView();
-    const depthView = this.depth.createView();
+    const sceneView = multisampled ? this.msaaColour!.createView() : colourView;
+    const depthView = (multisampled ? this.msaaDepth! : this.depth).createView();
 
     // The maps first, so the scene pass can read them. Every frame: the sun
     // moves, the trucks move, and a map of where things were is a shadow of
@@ -1196,7 +1595,14 @@ export class GameRenderer {
       this.occlusion.run(encoder, { fovY: (camera.fov * Math.PI) / 180, aspect: camera.aspect, near: camera.near, far: camera.far, shift: camera.shift });
     }
 
-    if (mode === 'keep') {
+    if (mode === 'keep' && multisampled) {
+      // the kept pair at four samples, copied whole into the frame's own
+      this.makeMsaaKept();
+      if (this.keptStaleMsaa) this.bakeKept(encoder, samples);
+      const size = { width: this.width, height: this.height, depthOrArrayLayers: 1 };
+      encoder.copyTextureToTexture({ texture: this.msaaKeptColour! }, { texture: this.msaaColour! }, size);
+      encoder.copyTextureToTexture({ texture: this.msaaKeptDepth! }, { texture: this.msaaDepth! }, size);
+    } else if (mode === 'keep') {
       if (this.keptStale) this.bakeKept(encoder);
       const size = { width: this.width, height: this.height, depthOrArrayLayers: 1 };
       encoder.copyTextureToTexture({ texture: this.keptColour! }, { texture: this.colour }, size);
@@ -1210,7 +1616,14 @@ export class GameRenderer {
 
     const pass = encoder.beginRenderPass({
       label: 'game scene',
-      colorAttachments: [{
+      colorAttachments: [multisampled ? {
+        view: sceneView,
+        resolveTarget: colourView,
+        loadOp: mode === 'keep' ? 'load' : 'clear',
+        // nothing reads the samples once they are resolved
+        storeOp: 'discard',
+        clearValue: this.clearValue,
+      } : {
         view: colourView,
         loadOp: mode === 'keep' ? 'load' : 'clear',
         storeOp: 'store',
@@ -1223,14 +1636,14 @@ export class GameRenderer {
         depthStoreOp: 'store',
       },
     });
-    if (mode === 'redraw') this.draw(pass, this.staticGroups);
-    this.draw(pass, this.dynamicGroups);
+    if (mode === 'redraw') this.draw(pass, this.staticGroups, samples);
+    this.draw(pass, this.dynamicGroups, samples);
     // the grass moves every frame, so it is drawn with the movers and never kept with the static half
-    if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' });
-    if (particles) this.particles.draw(pass);
+    if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' }, samples);
+    if (particles) this.particles.draw(pass, samples);
     const layers = Math.round(this.effectQuads * Math.max(0, Math.min(1, this.economy.effects)));
     if (layers && this.effectBind) {
-      pass.setPipeline(this.effect);
+      pass.setPipeline(multisampled ? this.effectMsaa! : this.effect);
       pass.setBindGroup(0, this.effectBind);
       pass.draw(6, layers);
     }
@@ -1266,8 +1679,8 @@ export class GameRenderer {
         label: 'game fog',
         colorAttachments: [{ view: this.fogMap.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       });
-      march.setPipeline(this.fogPipeline);
-      march.setBindGroup(0, this.fogBind!);
+      march.setPipeline(multisampled ? this.fogMsaaPipeline! : this.fogPipeline);
+      march.setBindGroup(0, multisampled ? this.fogMsaaBind! : this.fogBind!);
       march.draw(3);
       march.end();
 
@@ -1317,14 +1730,27 @@ export class GameRenderer {
       rp.end();
     }
 
+    // With FXAA, the composite draws the frame as shown into a texture of
+    // its own, and FXAA draws it again into the target, smoothed.
+    const fxaa = aa === 'fxaa';
     const post = encoder.beginRenderPass({
       label: 'game composite',
-      colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      colorAttachments: [{ view: fxaa ? this.shown!.createView() : target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
     });
     post.setPipeline(this.composite);
     post.setBindGroup(0, this.compositeBind);
     post.draw(3);
     post.end();
+    if (fxaa) {
+      const smooth = encoder.beginRenderPass({
+        label: 'game fxaa',
+        colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      });
+      smooth.setPipeline(this.fxaaPipeline!);
+      smooth.setBindGroup(0, this.fxaaBind!);
+      smooth.draw(3);
+      smooth.end();
+    }
 
     device.queue.submit([encoder.finish()]);
     return true;
@@ -1347,6 +1773,8 @@ export class GameRenderer {
     this.grass ??= new GrassPass(this.ctx, this.sceneLayout, HDR, DEPTH, SHADOW);
     this.grass.setField(field, options, this.passBuffers[0]);
     await this.grass.ready;
+    // drawn into four samples a pixel as well, once a look has asked for them
+    if (this.antialiasAsked >= ANTIALIAS.indexOf('msaa')) await this.grass.multisample(SAMPLES);
   }
 
   /**
@@ -1380,6 +1808,7 @@ export class GameRenderer {
     GameRenderer.release(this.staticGroups);
     GameRenderer.release(this.dynamicGroups);
     for (const t of [this.colour, this.depth, this.keptColour, this.keptDepth, this.sunMap, this.spotMaps, this.bloomA, this.bloomB, this.fogMap]) t?.destroy();
+    for (const t of [this.msaaColour, this.msaaDepth, this.msaaKeptColour, this.msaaKeptDepth, this.shown]) t?.destroy();
     for (const b of [this.frameBuffer, this.lightBuffer, this.effectBuffer, this.quadBuffer, this.shadowBuffer, this.postBuffer, this.blurH, this.blurV, this.fogBuffer, this.coneBuffer, ...this.passBuffers]) b.destroy();
     this.particles.dispose();
     this.grass?.dispose();

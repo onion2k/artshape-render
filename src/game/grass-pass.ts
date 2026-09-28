@@ -276,9 +276,16 @@ fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
 /** The scene variants a blade is drawn through: a group's, without the patterns. */
 type GrassVariant = Required<Omit<SceneVariant, 'patterned'>>;
 
-function variantKey(v: GrassVariant, far: boolean) {
-  return `${v.cullLights ? 'c' : 'n'}${v.points ? 'p' : 's'}${v.shadows ? 'S' : 'f'}${v.toon ? 't' : 'r'}${far ? 'F' : 'N'}`;
+function variantKey(v: GrassVariant, far: boolean, samples = 1) {
+  return `${v.cullLights ? 'c' : 'n'}${v.points ? 'p' : 's'}${v.shadows ? 'S' : 'f'}${v.toon ? 't' : 'r'}${far ? 'F' : 'N'}${samples > 1 ? `x${samples}` : ''}`;
 }
+
+/** Every build of the blades' shader the ladder can step to. */
+const GRASS_VARIANTS: GrassVariant[] = [];
+for (const toon of [false, true])
+  for (const shadows of [true, false])
+    for (const points of [true, false])
+      for (const cullLights of [true, false]) GRASS_VARIANTS.push({ cullLights, points, shadows, toon });
 
 /** The buffers and textures of one field, made when it is set and destroyed when it is not. */
 interface Resources {
@@ -312,6 +319,11 @@ export class GrassPass {
   private empty: GPUBindGroup;
   private growPipeline!: GPUComputePipeline;
   private pipelines = new Map<string, GPURenderPipeline>();
+  /** A blade's draw pipeline for a build, near or far, at a count of samples a pixel: kept to make them again at four. */
+  private drawPipeline: (v: GrassVariant, far: boolean, samples: number) => GPURenderPipelineDescriptor;
+  private msaaBuild: Promise<void> | null = null;
+  /** Whether the blades can be drawn into a scene of four samples a pixel. */
+  multisampled = false;
   private shadowPipelines: GPURenderPipeline[] = [];
   private res: Resources | null = null;
   private uniformData = new Float32Array(GRASS_FLOATS);
@@ -361,22 +373,24 @@ export class GrassPass {
     }).then((p) => { this.growPipeline = p; }));
 
     // every build the ladder can step to, near and far, compiled up front as the scene's are
-    for (const toon of [false, true])
-      for (const shadows of [true, false])
-        for (const points of [true, false])
-          for (const cullLights of [true, false]) {
-            const v: GrassVariant = { cullLights, points, shadows, toon };
-            const module = shader(device, sceneWith(GRASS_VERTEX, { ...v, patterned: false }), `grass ${variantKey(v, false)}`);
-            for (const far of [false, true])
-              waits.push(device.createRenderPipelineAsync({
-                label: `grass ${variantKey(v, far)}`,
-                layout: device.createPipelineLayout({ bindGroupLayouts: [sceneLayout, this.drawLayout] }),
-                vertex: { module, entryPoint: 'vsMain', constants: { FAR: far ? 1 : 0 } },
-                fragment: { module, entryPoint: 'fsMain', targets: [{ format: colourFormat }] },
-                primitive: { topology: 'triangle-list', cullMode: 'none' },
-                depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'less' },
-              }).then((p) => { this.pipelines.set(variantKey(v, far), p); }));
-          }
+    const modules = new Map<string, GPUShaderModule>();
+    this.drawPipeline = (v, far, samples) => {
+      const module = modules.get(variantKey(v, false))!;
+      return {
+        label: `grass ${variantKey(v, far, samples)}`,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [sceneLayout, this.drawLayout] }),
+        vertex: { module, entryPoint: 'vsMain', constants: { FAR: far ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fsMain', targets: [{ format: colourFormat }] },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'less' },
+        multisample: { count: samples },
+      };
+    };
+    for (const v of GRASS_VARIANTS) {
+      modules.set(variantKey(v, false), shader(device, sceneWith(GRASS_VERTEX, { ...v, patterned: false }), `grass ${variantKey(v, false)}`));
+      for (const far of [false, true])
+        waits.push(device.createRenderPipelineAsync(this.drawPipeline(v, far, 1)).then((p) => { this.pipelines.set(variantKey(v, far), p); }));
+    }
     // into the sun's map, when a game asks the blades to cast: the vertex stage alone, biased as the groups' are
     const depthModule = shader(device, sceneWith(GRASS_VERTEX, { shadows: false }), 'grass shadow');
     for (const far of [false, true])
@@ -503,15 +517,29 @@ export class GrassPass {
     return this.grown;
   }
 
-  /** The grown blades into the scene pass, lit through `scene`, the scene's own bind group, in the build the ladder is on. */
-  draw(pass: GPURenderPassEncoder, scene: GPUBindGroup, variant: SceneVariant) {
+  /**
+   * Every build's draw pipelines at `samples` a pixel, for a scene drawn with
+   * that many: made the first time the renderer asks, which is when a look
+   * first asks for four, and resolving when they are in. One count besides
+   * one is kept: the renderer's four.
+   */
+  multisample(samples: number): Promise<void> {
+    const { device } = this.ctx;
+    this.msaaBuild ??= Promise.all(GRASS_VARIANTS.flatMap((v) => [false, true].map((far) =>
+      device.createRenderPipelineAsync(this.drawPipeline(v, far, samples)).then((p) => { this.pipelines.set(variantKey(v, far, samples), p); }),
+    ))).then(() => { this.multisampled = true; });
+    return this.msaaBuild;
+  }
+
+  /** The grown blades into the scene pass, lit through `scene`, the scene's own bind group, in the build the ladder is on, at the pass's samples a pixel. */
+  draw(pass: GPURenderPassEncoder, scene: GPUBindGroup, variant: SceneVariant, samples = 1) {
     const r = this.res;
     if (!r || !this.grown) return;
     const v: GrassVariant = { cullLights: variant.cullLights !== false, points: variant.points !== false, shadows: variant.shadows !== false, toon: !!variant.toon };
     pass.setBindGroup(0, scene);
     pass.setBindGroup(1, r.draw);
     for (const far of [false, true]) {
-      const p = this.pipelines.get(variantKey(v, far));
+      const p = this.pipelines.get(variantKey(v, far, samples));
       if (!p) continue;
       pass.setPipeline(p);
       pass.drawIndirect(r.counts, far ? 16 : 0);

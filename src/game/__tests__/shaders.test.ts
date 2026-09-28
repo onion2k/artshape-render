@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_WGSL, sceneSource, sceneWith } from '../shaders';
+import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, sceneSource, sceneWith } from '../shaders';
 import { DRAW_WGSL, SPRITE_WGSL } from '../particles';
 
 describe('the scene shader is a permutation of itself', () => {
@@ -81,7 +81,7 @@ describe('the frame is half floats, and every stage is held to what they have', 
   // only that nobody has added a stage and forgotten: a stage that writes
   // colour to the frame writes it through `finite`, and one that reads the
   // frame reads it through `finite`.
-  const writes = { scene: sceneSource(), effects: EFFECT_WGSL, particles: DRAW_WGSL, sprites: SPRITE_WGSL, fog: FOG_WGSL };
+  const writes = { scene: sceneSource(), toon: sceneSource({ toon: true }), effects: EFFECT_WGSL, particles: DRAW_WGSL, sprites: SPRITE_WGSL, fog: FOG_WGSL, fogMsaa: FOG_MSAA_WGSL };
   const reads = { bright: BRIGHT_WGSL, composite: COMPOSITE_WGSL };
 
   for (const [name, src] of Object.entries(writes)) {
@@ -108,7 +108,7 @@ describe('the frame is half floats, and every stage is held to what they have', 
   }
 
   it('has no smoothstep with its edges the wrong way round, which is whatever the compiler makes of it', () => {
-    const all = { ...writes, ...reads, blur: BLUR_WGSL, depth: DEPTH_WGSL, fogBlend: FOG_BLEND_WGSL };
+    const all = { ...writes, ...reads, blur: BLUR_WGSL, depth: DEPTH_WGSL, fogBlend: FOG_BLEND_WGSL, fxaa: FXAA_WGSL };
     for (const [name, src] of Object.entries(all)) {
       for (const m of src.matchAll(/smoothstep\(\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*,/g)) {
         expect(+m[1], `${name}: ${m[0]}`).toBeLessThan(+m[2]);

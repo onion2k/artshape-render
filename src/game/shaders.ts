@@ -113,6 +113,18 @@ struct Frame {
   // moving. The ambient term scales what the environment contributes, which
   // is everything a scene is lit by before a single point light is added.
   occlusion: vec2f, ambient: f32, lightCount: f32,
+  // The toon look's own light, read by the toon build alone and nothing
+  // unless the look asks for it: see toonUniform in renderer.ts. shade is
+  // what a colour is multiplied by in the deepest band, and shaded is one
+  // when there is a shade colour at all; softness is the width the bands'
+  // edges are eased over; rim is the rim's colour at its strength, and
+  // rimWidth how far in from the edge it reaches, nothing for no rim; sky and
+  // ground are the light from above and below, in place of the environment's
+  // grey, when hemisphere is one.
+  shade: vec3f, softness: f32,
+  rim: vec3f, rimWidth: f32,
+  sky: vec3f, hemisphere: f32,
+  ground: vec3f, shaded: f32,
 };
 /**
  * A light: where it is, how far it reaches, what it puts out, and — for a
@@ -365,9 +377,28 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
     // the sun in three flat bands, at the surface's own colour and not a quarter of it: full in the light, less
     // turned away, and a floor in shadow that is still the colour and not a grey; and a hard small highlight
     let into = ndl * lit;
-    let band = select(select(TOON_SHADE, TOON_MID, into > 0.05), 1.0, into > 0.45);
-    let glint = select(0.0, 0.3 * (1.0 - rough), ggx(n, v, l, ndv, a2, k) * into > 2.0);
+    var band = select(select(TOON_SHADE, TOON_MID, into > 0.05), 1.0, into > 0.45);
+    var glint = select(0.0, 0.3 * (1.0 - rough), ggx(n, v, l, ndv, a2, k) * into > 2.0);
+    // Eased from one band into the next where the look asks, over its width
+    // of the sun's share and never over less than that share changes across
+    // a pixel, so a band's edge on a curve is a clean line and not a stair;
+    // and the glint's edge, a stair of its own, over a pixel. Asked for
+    // nothing, the hard steps above, to the bit.
+    if (frame.softness > 0.0) {
+      let w = 0.5 * max(frame.softness, fwidth(into));
+      band = TOON_SHADE + (TOON_MID - TOON_SHADE) * smoothstep(0.05 - w, 0.05 + w, into)
+        + (1.0 - TOON_MID) * smoothstep(0.45 - w, 0.45 + w, into);
+      let gleam = ggx(n, v, l, ndv, a2, k) * into;
+      let g = 0.5 * max(fwidth(gleam), 1e-4);
+      glint = 0.3 * (1.0 - rough) * smoothstep(2.0 - g, 2.0 + g, gleam);
+    }
     colour = f0 * band * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
+    // The shade tinted toward the look's colour rather than only darker, and
+    // the more the deeper the band: turned from the sun, or in its shadow.
+    if (frame.shaded > 0.5) {
+      let tint = mix(vec3f(1.0), frame.shade, (1.0 - band) / (1.0 - TOON_SHADE));
+      colour = f0 * tint * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
+    }
   }
 
   if (POINT_LIGHTS) {
@@ -450,8 +481,25 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
     // the sky's light by its brightness alone, tinted by the surface's colour, where the physically based term adds
     // a grey that washes every colour out; and a gleam of the sky on what is smooth
     let sky = textureSampleLevel(envSpecular, samp, n, frame.maxLod).rgb;
-    colour += f0 * dot(sky, vec3f(0.3333)) * frame.ambient * TOON_SKY * occluded;
+    var around = vec3f(dot(sky, vec3f(0.3333)));
+    if (frame.hemisphere > 0.5) {
+      // The look's own sky and ground in place of the environment's grey:
+      // the light from above in the one and from below in the other, by how
+      // far the surface faces up. The world's up is z, as the sky's is. It
+      // replaces what the sum below starts from rather than the sum, which
+      // is then the same arithmetic as it always was when it is not asked
+      // for: written as a branch of its own, the compiler put the sum
+      // together differently and the frame moved in its last bits.
+      around = mix(frame.ground, frame.sky, n.z * 0.5 + 0.5) / TOON_SKY;
+    }
+    colour += f0 * around * frame.ambient * TOON_SKY * occluded;
     colour += pre * ab.y * (1.0 - rough) * frame.ambient * 0.25 * occluded;
+    // A rim where the surface turns from the camera, brightest edge-on, so a
+    // thing stands off whatever is behind it. It is light from all round, as
+    // the sky's is, and so is shut out of a crease as the sky's is.
+    if (frame.rimWidth > 0.0) {
+      colour += frame.rim * smoothstep(1.0 - frame.rimWidth, 1.0, 1.0 - ndv) * occluded;
+    }
   } else {
     colour += pre * (f0 * ab.x + ab.y) * frame.ambient * occluded;
   }
@@ -860,6 +908,134 @@ fn dither(p: vec3f) -> f32 {
     }
   }
   return vec4f(finite(scattered), through);
+}
+`;
+
+/**
+ * The fog's march over a multisampled depth, for a frame drawn with four
+ * samples a pixel: the same march reading each pixel's first sample, since a
+ * depth cannot be resolved and the march is at half the frame, where one
+ * sample is as good as four. The load takes a sample where the plain march's
+ * takes a level, and it is sample nought for level nought, so only the
+ * declaration differs; and it is derived here and not written twice, so the
+ * two cannot drift apart.
+ */
+export const FOG_MSAA_WGSL = multisampledFog(FOG_WGSL);
+
+/** The march with its depth declared multisampled; throws if the declaration is not where it was. */
+export function multisampledFog(source: string): string {
+  const plain = 'var depthTex: texture_depth_2d;';
+  if (!source.includes(plain)) throw new Error('the fog no longer declares its depth as it did, so its multisampled build cannot be made from it');
+  return source.replace(plain, 'var depthTex: texture_depth_multisampled_2d;');
+}
+
+/**
+ * Antialiasing after the fact, for a machine that cannot afford four samples
+ * a pixel: FXAA 3.11, Timothy Lottes' fast approximate antialiasing, at its
+ * default quality (preset 12, five steps along an edge), over the
+ * finished frame as it is shown. It finds where the contrast between a pixel
+ * and its neighbours says an edge runs, which way, and how far along it the
+ * edge ends, and reads the frame again that far across the edge: a stair
+ * becomes a ramp. It sees only the picture, so it also softens a little of
+ * what is sharp on purpose, such as a toon band's edge or text drawn into the
+ * frame; four samples a pixel smooth only where geometry covers part of one.
+ *
+ * On the value as shown, after the tone map and the gamma, because that is
+ * where a contrast is the one the eye sees; and after the grain, which is
+ * well under its thresholds and is left as it was. A pixel with no edge
+ * through it is loaded, not sampled, and so given back to the bit.
+ */
+export const FXAA_WGSL = POST_VERT + `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+// How much of a pixel's own contrast with its neighbours, a line too thin to
+// have an edge to follow, is smoothed; the contrast, as a share of the
+// brightest neighbour, under which a pixel is left alone; and the least
+// contrast that is ever an edge, so the dark is not searched for noise.
+const SUBPIX: f32 = 0.75;
+const EDGE_THRESHOLD: f32 = 0.166;
+const EDGE_THRESHOLD_MIN: f32 = 0.0833;
+// how far each step of the search along an edge goes, in pixels
+const STEPS = array<f32, 5>(1.0, 1.5, 2.0, 4.0, 12.0);
+
+fn luma(c: vec3f) -> f32 { return dot(c, vec3f(0.299, 0.587, 0.114)); }
+fn lumaAt(uv: vec2f) -> f32 { return luma(textureSampleLevel(src, samp, uv, 0.0).rgb); }
+
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  let texel = 1.0 / vec2f(textureDimensions(src));
+  let centre = textureLoad(src, vec2i(in.pos.xy), 0);
+  let uv = in.pos.xy * texel;
+  let lumaM = luma(centre.rgb);
+  let lumaS = lumaAt(uv + vec2f(0.0, texel.y));
+  let lumaE = lumaAt(uv + vec2f(texel.x, 0.0));
+  let lumaN = lumaAt(uv - vec2f(0.0, texel.y));
+  let lumaW = lumaAt(uv - vec2f(texel.x, 0.0));
+  let rangeMax = max(max(lumaN, lumaW), max(lumaE, max(lumaS, lumaM)));
+  let rangeMin = min(min(lumaN, lumaW), min(lumaE, min(lumaS, lumaM)));
+  let range = rangeMax - rangeMin;
+  if (range < max(EDGE_THRESHOLD_MIN, rangeMax * EDGE_THRESHOLD)) { return centre; }
+
+  let lumaNW = lumaAt(uv + vec2f(-texel.x, -texel.y));
+  let lumaSE = lumaAt(uv + vec2f(texel.x, texel.y));
+  let lumaNE = lumaAt(uv + vec2f(texel.x, -texel.y));
+  let lumaSW = lumaAt(uv + vec2f(-texel.x, texel.y));
+  // which way the edge runs: across, where the rows differ most, or down
+  let lumaNS = lumaN + lumaS;
+  let lumaWE = lumaW + lumaE;
+  let edgeHorz = abs(-2.0 * lumaW + lumaNW + lumaSW) + abs(-2.0 * lumaM + lumaNS) * 2.0 + abs(-2.0 * lumaE + lumaNE + lumaSE);
+  let edgeVert = abs(-2.0 * lumaS + lumaSW + lumaSE) + abs(-2.0 * lumaM + lumaWE) * 2.0 + abs(-2.0 * lumaN + lumaNW + lumaNE);
+  let horzSpan = edgeHorz >= edgeVert;
+  // the neighbour across the edge on each side, and which side it is on
+  let lN = select(lumaW, lumaN, horzSpan);
+  let lS = select(lumaE, lumaS, horzSpan);
+  let gradientN = lN - lumaM;
+  let gradientS = lS - lumaM;
+  let pairN = abs(gradientN) >= abs(gradientS);
+  let gradient = max(abs(gradientN), abs(gradientS));
+  var lengthSign = select(texel.x, texel.y, horzSpan);
+  if (pairN) { lengthSign = -lengthSign; }
+  let lumaNN = select(lS + lumaM, lN + lumaM, pairN);
+  // how much the pixel stands out from all eight, for a line too thin to follow
+  let subpixB = ((lumaNS + lumaWE) * 2.0 + lumaNW + lumaSW + lumaNE + lumaSE) * (1.0 / 12.0) - lumaM;
+  let subpixC = clamp(abs(subpixB) / range, 0.0, 1.0);
+  let subpixF = (-2.0 * subpixC + 3.0) * subpixC * subpixC;
+
+  // along the edge each way, half a pixel across it, until the contrast says it has ended
+  var posB = uv;
+  if (horzSpan) { posB.y += lengthSign * 0.5; } else { posB.x += lengthSign * 0.5; }
+  let offNP = select(vec2f(0.0, texel.y), vec2f(texel.x, 0.0), horzSpan);
+  var posN = posB - offNP * STEPS[0];
+  var posP = posB + offNP * STEPS[0];
+  let gradientScaled = gradient * 0.25;
+  let lumaMLTZero = lumaM - lumaNN * 0.5 < 0.0;
+  var lumaEndN = lumaAt(posN) - lumaNN * 0.5;
+  var lumaEndP = lumaAt(posP) - lumaNN * 0.5;
+  var doneN = abs(lumaEndN) >= gradientScaled;
+  var doneP = abs(lumaEndP) >= gradientScaled;
+  if (!doneN) { posN -= offNP * STEPS[1]; }
+  if (!doneP) { posP += offNP * STEPS[1]; }
+  for (var i = 2; i < 5; i++) {
+    if (doneN && doneP) { break; }
+    if (!doneN) { lumaEndN = lumaAt(posN) - lumaNN * 0.5; }
+    if (!doneP) { lumaEndP = lumaAt(posP) - lumaNN * 0.5; }
+    doneN = abs(lumaEndN) >= gradientScaled;
+    doneP = abs(lumaEndP) >= gradientScaled;
+    if (!doneN) { posN -= offNP * STEPS[i]; }
+    if (!doneP) { posP += offNP * STEPS[i]; }
+  }
+
+  // the nearer end of the edge says how far across it to read, if the edge
+  // there goes the way this pixel's does; the subpixel term, if it says more
+  let dstN = select(uv.x - posN.x, uv.y - posN.y, !horzSpan);
+  let dstP = select(posP.x - uv.x, posP.y - uv.y, !horzSpan);
+  let directionN = dstN < dstP;
+  let goodSpan = select((lumaEndP < 0.0) != lumaMLTZero, (lumaEndN < 0.0) != lumaMLTZero, directionN);
+  let pixelOffset = 0.5 - min(dstN, dstP) / (dstP + dstN);
+  let offset = max(select(0.0, pixelOffset, goodSpan), subpixF * subpixF * SUBPIX);
+  var p = uv;
+  if (horzSpan) { p.y += offset * lengthSign; } else { p.x += offset * lengthSign; }
+  return vec4f(textureSampleLevel(src, samp, p, 0.0).rgb, 1.0);
 }
 `;
 

@@ -286,6 +286,11 @@ export class Particles {
   private emitPipe!: GPUComputePipeline;
   private updatePipe!: GPUComputePipeline;
   private drawPipe!: GPURenderPipeline;
+  /** The particles' and the sprites' pipelines at four samples a pixel, made only when a renderer first asks for them. */
+  private msaa: { draw: GPURenderPipeline; sprite: GPURenderPipeline } | null = null;
+  private msaaBuild: Promise<void> | null = null;
+  /** What the draw pipelines are made from, kept to make them again at another sample count. */
+  private drawPipeline: (samples: number, sprites: boolean) => GPURenderPipelineDescriptor;
   private computeBind: GPUBindGroup;
   private drawBind: GPUBindGroup;
   private compiled = false;
@@ -347,28 +352,27 @@ export class Particles {
       color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
       alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     };
+    this.drawPipeline = (samples, sprites) => {
+      const m = sprites ? spriteModule : drawModule;
+      const name = sprites ? 'sprite draw' : 'particle draw';
+      return {
+        label: samples > 1 ? `${name} x${samples}` : name,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout] }),
+        vertex: { module: m, entryPoint: 'vsMain' },
+        fragment: { module: m, entryPoint: 'fsMain', targets: [{ format: colourFormat, blend: premultiplied }] },
+        primitive: { topology: 'triangle-list' },
+        // tested against the scene, never written: a puff does not hide a puff
+        depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
+        multisample: { count: samples },
+      };
+    };
     this.ready = Promise.all([
       device.createComputePipelineAsync({ label: 'particle emit', layout: compute, compute: { module, entryPoint: 'emit' } })
         .then((p) => { this.emitPipe = p; }),
       device.createComputePipelineAsync({ label: 'particle update', layout: compute, compute: { module, entryPoint: 'update' } })
         .then((p) => { this.updatePipe = p; }),
-      device.createRenderPipelineAsync({
-        label: 'particle draw',
-        layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout] }),
-        vertex: { module: drawModule, entryPoint: 'vsMain' },
-        fragment: { module: drawModule, entryPoint: 'fsMain', targets: [{ format: colourFormat, blend: premultiplied }] },
-        primitive: { topology: 'triangle-list' },
-        // tested against the scene, never written: a puff does not hide a puff
-        depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
-      }).then((p) => { this.drawPipe = p; }),
-      device.createRenderPipelineAsync({
-        label: 'sprite draw',
-        layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout] }),
-        vertex: { module: spriteModule, entryPoint: 'vsMain' },
-        fragment: { module: spriteModule, entryPoint: 'fsMain', targets: [{ format: colourFormat, blend: premultiplied }] },
-        primitive: { topology: 'triangle-list' },
-        depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less-equal' },
-      }).then((p) => { this.spritePipe = p; }),
+      device.createRenderPipelineAsync(this.drawPipeline(1, false)).then((p) => { this.drawPipe = p; }),
+      device.createRenderPipelineAsync(this.drawPipeline(1, true)).then((p) => { this.spritePipe = p; }),
     ]).then(() => { this.compiled = true; });
   }
 
@@ -459,16 +463,32 @@ export class Particles {
       this.ctx.device.queue.writeBuffer(this.spriteBuffer, 0, data as Float32Array<ArrayBuffer>, 0, this.spriteCount * SPRITE_STRIDE);
   }
 
-  /** Every live particle, and every sprite, as a quad, into the pass that drew the scene. */
-  draw(pass: GPURenderPassEncoder) {
+  /**
+   * The draw pipelines at `samples` a pixel, for a scene drawn with that many,
+   * made the first time a renderer asks and resolving when they are in. One
+   * count besides one is kept: the renderer's four.
+   */
+  multisample(samples: number): Promise<void> {
+    const { device } = this.ctx;
+    this.msaaBuild ??= Promise.all([
+      device.createRenderPipelineAsync(this.drawPipeline(samples, false)),
+      device.createRenderPipelineAsync(this.drawPipeline(samples, true)),
+    ]).then(([draw, sprite]) => { this.msaa = { draw, sprite }; });
+    return this.msaaBuild;
+  }
+
+  /** Every live particle, and every sprite, as a quad, into the pass that drew the scene, at the samples a pixel it has. */
+  draw(pass: GPURenderPassEncoder, samples = 1) {
     if (!this.compiled) return;
+    const msaa = samples > 1 ? this.msaa : null;
+    if (samples > 1 && !msaa) return;
     if (this.spriteCount) {
-      pass.setPipeline(this.spritePipe);
+      pass.setPipeline(msaa ? msaa.sprite : this.spritePipe);
       pass.setBindGroup(0, this.spriteBind);
       pass.draw(6, this.spriteCount);
     }
     if (!this.liveCount) return;
-    pass.setPipeline(this.drawPipe);
+    pass.setPipeline(msaa ? msaa.draw : this.drawPipe);
     pass.setBindGroup(0, this.drawBind);
     // the live run, in two pieces where it wraps the end of the ring
     const first = Math.min(this.liveCount, this.capacity - this.liveStart);

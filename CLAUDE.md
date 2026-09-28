@@ -107,6 +107,19 @@ What to copy the shape of:
   in the WGSL and not a uniform, so every build of the scene shader is
   compiled up front. `toon.gpu.test.ts` holds that a look which says
   nothing draws exactly as before.
+- **Builds compiled when first asked for:** antialiasing. `look.antialias`
+  asks, `prepare()` compiles and says when it is in, and `economy.antialias`
+  is its rung. Four samples a pixel need a pipeline at `SAMPLES` of
+  everything drawn into the scene pass, all made in `compileMsaa` (the
+  scene's builds, the effect layers, `Particles.multisample`,
+  `GrassPass.multisample`, and the fog's march over the multisampled
+  depth). `antialias.gpu.test.ts` holds that a look which does not ask
+  compiles nothing more, and draws each rung.
+- **A setting of the look read under a uniform:** the toon light
+  (`bandSoftness`, `shadeColour`, `rim`, `skyLight`). A few instructions a
+  pixel, so a uniform and not a permutation; `toonUniform` packs a look that
+  asks for none of it as noughts, and every branch reading it is skipped.
+  `toonlight.gpu.test.ts` holds that each moves only what it says.
 
 ## The test API
 
@@ -121,6 +134,9 @@ A library's test API is its own constructors, run headless:
 - **A frame:** `renderer.frame(target.createView(), mode, dt)` into a
   texture of `gpu.format`. Time moves only by the `dt` each frame is
   handed, so a test steps it exactly.
+- **What a look asks to be compiled:** `await renderer.prepare()` after
+  setting `look.antialias`, before the frame that should have it. Without
+  it the frame is drawn with what has compiled, which depends on when.
 - **Reading back:** each GPU test copies the target to a buffer and maps it.
   There is no shared helper yet; `toon.gpu.test.ts` has the usual one, with
   the PNG writer for `VITE_FRAME_DIR`. `renderer.hdr` gives the frame
@@ -143,9 +159,15 @@ For anything new on the game path, say what it does:
 - **units:** a world in millimetres (`mmPerUnit` 1, arena and chess) and
   one in tenths of a metre (100, the golf); every length the feature fixes
   goes through `mm()`
-- **the look:** PBR and toon; the `filmic` and `clamp` tone maps
+- **the look:** PBR and toon; the `filmic` and `clamp` tone maps; the toon
+  light asked for and not
+- **antialiasing:** none, FXAA and four samples a pixel. Anything drawn
+  into the scene pass needs a pipeline at `SAMPLES`, made in `compileMsaa`,
+  or the pass refuses it; anything reading the scene's depth after it reads
+  a multisampled one then, as the fog's march does
 - **the economy:** each rung (`shadows`, `points`, `particles`, `post`,
-  `fog`, `occlusion`, `effects`) on and off, and the feature's own rung;
+  `fog`, `occlusion`, `effects`, `grass`, `wind`, `antialias`) on and off,
+  and the feature's own rung;
   a rung stepped down and back gives the same frame
 - **frame modes:** `redraw` and `keep`. A kept static half must not freeze
   something that moves.
@@ -169,8 +191,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL; 973 tests at v0.18.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow; 103 tests in 20 files at v0.18.0, ~20 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,042 tests at v0.20.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light; 147 tests in 24 files at v0.20.0, ~20 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

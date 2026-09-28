@@ -257,6 +257,75 @@ while, and the scene timed first read a sixth over its baseline in half of
 the runs on a quiet machine until three hundred frames were drawn before
 it.
 
+## Antialiasing on the game path
+
+`src/game/__tests__/antialias.gpu.test.ts` draws a black square turned on a
+grey sky, lit by nothing, so a frame without antialiasing has exactly two
+colours in it: four samples a pixel, and FXAA, each put more than a hundred
+pixels between the two along its edge, and change not one pixel off the
+stair. Then everything that draws into the scene, drawn into four samples:
+grass, a sprite and an effect layer where they are without them; a kept
+static half equal to the pixel to one drawn afresh, and not frozen when
+something moves; the fog marched over the multisampled depth within two
+levels of the plain one off the edge; the occlusion alongside. The ladder
+steps to FXAA and to none and back to the same frame, each rung is the look
+it names, and a look that asks for none compiles the 46 pipelines v0.19.0
+did (and FXAA one more, four samples 36 more). A resize to a pixel and to an
+odd size draws without an error, under an error scope, which is how every
+frame in the file is drawn: a pass wrongly put together draws nothing and
+says so only to the console. `look.test.ts` holds the choice of
+antialiasing, the multisampled fog's derivation from the plain one and
+FXAA's reads without a device.
+
+On every rung of the ladder (shadows, points, the cull, post, fog,
+occlusion, effects, particles) four samples draw what one does off the
+edges, and stepping back up gives the same frame; those frames are drawn
+with a `dt` of nothing, since the fog's march is dithered by the frame's
+time and two frames a sixtieth apart differ in thousands of pixels.
+
+**A thick fog says nothing.** The fog test first used a fog so dense that
+the whole frame was its colour, and "the same fog with four samples as
+with one" was white against white; it was found by looking at the frames.
+It is thin now, and the square shows through it. Look at what a pixel test
+compares before believing it compares anything. The rung test had the same
+fault in another form: the ball's shadow fell on the black square, black on
+black, and drawing every rung through the fully shadowed build survived it
+until the square was grey.
+
+## The toon light on the game path
+
+`src/game/__tests__/toonlight.gpu.test.ts` lights a mid-grey ball in toon
+bands, and a ball over a floor for the sun's shadow. Each setting asked for
+as nothing draws as a look that never mentions it; a physically based look
+ignores all four; and each moves only what it says: the soft band edge
+leaves every pixel more than six from a hard band's edge as it was, and
+turns four hundred pixels of stair into none; the shade colour turns the
+ball's shade and its shadow on the floor blue-violet and leaves the floor
+in the sun as it was; the rim brightens the outer tenth of the ball and
+leaves its middle as it was; the sky and ground light the top of the ball
+blue and its underside warm. The grass, lit by the same fragment stage,
+takes them too. `look.test.ts` holds their packing: a look that asks for
+none of it packs noughts, which is what skips every branch that reads it.
+
+Three things this file learned. **Nothing is seen at white:** a white ball
+in a sun of 2.5 is held at white by the straight tone, and a tint, a rim or
+a softened edge on it changes nothing; the ball is mid grey. **A band's
+edge meets the outline**, where the surface turns away and any ramp is
+squeezed into a pixel, so the stair is counted three pixels in. And **an
+eased edge looks as if it had a dark line along it:** it is the eye's own
+Mach band at the ramp's knee, and reading the pixels across it (172 up to
+190, never down) settled it.
+
+**The same frame, to the bit, is a property of the compiled code and not
+of the arithmetic.** The sky and ground light first replaced the ambient
+term with a branch of its own, `if (sky and ground) { colour += ... } else
+{ colour += the old term }`: the same arithmetic on the old side, and the
+frames moved in their last bits, which is what the compiler made of a sum
+split across a branch. It now replaces what that sum starts from, and the
+sum is written as it always was. It was found by hashing the frames of a
+wide set of scenes, half floats and shown, on the tree before the change
+and after it: 76 hashes, which then matched.
+
 ## Volumetric fog on the game path
 
 `src/game/__tests__/fog.gpu.test.ts` marches fog through an otherwise black

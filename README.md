@@ -170,6 +170,64 @@ stops at edges; the scene darkens its ambient term by all of it and its
 lights by `occlusionDirect` of it. `occlusionRadius` is the size of gap it
 darkens, in world units. The `occlusion` rung gives up the three passes.
 
+**Edges are smoothed when a look asks.** `look.antialias = 'msaa'` draws
+the scene at four samples a pixel, colour and depth, and resolves it before
+the fog and the post chain: every group, blade, particle, sprite and effect
+layer, and the static half a kept frame holds, is smoothed where it covers
+part of a pixel, and nothing inside a surface moves. `'fxaa'` smooths the
+finished frame in one pass instead (FXAA 3.11 at its default quality), which
+is cheaper and a little softer. `economy.antialias` is the ladder's rung for
+it: `'fxaa'` steps four samples down to the pass, `'none'` gives both up, and
+it never gives more than the look asks. Neither compiles a thing until a
+look asks for it; `await game.prepare()` after setting the look compiles
+what it asks for, and until then a frame is drawn with what is compiled.
+
+```ts
+game.look = { ...game.look, antialias: 'msaa' };
+await game.prepare();                          // the four-sample builds, and FXAA for the rung below
+game.economy = { ...game.economy, antialias: 'fxaa' };   // a slower machine's rung
+```
+
+**Toon light has depth when a look asks.** Four settings of a toon look,
+each off unless set, and each a few instructions a pixel: `bandSoftness`
+eases the bands' edges (and the glint's) so a band's edge on a curve is a
+clean line; `shadeColour` tints the shaded band and the sun's shadow toward
+a colour instead of a darker grey; `rim`, `rimColour` and `rimWidth` put a
+bright edge where a surface turns from the camera; and `skyLight` and
+`groundLight` light a surface from above in the one and from below in the
+other, in place of the environment's grey. The grass is lit by the same
+fragment stage, so it takes them too. A physically based look ignores all
+four: its Fresnel term is its rim, and its environment its sky.
+
+```ts
+game.look = {
+  ...game.look, shading: 'toon',
+  bandSoftness: 0.06,
+  shadeColour: [0.5, 0.52, 0.8],            // a cool blue-violet shade
+  rim: 0.5, rimColour: [1, 0.95, 0.85], rimWidth: 0.3,
+  skyLight: [0.42, 0.5, 0.62], groundLight: [0.45, 0.4, 0.28],
+};
+```
+
+A look that asks for none of this draws the frame v0.19.0 drew, to the bit,
+and compiles the same 46 pipelines before `ready`. What each costs, on an M4
+Pro at 1280x800, as the median of nine rounds alternating it with none on a
+GPU other programs were using:
+
+| Setting | Standard scene | Golf field |
+| --- | --- | --- |
+| `antialias: 'msaa'` | +0.14 ms (0.10 to 0.22) | +0.43 ms (0.37 to 0.58) |
+| `antialias: 'fxaa'` | +0.04 ms | +0.13 ms |
+| the toon light's four, together | +0.01 ms, rounds spread ±0.07 | +0.03 ms, rounds spread ±0.1 |
+
+Each of the toon light's settings alone read under 0.01 ms on the standard
+scene, which is to say no cost could be told from the noise. Alternating
+v0.19.0 and this release five times each, a look asking for none of it read
+0.73 and 0.72 ms on the standard scene, and within 3% either way on the golf
+scenes. Four samples take 49 MB of colour and depth at that
+size, and as much again for a kept frame once `keep` is drawn with them;
+FXAA takes 4 MB.
+
 **Grass is its own pass, and the one thing here that culls and thins.** A
 game hands `setGrass` a field: a grid over its ground saying which of up to
 eight kinds grows in each cell (none where a cup is cut or a rail stands)
@@ -231,8 +289,8 @@ that leaks a line into them is caught.
 
 ## Checking it
 
-    npm test          1,024 tests, node
-    npm run test:gpu  128 tests, headless Chrome with a real device
+    npm test          1,042 tests, node
+    npm run test:gpu  147 tests, headless Chrome with a real device
     npm run perf:gpu  the game path's frame, held to a baseline for this GPU
     npm run typecheck
 

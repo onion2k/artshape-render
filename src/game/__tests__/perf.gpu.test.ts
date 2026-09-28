@@ -19,7 +19,7 @@ import { server } from '@vitest/browser/context';
 import { createDevice, type Gpu } from '../../gpu/context';
 import { MeshBuilder, type Mesh } from '../../mesh/types';
 import { bakeEnvironment } from '../../render/env';
-import { FULL_ECONOMY, GameRenderer, type GameGroup } from '../renderer';
+import { FULL_ECONOMY, GameRenderer, type GameGroup, type Look } from '../renderer';
 import { noFog } from '../fog';
 import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
@@ -90,6 +90,12 @@ export function standardScene(): GameGroup[] {
     { mesh: box(), matrices: boxes, albedo: [0.58, 0.3, 0.13], roughness: 0.55 },
   ];
 }
+
+/** The toon light's four settings together, as a sunny game would have them: see `Look`. */
+export const TOON_LIGHT: Partial<Look> = {
+  bandSoftness: 0.06, shadeColour: [0.5, 0.52, 0.8], rim: 0.5, rimColour: [1, 0.95, 0.85], rimWidth: 0.3,
+  skyLight: [0.42, 0.5, 0.62], groundLight: [0.45, 0.4, 0.28],
+};
 
 const GREEN: GrassKind = { density: 150, height: 0.15, width: 0.05, base: [0.05, 0.3, 0.04], tip: [0.25, 0.7, 0.15], lean: 0.25, give: 0.1, stripes: { width: 6, angle: 0, shade: 0.2 } };
 const ROUGH: GrassKind = { density: 12, height: 0.8, width: 0.09, base: [0.04, 0.2, 0.05], tip: [0.2, 0.5, 0.12], lean: 0.15, give: 1 };
@@ -181,8 +187,22 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.economy = { ...FULL_ECONOMY, shadows: true, grass: 0.5 };
     measured['golf half'] = await time();
     r.economy = { ...FULL_ECONOMY, shadows: true };
+    // the field at four samples a pixel, which draw every blade into them: the heaviest scene there is
+    const plain = r.look;
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['golf msaa'] = await time();
+    r.look = plain;
     await r.setGrass(null);
     r.setStatic(standardScene());
+    // the look's own settings over the standard scene, each alone: four samples, FXAA, and the toon light's four
+    r.look = { ...plain, antialias: 'msaa' };
+    measured['standard msaa'] = await time();
+    r.look = { ...plain, antialias: 'fxaa' };
+    measured['standard fxaa'] = await time();
+    r.look = { ...plain, ...TOON_LIGHT };
+    measured['standard toon light'] = await time();
+    r.look = plain;
     console.log(`blades drawn at the home view: ${home.near} near, ${home.far} far`);
 
     const file = await server.commands.readFile(BASELINE).catch(() => '');
