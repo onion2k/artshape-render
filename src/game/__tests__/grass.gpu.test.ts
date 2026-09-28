@@ -478,6 +478,49 @@ describe('grass on the game renderer', () => {
     expect(r.press(4, 4, 1, 1, 0)).toBe(false);
   });
 
+  it('draws the frame as it would be without grass while the grass is still compiling', async () => {
+    const fresh = new GameRenderer(gpu, 8, 8, 64, 100);
+    await fresh.ready;
+    setUp(fresh);
+    const none = await draw(fresh);
+    const asked = fresh.setGrass(field());
+    expect(differing(await draw(fresh), none), 'drawn before the grass is ready').toBe(0);
+    await asked;
+    expect(differing(await draw(fresh), none), 'and with it once it is').toBeGreaterThan(1000);
+    fresh.dispose();
+    expect(errors).toEqual([]);
+  });
+
+  it('draws at a pixel, at an odd size, and physically based as well as toon', async () => {
+    await r.setGrass(field());
+    const tiny = gpu.device.createTexture({ size: [1, 1], format: gpu.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    r.resize(1, 1);
+    expect(r.frame(tiny.createView())).toBe(true);
+    const odd = gpu.device.createTexture({ size: [333, 217], format: gpu.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    r.resize(333, 217);
+    expect(r.frame(odd.createView())).toBe(true);
+    await gpu.queue.onSubmittedWorkDone();
+    tiny.destroy();
+    odd.destroy();
+    r.resize(SIZE, SIZE);
+    r.look = { ...r.look, shading: 'pbr' };
+    const pbr = await draw(r, 'redraw', 'grass-pbr');
+    r.look = { ...r.look, shading: 'toon' };
+    expect(grassy(pbr, [4, 6.2, 0])).toBeGreaterThan(0.2);
+    expect(errors).toEqual([]);
+  });
+
+  it('is disposed of with the renderer', async () => {
+    const own = new GameRenderer(gpu, 8, 8, 64, 100);
+    await own.ready;
+    setUp(own);
+    await own.setGrass(field(), { trample: { origin: [0, 0], cell: 0.25, cols: 32, rows: 32 } });
+    await draw(own);
+    own.dispose();
+    await gpu.queue.onSubmittedWorkDone();
+    expect(errors).toEqual([]);
+  });
+
   it('draws each kind, for looking at', async () => {
     for (const [name, kind] of [['green', { ...GREEN, stripes: { width: 2, angle: 0, shade: 0.25 } }], ['fairway', FAIRWAY], ['rough', ROUGH]] as const) {
       const f = field({ kinds: [kind as GrassKind] }, name === 'green');
