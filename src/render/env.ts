@@ -462,9 +462,10 @@ export function bakeEnvironment(
   const backgroundMips = Math.floor(Math.log2(size)) + 1;
   const background = cube(backgroundMips, 'env background');
   const specular = cube(mips, 'env specular');
+  // COPY_SRC, as the cubes have, so the table can be read back and seen to have landed
   const brdf = device.createTexture({
     label: 'env brdf', size: [brdfSize, brdfSize], format: FORMAT,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   // one uniform buffer with a slot per (face, level) draw, addressed by dynamic offset
@@ -489,12 +490,12 @@ export function bakeEnvironment(
 
   const faceView = (tex: GPUTexture, face: number, level: number) =>
     tex.createView({ dimension: '2d', baseArrayLayer: face, arrayLayerCount: 1, baseMipLevel: level, mipLevelCount: 1 });
-  const drawTo = (encoder: GPUCommandEncoder, view: GPUTextureView, pipeline: GPURenderPipeline, bind: GPUBindGroup, offsets?: number[]) => {
+  const drawTo = (encoder: GPUCommandEncoder, view: GPUTextureView, pipeline: GPURenderPipeline, bind: GPUBindGroup | null, offsets?: number[]) => {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
     });
     pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind, offsets);
+    if (bind) pass.setBindGroup(0, bind, offsets);
     pass.draw(3);
     pass.end();
   };
@@ -552,8 +553,14 @@ export function bakeEnvironment(
     }
 
     // --- 3. split-sum BRDF lookup ---
-    const brdfBind = device.createBindGroup({ layout: pipes.brdf.getBindGroupLayout(0), entries: [] });
-    drawTo(encoder, brdf.createView(), pipes.brdf, brdfBind);
+    // Drawn with no bind group, because its shader has no bindings. It used
+    // to be given an empty one made from the pipeline's layout at group
+    // nought, which a pipeline with no groups does not have: Chrome hands one
+    // back regardless, and Firefox makes the group invalid, the pass with it,
+    // and the encoder with that — which is this one, so the sky and every
+    // face of the prefilter above went with it, and a scene in Firefox had
+    // nothing of its environment at all.
+    drawTo(encoder, brdf.createView(), pipes.brdf, null);
 
     device.queue.submit([encoder.finish()]);
   })();
