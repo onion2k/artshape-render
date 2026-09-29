@@ -326,6 +326,18 @@ sum is written as it always was. It was found by hashing the frames of a
 wide set of scenes, half floats and shown, on the tree before the change
 and after it: 76 hashes, which then matched.
 
+## Rounded edges
+
+`src/mesh/__tests__/rounded.test.ts` holds the rounded box and the rounded
+profile: closed and well formed, exactly the size asked, every point the
+radius from a box that much smaller and facing straight out from it, no
+hard edge anywhere and flat across each face; a profile's arcs tangent to
+its sides, on the inside of each turn, its open ends kept, never crossing
+itself on a short side, and a lathe's rims rounded and the solid still
+closed. Two of those held nothing at first: a round bulging the wrong way on
+a right turn, and two rounds crossing on a short side, each passed until the
+test looked at where the points were and not only how many there were.
+
 ## Volumetric fog on the game path
 
 `src/game/__tests__/fog.gpu.test.ts` marches fog through an otherwise black

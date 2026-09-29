@@ -87,7 +87,7 @@ deliberate — where the sketches live is the application's business.
 
     src/gpu/        the device, the canvas context, the camera and orbit
     src/geom/       vectors, transforms, curves, outlines
-    src/mesh/       the four generators, deformation, wear, engraving
+    src/mesh/       the four generators, deformation, wear, engraving, rounded edges
     src/parts/      the catalogue of parts and their anchors
     src/pattern/    symmetries
     src/assembly/   placements, grouping by mesh, body counting
@@ -233,6 +233,25 @@ v0.19.0 and this release five times each, a look asking for none of it read
 scenes. Four samples take 49 MB of colour and depth at that
 size, and as much again for a kept frame once `keep` is drawn with them;
 FXAA takes 4 MB.
+
+**Rounded edges are the mesh's.** A toy's edges are moulded, and a moulded
+edge carries a line of highlight that turns as the thing turns; a square one
+catches none. `roundedBox(size, radius)` in `mesh/rounded.ts` is a box
+rounded at every edge and corner, flat on its faces and smooth over every
+round, and `roundCorners(profile, radius)` rounds the corners of a profile
+for `revolve` to turn, a sweep to carry or `extrude` to lift, each arc
+tangent to its sides and never wider than half the shorter. Rounding by
+bending normals near edges on screen was tried first and left dashes where a
+face was a few pixels tall; in the geometry it is exact at any distance, its
+outline is round too, and it costs triangles rather than a pass.
+
+```ts
+import { roundCorners, roundedBox } from 'artshape-render/mesh/rounded';
+import { revolve } from 'artshape-render/mesh/revolve';
+
+const block = roundedBox([1.4, 0.7, 0.9], 0.08);
+const puck = revolve(roundCorners({ points: [[0, 0], [1, 0], [1, 0.5], [0, 0.5]] }, 0.12), { segments: 48 });
+```
 
 **Grass is its own pass, and the one thing here that culls and thins.** A
 game hands `setGrass` a field: a grid over its ground saying which of up to

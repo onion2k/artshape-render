@@ -40,8 +40,9 @@ Until there are:
   environments in `env.ts`). The game path borrows two things from it:
   `bakeEnvironment` from `env.ts`, and `ContactOcclusion` from `ao.ts`.
 - **What both share, and what has no picture:** `gpu/` (device, buffers,
-  camera), `geom/`, `mesh/`, `parts/`, `pattern/`, `assembly/` and `dsl/`.
-  All of it is pure and runs under node.
+  camera), `geom/`, `mesh/` (the generators, and `rounded.ts`: a rounded
+  box and rounded profile corners, for a toy's moulded edges), `parts/`,
+  `pattern/`, `assembly/` and `dsl/`. All of it is pure and runs under node.
 - **The thing without its picture.** A renderer's arithmetic lives in pure
   functions beside it and is tested under node. Examples are `fogUniform`
   and `viewDepth` in `fog.ts`, `sunShadowMatrix` in `shadows.ts`,
