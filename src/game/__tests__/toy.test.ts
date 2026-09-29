@@ -60,11 +60,35 @@ describe('the smooth light\'s ramp', () => {
       }
   });
 
-  it('is lit no more than the top band\'s most, and turned from the sun is no darker than the band between at half its share', () => {
+  it('is lit no more than the top band\'s most', () => {
+    for (const flat of FLATS) for (const form of FORMS) for (let x = 0; x <= 1; x += 0.01) expect(toonRamp(x, flat, form)).toBeLessThanOrEqual(TOON_TOP);
+  });
+
+  it('is the form light\'s top band exactly wherever the form\'s fall is over the band between, so a hill reads as it did', () => {
+    // v0.21.0's top band with the form light: the fall, held between the band between and the top band's most
+    for (const flat of FLATS)
+      for (const form of [1, 1.5, 2.5, 3]) {
+        let seen = 0;
+        for (let x = 0; x <= 1; x += 0.005) {
+          const fall = 1 + (form * (x - flat)) / flat;
+          // clear of where the fall meets the band between, which the ramp eases over
+          if (fall < TOON_MID + 0.07) continue;
+          expect(toonRamp(x, flat, form), `at ${x.toFixed(3)} of the sun, flat ${flat}, form ${form}`).toBe(Math.min(Math.max(fall, TOON_MID), TOON_TOP));
+          seen++;
+        }
+        expect(seen, `flat ${flat}, form ${form}`).toBeGreaterThan(0);
+      }
+  });
+
+  it('rises from the deepest band to the band between under where the form\'s fall reaches it, and no higher', () => {
     for (const flat of FLATS)
       for (const form of FORMS) {
-        for (let x = 0; x <= 1; x += 0.01) expect(toonRamp(x, flat, form)).toBeLessThanOrEqual(TOON_TOP);
-        expect(toonRamp(0.45, flat, form), 'about where the band between ended').toBeGreaterThanOrEqual(TOON_MID);
+        const knee = flat * (1 - (1 - TOON_MID) / Math.max(form, 1));
+        for (let x = 0; x <= knee; x += 0.005) {
+          // no more than the join's ease above the band between: the Volcano's shaded flank read brighter than it did
+          expect(toonRamp(x, flat, form), `at ${x.toFixed(3)} of the sun, flat ${flat}, form ${form}`).toBeLessThanOrEqual(TOON_MID + 0.016);
+        }
+        expect(toonRamp(knee, flat, form), `at the knee, flat ${flat}, form ${form}`).toBeGreaterThanOrEqual(TOON_MID - 1e-9);
       }
   });
 });

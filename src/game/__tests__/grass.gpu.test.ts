@@ -346,10 +346,12 @@ describe('grass on the game renderer', () => {
     const open = await draw(r);
     r.setStatic([ground, { mesh: box(), matrices: at(4, 4, 0, 2, 2, 3), albedo: [0.9, 0.2, 0.2], roughness: 0.5 }]);
     const shaded = await draw(r, 'redraw', 'grass-shadow');
-    // blades in the shadow darken as the earth among them does, as much as a clamped toon light lets either
+    // Blades in the shadow darken as the earth among them does, as much as a clamped toon light lets either. Under
+    // 0.92: toon's smooth light shades a blade turned from the sun out of the shadow too, so the shadow takes a
+    // little less off the field than the bands' flat top did (0.91 against under 0.9); as the earth, within 0.1.
     const blades = bladeLight(shaded, [5.6, 2.6, 0], 4, 4) / bladeLight(open, [5.6, 2.6, 0], 4, 4);
     const earth = bladeLight(shaded, [5.6, 2.6, 0], 4, 4, true) / bladeLight(open, [5.6, 2.6, 0], 4, 4, true);
-    expect(blades, 'blades in the box\'s shadow').toBeLessThan(0.9);
+    expect(blades, 'blades in the box\'s shadow').toBeLessThan(0.92);
     expect(Math.abs(blades - earth), `blades darken by ${blades}, the earth by ${earth}`).toBeLessThan(0.1);
     expect(bladeLight(shaded, [1.5, 1.5, 0], 4, 4) / bladeLight(open, [1.5, 1.5, 0], 4, 4), 'blades out of it').toBeGreaterThan(0.97);
     r.setStatic([ground]);
@@ -533,12 +535,13 @@ describe('grass on the game renderer', () => {
       expect(differing(px, bare), `the ${name} is drawn over its ground`).toBeGreaterThan(2000);
       if (name === 'green') {
         // the ground painted grassGround's colour is the colour the blades average to: the cup is no lighter or darker
-        // than the green round it. Six levels: toon's smooth light shades each blade by the sun it takes, and a field
-        // of blades turned every way averages about three levels under flat ground, where the bands lit nearly all
-        // of them as flat ground; a ground in the wrong colour is tens of levels out.
+        // than the green round it. Eight levels: toon's smooth light shades each blade by the sun it takes, and a
+        // field of blades turned every way averages about five levels under flat ground (7.3 here, with no form
+        // light), where the bands lit nearly all of them as flat ground; a ground in the wrong colour is tens of
+        // levels out.
         const [gx, gy] = toScreen(r, [4, 6.2, 0]), [cx, cy] = toScreen(r, [4, 4, 0]);
         const g = meanIn(px, gx - 40, gy - 6, gx + 40, gy + 6), c = meanIn(px, cx - 12, cy - 6, cx + 12, cy + 6);
-        expect(Math.hypot(g[0] - c[0], g[1] - c[1], g[2] - c[2]), `the green ${g.map(Math.round)} against the cup's ground ${c.map(Math.round)}`).toBeLessThan(6);
+        expect(Math.hypot(g[0] - c[0], g[1] - c[1], g[2] - c[2]), `the green ${g.map(Math.round)} against the cup's ground ${c.map(Math.round)}`).toBeLessThan(8);
       }
     }
     r.setStatic([ground]);

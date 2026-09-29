@@ -41,6 +41,14 @@ where the build departed from it and why.
 - **The grass test's colour match moved from four levels to six.** Under the
   ramp, blades turned every way average about three levels under flat
   ground, where the bands lit nearly all of them as flat ground.
+- **The ramp was fixed in 0.22.1.** Its low side first rose on past the
+  band between, and lit a slope turned a little from the sun brighter than
+  the form light had: ooergolf's Volcano read 1.350 against its floor of
+  1.38, where 0.21.0 read 1.458. It now rises to the band between exactly
+  where the form's fall comes down to it, and above that is the form
+  light's top band to the bit; the Volcano reads 1.485. Under it a field of
+  blades averages a little darker, and two grass thresholds moved with
+  their reasons.
 - **Found and not fixed here:** the grass differs from itself by a pixel from
   one frame to the next with nothing changed, in v0.21.0 as well. It is a
   task of its own.

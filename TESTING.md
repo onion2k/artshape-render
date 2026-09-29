@@ -333,8 +333,12 @@ and after it: 76 hashes, which then matched.
 The smooth light's ramp (`toonRamp` in `toon.ts`) is the deepest band
 exactly where the sun does not reach and one exactly on flat ground, for
 every sun and every form; it never falls and never jumps as the sun's share
-rises, is never flat between the two, and falls away from flat ground at the
-form light's slope. The soft tone leaves a colour under its knee exactly as
+rises, is never flat between the two, falls away from flat ground at the
+form light's slope, is the form light's top band to the bit wherever the
+form's fall is over the band between, and under the knee where it comes down
+to it rises from the deepest band no higher than the band between (a ramp
+that rose past it read ooergolf's hill flatter, which its look metrics
+caught). The soft tone leaves a colour under its knee exactly as
 it was, never passes one, keeps a colour's hue as it brightens where the
 clamp turns an orange yellow, sends a white highlight on red plastic to
 white while the red round it stays red, keeps a lit pastel its colour

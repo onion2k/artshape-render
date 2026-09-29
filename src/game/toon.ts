@@ -19,12 +19,11 @@ export const TOON_TOP = 1.25;
 export const TOON_SUN = 0.4;
 
 /**
- * The ramp's low side: how far into the sun's share the shade has risen to
- * the band between, and how much it keeps rising after, so no stretch of the
- * ramp is flat and none is a band again.
+ * How steeply the ramp's low side leaves the deepest band, against a straight
+ * line to the band between: half again as steep, so the terminator is crisp,
+ * and so half as steep where it meets the fall, so no stretch is flat.
  */
-const RAMP_RISE = 0.45;
-const RAMP_LEAN = 0.1;
+const RAMP_START = 1.5;
 /** How wide the join between the form's fall and the low side is eased, so neither ends in a corner. */
 const RAMP_JOIN = 0.06;
 
@@ -80,14 +79,21 @@ export function smoothMax(a: number, b: number, k: number): number {
  *
  * Two lines, joined without a corner. The fall: through flat ground at one,
  * exactly as the top band lit it, as steep as the form light asks and never
- * less steep than Lambert's, so a slope turned a little from the sun shows
- * it. And the low side: out of the deepest band where the sun does not
- * reach, which is every shadow's colour exactly as it was, rising to the
- * band between by the share where that band ended, and on up gently.
+ * less steep than Lambert's, down to the band between; which is the form
+ * light's top band to the bit, so a hill reads as it did. And the low side:
+ * out of the deepest band where the sun does not reach, which is every
+ * shadow's colour exactly as it was, rising to the band between exactly
+ * where the fall comes down to it (the knee), and no higher. It first rose
+ * on past the band between, and lit a slope turned a little from the sun
+ * brighter than the form light had: the Volcano's shaded flank, and the
+ * hill read flatter.
  */
 export function toonRamp(x: number, flat: number, form: number): number {
-  const fall = 1 + (Math.max(form, 1) * (x - flat)) / flat;
-  const low = TOON_SHADE + (TOON_MID - TOON_SHADE) * smoothstep(0, RAMP_RISE, x) + RAMP_LEAN * x;
+  const f = Math.max(form, 1);
+  const fall = 1 + (f * (x - flat)) / flat;
+  const knee = flat * (1 - (1 - TOON_MID) / f);
+  const t = Math.min(Math.max(x / knee, 0), 1);
+  const low = TOON_SHADE + (TOON_MID - TOON_SHADE) * t * (RAMP_START - (RAMP_START - 1) * t);
   return Math.min(smoothMax(fall, low, RAMP_JOIN), TOON_TOP);
 }
 
@@ -109,16 +115,18 @@ const f = (x: number) => (Number.isInteger(x) ? `${x}.0` : `${x}`);
 /** The ramp and its smooth max as WGSL, the same sums as `toonRamp` and `smoothMax`. */
 export const TOON_RAMP_WGSL = `
 const TOON_TOP: f32 = ${f(TOON_TOP)};
-const RAMP_RISE: f32 = ${f(RAMP_RISE)};
-const RAMP_LEAN: f32 = ${f(RAMP_LEAN)};
+const RAMP_START: f32 = ${f(RAMP_START)};
 const RAMP_JOIN: f32 = ${f(RAMP_JOIN)};
 fn smoothMax(a: f32, b: f32, k: f32) -> f32 {
   let h = max(k - abs(a - b), 0.0) / k;
   return max(a, b) + h * h * k * 0.25;
 }
 fn toonRamp(x: f32, flat: f32, form: f32) -> f32 {
-  let fall = 1.0 + max(form, 1.0) * (x - flat) / flat;
-  let low = TOON_SHADE + (TOON_MID - TOON_SHADE) * smoothstep(0.0, RAMP_RISE, x) + RAMP_LEAN * x;
+  let f = max(form, 1.0);
+  let fall = 1.0 + f * (x - flat) / flat;
+  let knee = flat * (1.0 - (1.0 - TOON_MID) / f);
+  let t = clamp(x / knee, 0.0, 1.0);
+  let low = TOON_SHADE + (TOON_MID - TOON_SHADE) * t * (RAMP_START - (RAMP_START - 1.0) * t);
   return min(smoothMax(fall, low, RAMP_JOIN), TOON_TOP);
 }
 `;
