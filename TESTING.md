@@ -295,7 +295,8 @@ until the square was grey.
 ## The toon light on the game path
 
 `src/game/__tests__/toonlight.gpu.test.ts` lights a mid-grey ball in toon
-bands, and a ball over a floor for the sun's shadow. Each setting asked for
+bands, with the toy finish (below) turned off so the bands are what is
+measured, and a ball over a floor for the sun's shadow. Each setting asked for
 as nothing draws as a look that never mentions it; a physically based look
 ignores all four; and each moves only what it says: the soft band edge
 leaves every pixel more than six from a hard band's edge as it was, and
@@ -325,6 +326,54 @@ split across a branch. It now replaces what that sum starts from, and the
 sum is written as it always was. It was found by hashing the frames of a
 wide set of scenes, half floats and shown, on the tree before the change
 and after it: 76 hashes, which then matched.
+
+## The toy finish on the game path
+
+`src/game/__tests__/toy.test.ts` holds the finish's sums without a device.
+The smooth light's ramp (`toonRamp` in `toon.ts`) is the deepest band
+exactly where the sun does not reach and one exactly on flat ground, for
+every sun and every form; it never falls and never jumps as the sun's share
+rises, is never flat between the two, and falls away from flat ground at the
+form light's slope. The soft tone leaves a colour under its knee exactly as
+it was, never passes one, keeps a colour's hue as it brightens where the
+clamp turns an orange yellow, sends a white highlight on red plastic to
+white while the red round it stays red, keeps a lit pastel its colour
+(a pastel is as white as a highlight, and nowhere near as bright), and keeps
+a lit red's gradient where the clamp holds it flat. And the packing: the finish is on in a toon look
+that says nothing of it and off, part by part, where it says nought.
+
+`toy.gpu.test.ts` holds it on a device, each part against the same look with
+that part at nought: a physically based look takes none of it; the highlight
+is one compact spot, white at its middle, on a smooth ball and nothing on a
+matte one or on grass, never in another thing's shadow, and its brightest
+within a third of itself as a ten-pixel ball moves an eighth of a pixel at a
+time (it read 375 to 420 over the eight steps; with the widening taken out,
+141 to 303, which is the sparkle the widening is for); the sheen lifts a smooth ball's edge and not its middle, bluer, and
+is shut out of a crease; the ramp turns the bands' stair into none and
+leaves flat ground in the full sun and deep in a shadow as they were; the
+occlusion's tint turns a crease bluer, from the sky's light as well as the
+sun's, and nothing where there is no occlusion or no shade colour. The ramp
+at nine angles to the sun and with the form light, and the soft tone at five
+strengths of sun on an orange and on a cream, are held to their sums in
+`toon.ts` within a level (the cream because the orange never goes white, and
+a shader whose white spill had drifted passed on the orange alone). A
+pixel, an odd size, millimetres against tenths of a metre, a kept frame
+against a redrawn one and every rung stepped down and back each give what
+they should.
+
+Three things this file learned. **A setting that is on unless said has to be
+said off to be measured:** the harness first merged each shot's look onto
+the last, the finish was switched off by the frame before and never back on,
+and the pictures of the finish were pictures of the bands. **The grass
+differs from itself by a pixel from one frame to the next**, with nothing
+changed, where two blades meet at the same depth; it did in v0.21.0 too, and
+a test that compares grass frames allows it and says so. **The same frame to
+the bit, again:** the occlusion's tint first split the occlusion's two sums
+into a tinted branch and a grey one, and a frame of the golf's look moved one
+pixel by one level; the grey sums are written as they were now, and the tint
+changes only what they are handed. Found by comparing forty frames of
+v0.21.0, toon and physically based in every antialiasing and frame mode,
+with grass and with lamps, against the finished tree with the finish off.
 
 ## Rounded edges
 

@@ -36,6 +36,7 @@ import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './
 import { ContactOcclusion } from '../render/ao';
 import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from './grass';
 import { GrassPass } from './grass-pass';
+import { MAX_GLOSS, MAX_SHEEN } from './toon';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
 export interface DrawnBlade { x: number; y: number; z: number; id: number }
@@ -306,6 +307,47 @@ export interface Look {
    * 1280x800, the rounds spread from -0.06 to 0.11.
    */
   form?: number;
+  /**
+   * Toon only, and part of the toy finish, which a toon look is drawn with
+   * unless it says otherwise: how glossy a thing is. A clean highlight where
+   * the sun glances off a smooth surface, sized by its roughness (a crisp
+   * white spot with a glow round it on smooth plastic, a broad soft one on
+   * something rougher, and none at all from a roughness of 0.8, so grass, a
+   * lawn and stone are matte), in the sun's colour and never in its shadow.
+   * Its edge is eased over a pixel, and it is widened where a surface turns
+   * too fast across a pixel to hold it, so a small ball's highlight does not
+   * sparkle as it rolls. It takes the place of the small hard glint toon had.
+   * Left out, 1; up to 2 for a glossier toy; nought, the glint.
+   */
+  gloss?: number;
+  /**
+   * Toon only, and part of the toy finish: the sky in a clear coat over a
+   * smooth thing, the environment reflected where the surface turns from the
+   * eye and nothing where it faces it, blurred by its roughness and none on
+   * anything matte. It is what tells plastic from painted card. Left out, 1;
+   * up to 2; nought, none.
+   */
+  sheen?: number;
+  /**
+   * Toon only, and part of the toy finish: how far the bands melt into one
+   * smooth ramp of light, 0 to 1. The ramp lights flat ground facing straight
+   * up exactly as the top band did, and anything in the sun's shadow or
+   * turned from it exactly as the deepest band did, so a course tuned against
+   * the bands keeps its colours; between, it shades a surface by the sun it
+   * takes, falling away from flat ground as steeply as `form` asks and never
+   * less steeply than a matte surface would, so a ball, a hill and the side
+   * of a box each show their shape. See `toonRamp` in toon.ts. Left out, 1;
+   * nought, the bands.
+   */
+  smoothShading?: number;
+  /**
+   * Toon only, and part of the toy finish: how far the occlusion darkens
+   * toward the shade colour rather than toward grey, 0 to 1, so the ground
+   * under a thing and the crease where two meet go the cool colour a shade
+   * is. It needs a `shadeColour` and some `occlusion`, and does nothing
+   * without both. Left out, 1; nought, grey.
+   */
+  occlusionTint?: number;
 }
 
 /**
@@ -329,8 +371,8 @@ export function antialiasFor(look: Pick<Look, 'antialias'>, economy: Pick<GameEc
   return ANTIALIAS[Math.min(asked, allowed)];
 }
 
-/** Floats the toon look's own light takes in the frame's uniform, after the thirty-two it always had. */
-export const TOON_FLOATS = 20;
+/** Floats the toon look's own light and the toy finish take in the frame's uniform, after the thirty-two it always had. */
+export const TOON_FLOATS = 24;
 /** The most of the sun's fall-off the top band may keep. */
 export const MAX_FORM = 3;
 /** The widest the toon bands' edges may be eased over. */
@@ -339,14 +381,17 @@ export const MAX_BAND_SOFTNESS = 0.1;
 export const RIM_WIDTH = 0.35;
 
 /**
- * The toon look's own light, packed as the scene shader's `Frame` reads it
- * after `lightCount`: the shade colour and the bands' softness, the rim's
- * colour at its strength and its width, the sky's light and whether there
- * is a sky and ground at all, and the ground's light and whether there is a
- * shade colour; and how much form the top band keeps, and three spares. A
- * look that asks for none of it packs noughts, and every
- * branch in the shader that reads them is skipped: the frame is as it was.
- * What is not a number is taken as not asked.
+ * The toon look's own light and the toy finish, packed as the scene
+ * shader's `Frame` reads them after `lightCount`: the shade colour and the
+ * bands' softness, the rim's colour at its strength and its width, the
+ * sky's light and whether there is a sky and ground at all, and the
+ * ground's light and whether there is a shade colour; how much form the top
+ * band keeps; then the finish's gloss, sheen, smooth shading and occlusion
+ * tint, and three spares. A look that asks for none of the toon light packs
+ * noughts for it, and every branch in the shader that reads them is
+ * skipped. The finish is the other way about: on unless the look says
+ * nought, and a look that says nought of all four is drawn as toon was
+ * before it. What is not a number is taken as not asked.
  */
 export function toonUniform(out: Float32Array, look: Look, offset = 0): Float32Array {
   const num = (x: number | undefined, fallback: number) => (x !== undefined && Number.isFinite(x) ? x : fallback);
@@ -367,7 +412,11 @@ export function toonUniform(out: Float32Array, look: Look, offset = 0): Float32A
   out.set(ground ?? [0, 0, 0], offset + 12);
   out[offset + 15] = shade ? 1 : 0;
   out[offset + 16] = Math.min(MAX_FORM, Math.max(0, num(look.form, 0)));
-  out[offset + 17] = out[offset + 18] = out[offset + 19] = 0;
+  out[offset + 17] = Math.min(MAX_GLOSS, Math.max(0, num(look.gloss, 1)));
+  out[offset + 18] = Math.min(MAX_SHEEN, Math.max(0, num(look.sheen, 1)));
+  out[offset + 19] = Math.min(1, Math.max(0, num(look.smoothShading, 1)));
+  out[offset + 20] = Math.min(1, Math.max(0, num(look.occlusionTint, 1)));
+  out[offset + 21] = out[offset + 22] = out[offset + 23] = 0;
   return out;
 }
 
@@ -455,9 +504,13 @@ export interface Post {
   /**
    * How the frame is brought to the screen: the filmic curve, which holds a
    * bright colour short of white, or straight, held at white, for a toon
-   * world's chosen colours. Left out, filmic.
+   * world's chosen colours; or 'soft', straight with a shoulder, which shows
+   * a colour as it is up to a knee and eases what is brighter toward white
+   * keeping its hue, where the clamp holds each channel at one and a bright
+   * orange comes out a flat yellow (see `softTone` in toon.ts). A toy's
+   * bright plastic keeps its shape in the light with it. Left out, filmic.
    */
-  tone?: 'filmic' | 'clamp';
+  tone?: 'filmic' | 'clamp' | 'soft';
 }
 
 export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
@@ -1724,7 +1777,7 @@ export class GameRenderer {
     const pd = this.postData;
     pd[0] = bloomOn ? this.post.bloom : 0; pd[1] = this.post.threshold; pd[2] = this.post.knee;
     pd[3] = doPost ? this.post.vignette : 0; pd[4] = doPost ? this.post.grain : 0; pd[5] = this.postTime;
-    pd[6] = 1 / this.width; pd[7] = 1 / this.height; pd[8] = this.post.tone === 'clamp' ? 1 : 0;
+    pd[6] = 1 / this.width; pd[7] = 1 / this.height; pd[8] = this.post.tone === 'clamp' ? 1 : this.post.tone === 'soft' ? 2 : 0;
     device.queue.writeBuffer(this.postBuffer, 0, pd);
     if (bloomOn) {
       const steps: [GPURenderPipeline, GPUBindGroup, GPUTexture, string][] = [

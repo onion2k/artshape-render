@@ -33,8 +33,10 @@ Until there are:
   things moving: `renderer.ts` (`GameRenderer`: groups of instanced
   placements, the look, the economy ladder, shadows, occlusion, fog, post),
   `shaders.ts` (every WGSL string, and the scene shader's variants as module
-  constants), `particles.ts` (the GPU particle pool and sprites), `fog.ts`,
-  `lights.ts` and `shadows.ts`. Games import from here.
+  constants), `toon.ts` (the toon look's sums: the smooth light's ramp and
+  the soft tone, in TypeScript and in WGSL built from the same constants),
+  `particles.ts` (the GPU particle pool and sprites), `fog.ts`, `lights.ts`
+  and `shadows.ts`. Games import from here.
 - **`src/render/` is the still-life renderer.** It draws one piece well and
   redraws only on a change (`renderer.ts`, `viewer.ts`, the path tracer,
   environments in `env.ts`). The game path borrows two things from it:
@@ -46,8 +48,8 @@ Until there are:
 - **The thing without its picture.** A renderer's arithmetic lives in pure
   functions beside it and is tested under node. Examples are `fogUniform`
   and `viewDepth` in `fog.ts`, `sunShadowMatrix` in `shadows.ts`,
-  `LightPool` in `lights.ts`, `sceneSource` in `shaders.ts` and
-  `calibrate.ts` for the viewer. The GPU classes take everything as
+  `LightPool` in `lights.ts`, `sceneSource` in `shaders.ts`, `toonRamp`
+  and `softTone` in `toon.ts`, and `calibrate.ts` for the viewer. The GPU classes take everything as
   arguments or properties and never read a clock: time comes in as `dt`
   on `frame`.
 - **Content** is the consumer's. The only content here is the DSL's
@@ -66,7 +68,8 @@ each pins today:
 
 | Consumer | Pin | Path used |
 | --- | --- | --- |
-| bearing, ooergolf | v0.18.0 | game |
+| ooergolf | v0.21.0 | game |
+| bearing | v0.18.0 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
 | heist, artshape (the still-life viewer) | v0.15.0 | render (`Viewer`) |
@@ -116,6 +119,14 @@ What to copy the shape of:
   `GrassPass.multisample`, and the fog's march over the multisampled
   depth). `antialias.gpu.test.ts` holds that a look which does not ask
   compiles nothing more, and draws each rung.
+- **A finish on by default, with its sums in two languages:** the toy
+  finish (`gloss`, `sheen`, `smoothShading`, `occlusionTint`). Each is on
+  in a toon look unless it says nought, and nought of all four is toon as
+  it was before, which is the anchor its regression tests rest on: every
+  test of the bands asks for them by turning the finish off. `toon.ts`
+  holds the ramp and the soft tone as sums with their WGSL built from the
+  same constants, `toy.test.ts` holds the sums, and `toy.gpu.test.ts`
+  holds the shader to them and each part against itself at nought.
 - **A setting of the look read under a uniform:** the toon light
   (`bandSoftness`, `shadeColour`, `rim`, `skyLight`, `form`). A few instructions a
   pixel, so a uniform and not a permutation; `toonUniform` packs a look that
@@ -160,8 +171,9 @@ For anything new on the game path, say what it does:
 - **units:** a world in millimetres (`mmPerUnit` 1, arena and chess) and
   one in tenths of a metre (100, the golf); every length the feature fixes
   goes through `mm()`
-- **the look:** PBR and toon; the `filmic` and `clamp` tone maps; the toon
-  light asked for and not
+- **the look:** PBR and toon; the `filmic`, `clamp` and `soft` tone maps;
+  the toon light asked for and not; the toy finish on, as toon's default,
+  and each part at nought, which with all four is v0.21.0's toon
 - **antialiasing:** none, FXAA and four samples a pixel. Anything drawn
   into the scene pass needs a pipeline at `SAMPLES`, made in `compileMsaa`,
   or the pass refuses it; anything reading the scene's depth after it reads
@@ -192,8 +204,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,042 tests at v0.20.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light; 147 tests in 24 files at v0.20.0, ~20 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,071 tests in 68 files at v0.22.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish; 164 tests in 25 files at v0.22.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

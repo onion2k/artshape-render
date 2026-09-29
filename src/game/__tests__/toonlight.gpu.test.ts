@@ -84,7 +84,9 @@ describe('the toon look\'s own light on the game renderer', () => {
     r.economy = { ...FULL_ECONOMY, shadows: true };
     r.camera.position = [0, -160, 60];
     r.camera.target = [0, 0, -10];
-    base = { ...r.look, background: [0, 0, 0], sunDir: [0.4, -0.5, 0.75], sunColour: [2, 2, 2], shading: 'toon' };
+    // on the bands, with the toy finish off: the toon light was made for them, and each part of it is held here by
+    // what it does to them; toy.gpu.test.ts holds the finish
+    base = { ...r.look, background: [0, 0, 0], sunDir: [0.4, -0.5, 0.75], sunColour: [2, 2, 2], shading: 'toon', gloss: 0, sheen: 0, smoothShading: 0, occlusionTint: 0 };
     r.post = { ...DEFAULT_POST, bloom: 0, vignette: 0, grain: 0, tone: 'clamp' };
   });
 

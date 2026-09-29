@@ -137,13 +137,15 @@ What the measurements settled, so nobody has to re-argue it:
   from where on the thing a fragment is, so it turns with the thing — and
   every other group through a build without it, which pays nothing.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
-  group through a permutation that lights a surface in three flat bands at
-  its own colour and tints the sky's light by it, where the physically
-  based shading takes a quarter of the colour and adds the sky's light grey
-  over it; and `post.tone = 'clamp'` shows the frame straight, held at
-  white, where the filmic curve holds a bright colour short of white and
-  pulls it toward grey. Together they are a bright, flat, saturated world.
-  Left out, both are what they always were, to the pixel.
+  group through a permutation that lights a surface at its own colour, in
+  one smooth ramp from a shade to the full sun, and tints the sky's light by
+  it, where the physically based shading takes a quarter of the colour and
+  adds the sky's light grey over it; and `post.tone = 'clamp'` shows the
+  frame straight, held at white, where the filmic curve holds a bright
+  colour short of white and pulls it toward grey, or `'soft'` shows it
+  straight with a shoulder that keeps a bright colour's hue. Together they
+  are a bright, saturated world, finished as a toy is (see below). Left out,
+  shading and tone are what they always were, to the pixel.
 - **Sprites are particles the game places.** `setSprites(data, count)`,
   eight floats each (`SPRITE_STRIDE`: position and size, colour and alpha),
   draws soft camera-facing puffs where the game says, every frame, with the
@@ -234,6 +236,46 @@ scenes. Four samples take 49 MB of colour and depth at that
 size, and as much again for a kept frame once `keep` is drawn with them;
 FXAA takes 4 MB.
 
+**A toon look is a toy's finish unless it says otherwise.** Four settings,
+each on in any toon look that does not set it to nought, and each a few
+instructions a pixel, in the manner of the Switch's own toys (Mario Kart 8,
+Odyssey): `gloss`, a clean highlight where the sun glances off a smooth
+surface, sized by its roughness, soft at its edge and white at its middle,
+widened where the surface turns too fast across a pixel to hold it so a
+small ball does not sparkle, and none from a roughness of 0.8, so grass and
+lawns are matte; `sheen`, the sky in a clear coat where a smooth surface
+turns from the eye; `smoothShading`, the bands melted into one ramp that
+lights flat ground facing up and every shadow exactly as the bands did and
+shades everything between by the sun it takes, falling away from flat
+ground as steeply as `form` asks; and `occlusionTint`, the occlusion
+darkening toward the shade colour rather than grey, where there is a shade
+colour and some occlusion. `gloss` and `sheen` go to 2; nought of each is
+toon as it was, the bands and the small hard glint.
+
+```ts
+game.look = { ...game.look, shading: 'toon' };                        // the finish, all of it
+game.look = { ...game.look, shading: 'toon', gloss: 1.5, sheen: 0 };   // glossier, and no coat
+game.post = { ...game.post, tone: 'soft' };                            // bright plastic keeps its hue
+```
+
+A toon look that says nought of all four draws the frame v0.21.0 drew, to
+the bit; the finish adds no pipeline, and a physically based look takes none
+of it. `post.tone = 'soft'` is asked for, not given: under its knee a colour
+is shown as the clamp shows it, and past it the brightest channel eases
+toward one with the others keeping their share, so a lit orange stays orange
+where the clamp turns it yellow, and what is largely white light (a
+highlight, a lit cream) goes to white. `toon.ts` holds the ramp and the
+tone as sums, and a GPU test holds the shader to them. On an M4 Pro at
+1280x800, alternated with v0.21.0 in four rounds on a GPU an image generator
+was also using, the finished tree read +0.025 ms on the standard scene,
++0.04 with the toon light, and +0.015 to +0.07 on the golf scenes (paired
+medians). Turned off in the same tree, interleaved with itself on in eleven
+rounds, the finish's own work could not be told from the noise (+0.02 and
+-0.07 ms on the standard scene, +0.01 and -0.01 on the golf field): what it
+costs is its code being in the toon build at all, which a toon look pays
+whether or not it turns the finish off, and a physically based build does
+not have.
+
 **Rounded edges are the mesh's.** A toy's edges are moulded, and a moulded
 edge carries a line of highlight that turns as the thing turns; a square one
 catches none. `roundedBox(size, radius)` in `mesh/rounded.ts` is a box
@@ -314,8 +356,8 @@ that leaks a line into them is caught.
 
 ## Checking it
 
-    npm test          1,042 tests, node
-    npm run test:gpu  147 tests, headless Chrome with a real device
+    npm test          1,071 tests, node
+    npm run test:gpu  164 tests, headless Chrome with a real device
     npm run perf:gpu  the game path's frame, held to a baseline for this GPU
     npm run typecheck
 

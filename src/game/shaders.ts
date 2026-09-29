@@ -21,6 +21,8 @@
  * all, where compiling it out saved five milliseconds a megapixel.
  */
 
+import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
+
 /** What a permutation of the scene shader may leave out. */
 export interface SceneVariant {
   /**
@@ -126,8 +128,13 @@ struct Frame {
   sky: vec3f, hemisphere: f32,
   ground: vec3f, shaded: f32,
   // form is how much of the sun's fall-off the top band keeps, against what
-  // flat ground takes; the spares keep the struct a whole number of rows
-  form: f32, spare0: f32, spare1: f32, spare2: f32,
+  // flat ground takes. The toy finish's four parts follow it, read by the
+  // toon build alone and each on unless the look says nought: the
+  // highlight's strength, the sheen's, how far the bands are smoothed into
+  // one ramp, and how far the occlusion takes the shade's colour. The spares
+  // keep the struct a whole number of rows.
+  form: f32, gloss: f32, sheen: f32, smoothShading: f32,
+  occlusionTint: f32, spare0: f32, spare1: f32, spare2: f32,
 };
 /**
  * A light: where it is, how far it reaches, what it puts out, and — for a
@@ -188,10 +195,40 @@ const DIFFUSE: f32 = 0.25;
 // Toon shading's bands: the share of the sun a surface takes turned half
 // away and in shadow, and how much of the sun and the sky it takes at all,
 // since a band at the whole colour is the colour and not a quarter of it.
-const TOON_MID: f32 = 0.8;
-const TOON_SHADE: f32 = 0.6;
-const TOON_SUN: f32 = 0.4;
+const TOON_MID: f32 = ${TOON_MID};
+const TOON_SHADE: f32 = ${TOON_SHADE};
+const TOON_SUN: f32 = ${TOON_SUN};
 const TOON_SKY: f32 = 0.5;
+// The toy finish's highlight: how wide its lobe is on the smoothest surface
+// and on the roughest one that has a highlight at all, the share of the
+// lobe's peak its edge is drawn at and how much of the lobe that edge is
+// eased over (a spot with an edge a pixel wide read as a sticker, where a
+// moulded toy's is clean but soft), how bright the spot inside that edge is
+// and the glow round it, and how fast it comes on past the terminator, as a
+// share of the sun, so it never shows in a shadow.
+const GLOSS_SHARPEST: f32 = 0.08;
+const GLOSS_WIDEST: f32 = 0.6;
+const GLOSS_EDGE: f32 = 0.45;
+const GLOSS_SOFT: f32 = 0.15;
+const GLOSS_SPOT: f32 = 0.9;
+const GLOSS_GLOW: f32 = 0.4;
+const GLOSS_ONSET: f32 = 10.0;
+// Geometric specular antialiasing (Tokuyoshi and Kaplanyan, 2019): the lobe
+// widened by how far the normal turns across a pixel, so a highlight on a
+// thing a few pixels across covers a pixel or two and does not land between
+// pixel centres one frame and on one the next; and the most it is widened.
+const GLOSS_VARIANCE: f32 = 0.25;
+const GLOSS_WIDEN: f32 = 0.18;
+// The sheen, the sky in a clear coat: how much of it a surface edge-on to
+// the eye takes, and the most of the sky it shows, so the sun's disc in the
+// environment is not a second highlight where the sun is not.
+const SHEEN: f32 = 0.6;
+const SHEEN_MAX: f32 = 1.2;
+// A surface this rough starts to lose its gloss and its sheen, and one this
+// rough has neither: a lawn, a blade of grass and a stone are matte, and
+// flat ground takes exactly what it always took.
+const MATTE_FROM: f32 = 0.35;
+const MATTE: f32 = 0.8;
 
 // Four compared taps at half-texel offsets, each of which the hardware
 // bilinearly compares over four texels: sixteen texels' worth of edge for
@@ -320,6 +357,33 @@ fn patternMix(local: vec3f, pattern: vec4f) -> f32 {
   return select(0.0, smoothstep(-w, w, field), kind > 0.5);
 }
 
+/**
+ * The toy's highlight: a clean spot the size the roughness gives it, and a
+ * glow round it, one at the lobe's peak. The lobe is GGX's, over its own
+ * peak so its middle is one whatever its width, widened where the normal
+ * turns too fast across a pixel to hold it (see GLOSS_VARIANCE), and its
+ * edge eased over GLOSS_SOFT of the lobe, or the pixel the lobe changes
+ * across where that is wider, as a band's edge is.
+ * Nought on anything matte. Derivatives, so only ever called in uniform
+ * control flow.
+ */
+fn toonGloss(n: vec3f, v: vec3f, l: vec3f, rough: f32) -> f32 {
+  let dx = dpdx(n);
+  let dy = dpdy(n);
+  let widen = min(2.0 * GLOSS_VARIANCE * (dot(dx, dx) + dot(dy, dy)), GLOSS_WIDEN);
+  let a = mix(GLOSS_SHARPEST, GLOSS_WIDEST, rough);
+  let a2 = clamp(a * a + widen, 1e-5, 1.0);
+  // l + v is nought only where the sun is straight behind the surface from the eye, where there is no highlight
+  let lv = l + v;
+  let h = lv * inverseSqrt(max(dot(lv, lv), 1e-8));
+  let ndh = max(dot(n, h), 0.0);
+  let d = ndh * ndh * (a2 - 1.0) + 1.0;
+  let lobe = a2 * a2 / (d * d);
+  let w = max(fwidth(lobe), GLOSS_SOFT);
+  let spot = smoothstep(GLOSS_EDGE - w, GLOSS_EDGE + w, lobe);
+  return (spot * GLOSS_SPOT + lobe * GLOSS_GLOW) * (1.0 - smoothstep(MATTE_FROM, MATTE, rough));
+}
+${TOON_RAMP_WGSL}
 fn fresnel(f0: vec3f, cosine: f32) -> vec3f {
   return f0 + (vec3f(1.0) - f0) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0);
 }
@@ -410,12 +474,28 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
       }
       band = band + (top - 1.0) * inTop;
     }
+    // The smooth light: the bands melted into one ramp, as far as the look
+    // asks (see toonRamp in toon.ts), which lights flat ground and every
+    // shadow exactly as the bands did and shades everything between them
+    // by the sun it takes. Asked for nothing, the bands above, to the bit.
+    if (frame.smoothShading > 0.0) {
+      band = mix(band, toonRamp(into, max(l.z, 0.1), frame.form), frame.smoothShading);
+    }
+    // the toy's highlight below takes the place of the glint
+    if (frame.gloss > 0.0) {
+      glint = 0.0;
+    }
     colour = f0 * band * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
     // The shade tinted toward the look's colour rather than only darker, and
     // the more the deeper the band: turned from the sun, or in its shadow.
     if (frame.shaded > 0.5) {
       let tint = mix(vec3f(1.0), frame.shade, (1.0 - band) / (1.0 - TOON_SHADE));
       colour = f0 * tint * frame.sunColour * TOON_SUN + vec3f(glint) * frame.sunColour * TOON_SUN;
+    }
+    // The highlight a smooth toy has, in the sun's colour and never in its
+    // shadow, fading in past the terminator.
+    if (frame.gloss > 0.0) {
+      colour += vec3f(toonGloss(n, v, l, rough) * frame.gloss * min(into * GLOSS_ONSET, 1.0)) * frame.sunColour * TOON_SUN;
     }
   }
 
@@ -490,6 +570,20 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
     occluded = textureSampleLevel(occlusionMap, samp, in.pos.xy / texel, 0.0).r;
   }
   colour *= mix(1.0, occluded, frame.occlusion.x);
+  // In toon, with a shade colour, the occlusion darkens toward that colour
+  // as the shade does, rather than toward grey: as dark as it was, and its
+  // hue going toward the shade's as it deepens, by as much of it as each
+  // light takes. It changes what the sums take rather than the sums, which
+  // are the same arithmetic as they always were when it is not asked for:
+  // written as a branch of its own, the compiler put them together
+  // differently and the frame moved in its last bits.
+  let tinted = TOON && frame.occlusionTint > 0.0 && frame.shaded > 0.5;
+  var hueShut = vec3f(1.0);
+  if (tinted) {
+    let hue = frame.shade / max(max(frame.shade.r, frame.shade.g), max(frame.shade.b, 1e-4));
+    hueShut = mix(vec3f(1.0), mix(hue, vec3f(1.0), occluded), frame.occlusionTint);
+    colour *= mix(vec3f(1.0), hueShut, frame.occlusion.x);
+  }
 
   // image based: one prefiltered tap and the split-sum lookup
   let r = reflect(-v, n);
@@ -510,8 +604,20 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
       // together differently and the frame moved in its last bits.
       around = mix(frame.ground, frame.sky, n.z * 0.5 + 0.5) / TOON_SKY;
     }
+    if (tinted) {
+      around = around * hueShut;
+    }
     colour += f0 * around * frame.ambient * TOON_SKY * occluded;
     colour += pre * ab.y * (1.0 - rough) * frame.ambient * 0.25 * occluded;
+    // The sheen: the sky in a clear coat over a smooth toy, most where the
+    // surface turns from the eye and nothing where it faces it, blurred by
+    // the roughness and shut out of a crease as the sky's light is. The sky
+    // it shows is the reflection already read for the gleam: a second read
+    // of the environment was most of what the finish cost.
+    if (frame.sheen > 0.0) {
+      let edge = pow(1.0 - ndv, 4.0);
+      colour += min(pre, vec3f(SHEEN_MAX)) * (edge * SHEEN * frame.sheen * (1.0 - smoothstep(MATTE_FROM, MATTE, rough)) * occluded);
+    }
     // A rim where the surface turns from the camera, brightest edge-on, so a
     // thing stands off whatever is behind it. It is light from all round, as
     // the sky's is, and so is shut out of a crease as the sky's is.
@@ -1067,7 +1173,7 @@ export const FOG_BLEND_WGSL = POST_VERT + `
 `;
 
 /** Tonemap one source to the canvas, with the bloom, the vignette and the grain. */
-export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + `
+export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + SOFT_TONE_WGSL + `
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var bloom: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
@@ -1089,6 +1195,10 @@ fn hash(p: vec2f) -> f32 {
   var m = c / (c + vec3f(1.0));
   if (post.tone > 0.5) {
     m = min(c, vec3f(1.0));
+  }
+  // or straight with a shoulder, which keeps a bright colour's hue where the clamp turns it (see softTone in toon.ts)
+  if (post.tone > 1.5) {
+    m = softTone(c);
   }
   // the corners: the distance from the middle, over the half-diagonal, so a
   // corner is one whatever the frame's shape

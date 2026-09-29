@@ -38,10 +38,11 @@ describe('the antialiasing a frame is drawn with', () => {
 });
 
 describe('the toon look packed for the scene shader', () => {
-  it('packs noughts for a look that asks for none of it, so every branch reading it is skipped', () => {
-    expect(pack({})).toEqual(new Array(TOON_FLOATS).fill(0));
+  it('packs noughts for a look that asks for none of the toon light, so every branch reading it is skipped', () => {
+    // the toon light is the first seventeen; the toy finish after it is on unless it is said to be off (toy.test.ts)
+    expect(pack({}).slice(0, 17)).toEqual(new Array(17).fill(0));
     // said, but said as nothing
-    expect(pack({ bandSoftness: 0, rim: 0, rimColour: [1, 0.5, 0], rimWidth: 0.5, form: 0 })).toEqual(new Array(TOON_FLOATS).fill(0));
+    expect(pack({ bandSoftness: 0, rim: 0, rimColour: [1, 0.5, 0], rimWidth: 0.5, form: 0 }).slice(0, 17)).toEqual(new Array(17).fill(0));
   });
 
   it('packs the shade colour, and says there is one', () => {
@@ -89,7 +90,6 @@ describe('the toon look packed for the scene shader', () => {
   it('packs the form light after the rest, held between nothing and its strongest, and nothing beside it', () => {
     const p = pack({ form: 1.5 });
     expect(p[16]).toBeCloseTo(1.5);
-    expect(p.slice(17, 20)).toEqual([0, 0, 0]);
     expect(p.slice(0, 16), 'nothing else asked for').toEqual(new Array(16).fill(0));
     expect(pack({ form: 99 })[16]).toBeCloseTo(MAX_FORM);
     expect(pack({ form: -1 })[16]).toBe(0);
@@ -103,15 +103,15 @@ describe('the toon look packed for the scene shader', () => {
     expect(out[32 + 7]).toBeCloseTo(RIM_WIDTH);
   });
 
-  it('is laid out as the shader reads it: twenty floats after the thirty-two it always had', () => {
+  it('is laid out as the shader reads it: twenty-four floats after the thirty-two it always had', () => {
     const src = sceneSource({ toon: true });
     const frame = src.slice(src.indexOf('struct Frame {'), src.indexOf('};', src.indexOf('struct Frame {')));
     const fields = [...frame.matchAll(/(\w+): (mat4x4f|vec3f|vec2f|f32)/g)].map((m) => m[2]);
     const floats = fields.reduce((n, t) => n + ({ mat4x4f: 16, vec3f: 3, vec2f: 2, f32: 1 } as Record<string, number>)[t], 0);
     expect(floats).toBe(32 + TOON_FLOATS);
-    expect(TOON_FLOATS).toBe(20);
+    expect(TOON_FLOATS).toBe(24);
     expect(frame).toMatch(
-      /shade: vec3f, softness: f32,\s*rim: vec3f, rimWidth: f32,\s*sky: vec3f, hemisphere: f32,\s*ground: vec3f, shaded: f32,\s*(\/\/[^\n]*\s*)*form: f32, spare0: f32, spare1: f32, spare2: f32,\s*$/,
+      /shade: vec3f, softness: f32,\s*rim: vec3f, rimWidth: f32,\s*sky: vec3f, hemisphere: f32,\s*ground: vec3f, shaded: f32,\s*(\/\/[^\n]*\s*)*form: f32, gloss: f32, sheen: f32, smoothShading: f32,\s*occlusionTint: f32, spare0: f32, spare1: f32, spare2: f32,\s*$/,
     );
   });
 });

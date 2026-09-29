@@ -126,7 +126,8 @@ describe('toon shading and a straight tone on the game renderer', () => {
       return [...count.values()].filter((n) => n > lit.length / 50).length;
     };
     const pbr = levels(await draw({}, [0.8, 0.1, 0.1], undefined, 'pbr'));
-    const toon = levels(await draw({ shading: 'toon' }, [0.8, 0.1, 0.1], 'clamp', 'toon'));
+    // the bands, which a toon look asks for by turning the toy finish's smooth light off (toy.gpu.test.ts has the ramp)
+    const toon = levels(await draw({ shading: 'toon', smoothShading: 0, gloss: 0, sheen: 0 }, [0.8, 0.1, 0.1], 'clamp', 'toon'));
     expect(toon, 'a few bands').toBeLessThanOrEqual(5);
     expect(pbr, 'a smooth shade').toBeGreaterThan(toon * 2);
   });

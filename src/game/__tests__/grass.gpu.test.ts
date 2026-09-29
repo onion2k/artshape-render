@@ -532,10 +532,13 @@ describe('grass on the game renderer', () => {
       const px = await draw(r, 'redraw', `grass-${name}`);
       expect(differing(px, bare), `the ${name} is drawn over its ground`).toBeGreaterThan(2000);
       if (name === 'green') {
-        // the ground painted grassGround's colour is the colour the blades average to: the cup is no lighter or darker than the green round it
+        // the ground painted grassGround's colour is the colour the blades average to: the cup is no lighter or darker
+        // than the green round it. Six levels: toon's smooth light shades each blade by the sun it takes, and a field
+        // of blades turned every way averages about three levels under flat ground, where the bands lit nearly all
+        // of them as flat ground; a ground in the wrong colour is tens of levels out.
         const [gx, gy] = toScreen(r, [4, 6.2, 0]), [cx, cy] = toScreen(r, [4, 4, 0]);
         const g = meanIn(px, gx - 40, gy - 6, gx + 40, gy + 6), c = meanIn(px, cx - 12, cy - 6, cx + 12, cy + 6);
-        expect(Math.hypot(g[0] - c[0], g[1] - c[1], g[2] - c[2]), `the green ${g.map(Math.round)} against the cup's ground ${c.map(Math.round)}`).toBeLessThan(4);
+        expect(Math.hypot(g[0] - c[0], g[1] - c[1], g[2] - c[2]), `the green ${g.map(Math.round)} against the cup's ground ${c.map(Math.round)}`).toBeLessThan(6);
       }
     }
     r.setStatic([ground]);
