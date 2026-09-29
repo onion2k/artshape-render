@@ -68,8 +68,8 @@ each pins today:
 
 | Consumer | Pin | Path used |
 | --- | --- | --- |
+| bearing | v0.22.0 | game |
 | ooergolf | v0.21.0 | game |
-| bearing | v0.18.0 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
 | heist, artshape (the still-life viewer) | v0.15.0 | render (`Viewer`) |
