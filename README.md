@@ -253,7 +253,8 @@ colour and some occlusion. `gloss` and `sheen` go to 2; nought of each is
 toon as it was, the bands and the small hard glint. Grass is drawn matte
 whatever its roughness: no highlight, no sheen and no tint in a crease,
 since a blade is drawn by the million and the three, compiled into it,
-cost ooergolf's rough a fifth of a millisecond it never showed.
+cost ooergolf's rough a quarter of a millisecond for a tint on the blades
+at a rail's foot that could scarcely be seen.
 
 ```ts
 game.look = { ...game.look, shading: 'toon' };                        // the finish, all of it

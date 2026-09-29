@@ -384,8 +384,10 @@ finish's code in the grass's build cost ooergolf's rough 0.45 ms of a 2.5 ms
 frame (+19%) with every part of it at nought, where the renderer's own golf
 scene, with a sparser field, read +0.07. With the grass switched off the two
 agreed. Compiling the highlight, the sheen and the tint out of the grass
-(`SceneVariant.matte`) brought it to about +0.1, and no picture of
-ooergolf's moved; holding the tint's colour for less of the shader first,
+(`SceneVariant.matte`) brought it to +0.2 (+0.12 to +0.29 over five
+rounds alternated with its parent), and one picture of ooergolf's moved, the
+blades at a rail's foot a shade greyer where the tint had turned them; the
+soft tone, timed against the clamp, cost nothing. Holding the tint's colour for less of the shader first,
 by working it out again where the sky's light takes it, saved nothing.
 
 ## Rounded edges

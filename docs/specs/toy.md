@@ -53,8 +53,9 @@ where the build departed from it and why.
   cost ooergolf's rough 0.45 ms of a 2.5 ms frame with every part at nought,
   which its perf gate caught; the renderer's own golf scene, with a sparser
   field, had read +0.07. The highlight, the sheen and the tint are compiled
-  out of a blade (`SceneVariant.matte`), which took ooergolf's gap to about
-  +0.1 ms and moved none of its pictures. The ramp stays in: it cost next to
+  out of a blade (`SceneVariant.matte`), which took ooergolf's gap to
+  +0.2 ms (+8%, five rounds), and moved one of its pictures: the blades at a
+  rail's foot a shade greyer, where the tint had turned them. The ramp stays in: it cost next to
   nothing, and grass shaded by the bands beside ground shaded by the ramp
   would not match.
 - **Found and not fixed here:** the grass differs from itself by a pixel from

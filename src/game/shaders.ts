@@ -59,9 +59,10 @@ export interface SceneVariant {
    * Whether the toy finish's highlight, sheen and tinted occlusion are left
    * out, for what is matte and drawn by the million: grass. The highlight
    * and the sheen are nought on anything as rough as a blade anyway, and the
-   * tint was not seen in a picture of ooergolf's rough, where the three,
-   * compiled into every blade and never asked for, cost a fifth of a
-   * millisecond of a two-and-a-half millisecond frame. The toy's smooth light
+   * tint only greyed the blades at a rail's foot a little less in one picture
+   * of ooergolf's rough, where the three, compiled into every blade whether
+   * asked for or not, cost a quarter of a millisecond of a two-and-a-half
+   * millisecond frame. The toy's smooth light
    * stays in: it costs next to nothing, and a field shaded by the bands
    * beside ground shaded by the ramp would not match.
    */

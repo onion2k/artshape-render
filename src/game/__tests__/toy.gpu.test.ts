@@ -479,8 +479,8 @@ describe('the toy finish on the game renderer', () => {
   });
 
   it('draws grass matte whatever its roughness, with no highlight, no sheen and no tint in a crease', async () => {
-    // Blades are drawn by the million, and the three cost ooergolf's rough a fifth of a millisecond compiled into
-    // them and never seen: so they are not built in. A smooth blade, which the finish would have glossed.
+    // Blades are drawn by the million, and the three cost ooergolf's rough a quarter of a millisecond compiled into
+    // them and scarcely seen: so they are not built in. A smooth blade, which the finish would have glossed.
     const kind: GrassKind = { density: 1.5, height: 16, width: 2, base: [0.2, 0.5, 0.15], tip: [0.4, 0.8, 0.3], lean: 0.2, give: 0.2, roughness: 0.2 };
     const cols = 16, rows = 16;
     const field: GrassField = { origin: [-80, -80], cell: 10, cols, rows, mask: new Uint8Array(cols * rows).fill(1), heights: new Float32Array(cols * rows).fill(-70), kinds: [kind], seed: 2 };
