@@ -36,6 +36,7 @@ export interface GrassKind {
   tip: Rgb;
   /** How much each blade's colour differs from the next, as a fraction. */
   variation?: number;
+  /** How rough a blade is, for the physically based look's highlight and the sky's gleam; toon's highlight and sheen are never drawn on grass. */
   roughness?: number;
   /** How far a blade leans at rest: nought upright, one lying down. */
   lean?: number;

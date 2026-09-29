@@ -49,6 +49,14 @@ where the build departed from it and why.
   light's top band to the bit; the Volcano reads 1.485. Under it a field of
   blades averages a little darker, and two grass thresholds moved with
   their reasons.
+- **Grass is matte, from 0.22.2.** The finish's code in the grass's build
+  cost ooergolf's rough 0.45 ms of a 2.5 ms frame with every part at nought,
+  which its perf gate caught; the renderer's own golf scene, with a sparser
+  field, had read +0.07. The highlight, the sheen and the tint are compiled
+  out of a blade (`SceneVariant.matte`), which took ooergolf's gap to about
+  +0.1 ms and moved none of its pictures. The ramp stays in: it cost next to
+  nothing, and grass shaded by the bands beside ground shaded by the ramp
+  would not match.
 - **Found and not fixed here:** the grass differs from itself by a pixel from
   one frame to the next with nothing changed, in v0.21.0 as well. It is a
   task of its own.

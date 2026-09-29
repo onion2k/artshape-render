@@ -477,4 +477,25 @@ describe('the toy finish on the game renderer', () => {
     const total = (px: Pixels) => blades.reduce((s, i) => s + lum(px, i), 0) / blades.length;
     expect(Math.abs(total(on) - total(more))).toBeLessThan(0.2);
   });
+
+  it('draws grass matte whatever its roughness, with no highlight, no sheen and no tint in a crease', async () => {
+    // Blades are drawn by the million, and the three cost ooergolf's rough a fifth of a millisecond compiled into
+    // them and never seen: so they are not built in. A smooth blade, which the finish would have glossed.
+    const kind: GrassKind = { density: 1.5, height: 16, width: 2, base: [0.2, 0.5, 0.15], tip: [0.4, 0.8, 0.3], lean: 0.2, give: 0.2, roughness: 0.2 };
+    const cols = 16, rows = 16;
+    const field: GrassField = { origin: [-80, -80], cell: 10, cols, rows, mask: new Uint8Array(cols * rows).fill(1), heights: new Float32Array(cols * rows).fill(-70), kinds: [kind], seed: 2 };
+    // a block standing in the grass, so the blades round its foot are in a crease
+    const block: GameGroup = { mesh: boxMesh(), matrices: at(30, 0, 10, -60, 0.4), albedo: GREY, roughness: 0.9 };
+    const shut: Partial<Look> = { occlusion: 3, occlusionRadius: 30, occlusionDirect: 0.5, shadeColour: SHADE };
+    await r.setGrass(field);
+    // the least gloss there is, which still takes the glint away as any gloss does, against the most
+    const least = await draw({ ...shut, gloss: 1e-6, sheen: 0, occlusionTint: 0 }, [floor, block], 'grass matte');
+    const most = await draw({ ...shut, gloss: 2, sheen: 2, occlusionTint: 1 }, [floor, block], 'grass finished');
+    await r.setGrass(null);
+    const bare = await draw({ ...shut, gloss: 1e-6, sheen: 0, occlusionTint: 0 }, [floor, block]);
+    const blades = all(least).filter((i) => lum(least, i) !== lum(bare, i));
+    expect(blades.length, 'the blades are drawn').toBeGreaterThan(2000);
+    // a pixel or so where two blades meet at the same depth, as above
+    expect(changed(least, most, blades).length).toBeLessThanOrEqual(3);
+  });
 });

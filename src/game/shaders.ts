@@ -55,6 +55,17 @@ export interface SceneVariant {
    * highlight. For a bright, flat, saturated world; a look chooses it.
    */
   toon?: boolean;
+  /**
+   * Whether the toy finish's highlight, sheen and tinted occlusion are left
+   * out, for what is matte and drawn by the million: grass. The highlight
+   * and the sheen are nought on anything as rough as a blade anyway, and the
+   * tint was not seen in a picture of ooergolf's rough, where the three,
+   * compiled into every blade and never asked for, cost a fifth of a
+   * millisecond of a two-and-a-half millisecond frame. The toy's smooth light
+   * stays in: it costs next to nothing, and a field shaded by the bands
+   * beside ground shaded by the ramp would not match.
+   */
+  matte?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -494,7 +505,7 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
     }
     // The highlight a smooth toy has, in the sun's colour and never in its
     // shadow, fading in past the terminator.
-    if (frame.gloss > 0.0) {
+    if (!MATTE_ONLY && frame.gloss > 0.0) {
       colour += vec3f(toonGloss(n, v, l, rough) * frame.gloss * min(into * GLOSS_ONSET, 1.0)) * frame.sunColour * TOON_SUN;
     }
   }
@@ -577,7 +588,7 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
   // are the same arithmetic as they always were when it is not asked for:
   // written as a branch of its own, the compiler put them together
   // differently and the frame moved in its last bits.
-  let tinted = TOON && frame.occlusionTint > 0.0 && frame.shaded > 0.5;
+  let tinted = !MATTE_ONLY && TOON && frame.occlusionTint > 0.0 && frame.shaded > 0.5;
   var hueShut = vec3f(1.0);
   if (tinted) {
     let hue = frame.shade / max(max(frame.shade.r, frame.shade.g), max(frame.shade.b, 1e-4));
@@ -614,7 +625,7 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
     // the roughness and shut out of a crease as the sky's light is. The sky
     // it shows is the reflection already read for the gleam: a second read
     // of the environment was most of what the finish cost.
-    if (frame.sheen > 0.0) {
+    if (!MATTE_ONLY && frame.sheen > 0.0) {
       let edge = pow(1.0 - ndv, 4.0);
       colour += min(pre, vec3f(SHEEN_MAX)) * (edge * SHEEN * frame.sheen * (1.0 - smoothstep(MATTE_FROM, MATTE, rough)) * occluded);
     }
@@ -641,9 +652,9 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false }: SceneVariant = {}): string {
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
-    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\n`
+    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
     + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE_HEAD + vertex + SCENE_MATERIAL + SCENE_FRAGMENT;
 }
 

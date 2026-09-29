@@ -349,7 +349,8 @@ that says nothing of it and off, part by part, where it says nought.
 `toy.gpu.test.ts` holds it on a device, each part against the same look with
 that part at nought: a physically based look takes none of it; the highlight
 is one compact spot, white at its middle, on a smooth ball and nothing on a
-matte one or on grass, never in another thing's shadow, and its brightest
+matte one or on grass (a smooth blade in a crease takes no highlight, no
+sheen and no tint, whatever the look asks), never in another thing's shadow, and its brightest
 within a third of itself as a ten-pixel ball moves an eighth of a pixel at a
 time (it read 375 to 420 over the eight steps; with the widening taken out,
 141 to 303, which is the sparkle the widening is for); the sheen lifts a smooth ball's edge and not its middle, bluer, and
@@ -378,6 +379,14 @@ pixel by one level; the grey sums are written as they were now, and the tint
 changes only what they are handed. Found by comparing forty frames of
 v0.21.0, toon and physically based in every antialiasing and frame mode,
 with grass and with lamps, against the finished tree with the finish off.
+**What code costs is paid where it is compiled, asked for or not:** the
+finish's code in the grass's build cost ooergolf's rough 0.45 ms of a 2.5 ms
+frame (+19%) with every part of it at nought, where the renderer's own golf
+scene, with a sparser field, read +0.07. With the grass switched off the two
+agreed. Compiling the highlight, the sheen and the tint out of the grass
+(`SceneVariant.matte`) brought it to about +0.1, and no picture of
+ooergolf's moved; holding the tint's colour for less of the shader first,
+by working it out again where the sky's light takes it, saved nothing.
 
 ## Rounded edges
 

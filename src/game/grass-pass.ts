@@ -14,7 +14,10 @@
  *
  * A blade is lit by the scene's own fragment stage (`sceneWith`), so toon
  * bands, the sun's shadow, the lights, the occlusion and the ambient are
- * the same on grass as on anything else, with no copy of them to drift. It
+ * the same on grass as on anything else, with no copy of them to drift. A
+ * blade is matte, so its build leaves out the toy finish's highlight, sheen
+ * and tint (see `SceneVariant.matte`), which cost a field of it more than
+ * anything else the finish does. It
  * reads the sun's map and the occlusion but is drawn into neither unless a
  * game asks for its shadows: a blade two pixels tall throws nothing anyone
  * can see, and each costs about as much as the blades themselves. The fog
@@ -273,8 +276,8 @@ fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
 }
 `;
 
-/** The scene variants a blade is drawn through: a group's, without the patterns. */
-type GrassVariant = Required<Omit<SceneVariant, 'patterned'>>;
+/** The scene variants a blade is drawn through: a group's, without the patterns, and always matte. */
+type GrassVariant = Required<Omit<SceneVariant, 'patterned' | 'matte'>>;
 
 function variantKey(v: GrassVariant, far: boolean, samples = 1) {
   return `${v.cullLights ? 'c' : 'n'}${v.points ? 'p' : 's'}${v.shadows ? 'S' : 'f'}${v.toon ? 't' : 'r'}${far ? 'F' : 'N'}${samples > 1 ? `x${samples}` : ''}`;
@@ -387,7 +390,7 @@ export class GrassPass {
       };
     };
     for (const v of GRASS_VARIANTS) {
-      modules.set(variantKey(v, false), shader(device, sceneWith(GRASS_VERTEX, { ...v, patterned: false }), `grass ${variantKey(v, false)}`));
+      modules.set(variantKey(v, false), shader(device, sceneWith(GRASS_VERTEX, { ...v, patterned: false, matte: true }), `grass ${variantKey(v, false)}`));
       for (const far of [false, true])
         waits.push(device.createRenderPipelineAsync(this.drawPipeline(v, far, 1)).then((p) => { this.pipelines.set(variantKey(v, far), p); }));
     }

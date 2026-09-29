@@ -250,7 +250,10 @@ shades everything between by the sun it takes, falling away from flat
 ground as steeply as `form` asks; and `occlusionTint`, the occlusion
 darkening toward the shade colour rather than grey, where there is a shade
 colour and some occlusion. `gloss` and `sheen` go to 2; nought of each is
-toon as it was, the bands and the small hard glint.
+toon as it was, the bands and the small hard glint. Grass is drawn matte
+whatever its roughness: no highlight, no sheen and no tint in a crease,
+since a blade is drawn by the million and the three, compiled into it,
+cost ooergolf's rough a fifth of a millisecond it never showed.
 
 ```ts
 game.look = { ...game.look, shading: 'toon' };                        // the finish, all of it

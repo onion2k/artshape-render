@@ -126,7 +126,10 @@ What to copy the shape of:
   test of the bands asks for them by turning the finish off. `toon.ts`
   holds the ramp and the soft tone as sums with their WGSL built from the
   same constants, `toy.test.ts` holds the sums, and `toy.gpu.test.ts`
-  holds the shader to them and each part against itself at nought.
+  holds the shader to them and each part against itself at nought. Grass
+  is built without the highlight, sheen and tint (`SceneVariant.matte`):
+  code in the scene shader is paid by every blade whether it is asked for
+  or not, so time a change to it in a game with a dense field too.
 - **A setting of the look read under a uniform:** the toon light
   (`bandSoftness`, `shadeColour`, `rim`, `skyLight`, `form`). A few instructions a
   pixel, so a uniform and not a permutation; `toonUniform` packs a look that
