@@ -23,6 +23,7 @@ import { FULL_ECONOMY, GameRenderer, type GameGroup, type Look } from '../render
 import { noFog } from '../fog';
 import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
+import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, packFlow } from '../flow';
 import { judge, median, recorded } from './perf';
 
 const W = 1280, H = 800;
@@ -49,6 +50,17 @@ function plane(size: number): Mesh {
   b.vertex(s, -s, 0, 0, 0, 1, 1, 0);
   b.vertex(s, s, 0, 0, 0, 1, 1, 1);
   b.vertex(-s, s, 0, 0, 0, 1, 0, 1);
+  b.quad(0, 1, 2, 3);
+  return b.build();
+}
+
+/** A flat rectangle `w` along x and `h` along y, facing up, its mesh units the world's own. */
+function strip(w: number, h: number): Mesh {
+  const b = new MeshBuilder();
+  b.vertex(-w / 2, -h / 2, 0, 0, 0, 1, 0, 0);
+  b.vertex(w / 2, -h / 2, 0, 0, 0, 1, 1, 0);
+  b.vertex(w / 2, h / 2, 0, 0, 0, 1, 1, 1);
+  b.vertex(-w / 2, h / 2, 0, 0, 0, 1, 0, 1);
   b.quad(0, 1, 2, 3);
   return b.build();
 }
@@ -203,6 +215,21 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.look = { ...plain, ...TOON_LIGHT };
     measured['standard toon light'] = await time();
     r.look = plain;
+    // the flow kinds over the standard scene: three strips, a ripple, a crust and a drift, thirty units by eight on the ground between the boxes, through the flowing builds
+    const strips: GameGroup[] = [[FLOW_RIPPLE, -12, [0.01, 0.12, 0.2]], [FLOW_CRUST, 0, [1, 0.25, 0.02]], [FLOW_DRIFT, 12, [1, 1, 1]]].map(([kind, y, second]) => {
+      const patterns = packFlow(new Float32Array(8), 0, { kind: kind as number, scale: 1, speed: 3, glow: kind === FLOW_CRUST ? 2 : 0, second: second as [number, number, number] });
+      return { mesh: strip(30, 8), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, y as number, 0.05, 1]), albedo: [0.05, 0.08, 0.1], roughness: 0.3, patterns };
+    });
+    r.setStatic([...standardScene(), ...strips]);
+    await r.prepare();
+    r.time = 12.5;
+    measured['standard flow'] = await time();
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['standard flow msaa'] = await time();
+    r.look = plain;
+    r.time = 0;
+    r.setStatic(standardScene());
     console.log(`blades drawn at the home view: ${home.near} near, ${home.far} far`);
 
     const file = await server.commands.readFile(BASELINE).catch(() => '');

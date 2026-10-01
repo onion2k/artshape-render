@@ -117,3 +117,50 @@ describe('the frame is half floats, and every stage is held to what they have', 
   });
 });
 
+
+describe('the flowing build of the scene shader', () => {
+  const body = (s: string) => s.slice(s.indexOf('struct Frame'));
+  // the words that only the flow code has: not one may be in any other build
+  const FLOW_WORDS = ['flowSurface', 'flowFbm', 'flowVoro', 'flowHash', 'FLOWING', 'frame.spare0', 'in.tx', 'in.ty'];
+
+  it('has the flow code, a constant to say so, and the clock read from the frame', () => {
+    const src = sceneSource({ flowing: true });
+    expect(src).toContain('const FLOWING: bool = true;');
+    for (const word of ['flowSurface', 'flowFbm', 'flowVoro', 'flowHash', 'frame.spare0']) expect(src, word).toContain(word);
+    // it carries the placement's tangents, which turn a normal by a slope, and the glow is added after the lights
+    expect(src).toContain('tx: vec3f');
+    expect(src).toContain('out.tx = m0.xyz;');
+    expect(src).toContain('colour += flow.glow;');
+  });
+
+  it('is a patterned build too, so kinds one to four draw in it as they do in the patterned one', () => {
+    expect(sceneSource({ flowing: true })).toContain('const PATTERNED: bool = true;');
+    // and what a flow kind mixes is the flow's, not the speckle the patterned build's own field would make of its number
+    expect(sceneSource({ flowing: true })).toContain('select(patternMix(in.local, in.pattern), flow.mixing, in.pattern.x > 4.5)');
+  });
+
+  it('is in no other build, not a word of it, whatever the other settings', () => {
+    for (const patterned of [false, true])
+      for (const toon of [false, true])
+        for (const flowing of [undefined, false]) {
+          const src = sceneSource({ patterned, toon, flowing });
+          for (const word of FLOW_WORDS) expect(src, `${word} in a build that did not ask`).not.toContain(word);
+        }
+  });
+
+  it('leaves every other build as it was to the byte: the same text with or without the setting named', () => {
+    for (const patterned of [false, true]) expect(sceneSource({ patterned, flowing: false })).toBe(sceneSource({ patterned }));
+    expect(sceneSource({ patterned: true })).toContain('const PATTERNED: bool = true;\nconst TOON: bool = false;');
+  });
+
+  it('is built in the ladder\'s and toon\'s constants as the other builds are', () => {
+    const src = sceneSource({ flowing: true, toon: true, points: false, shadows: false, cullLights: false });
+    for (const line of ['TOON: bool = true', 'POINT_LIGHTS: bool = false', 'SHADOWS: bool = false', 'CULL_BY_RADIUS: bool = false']) expect(src).toContain(line);
+    expect(body(sceneSource({ flowing: true, points: false }))).toBe(body(sceneSource({ flowing: true, points: true })));
+  });
+
+  it('refuses another vertex stage, which has no tangents to give it', () => {
+    const other = '@vertex fn vsMain(@builtin(vertex_index) v: u32) -> VsOut { var out: VsOut; return out; }\n';
+    expect(() => sceneWith(other, { flowing: true })).toThrow(/flowing/);
+  });
+});

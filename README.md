@@ -136,6 +136,32 @@ What the measurements settled, so nobody has to re-argue it:
   code in it — a swirl, bands, marbling or speckle, mixed into the albedo
   from where on the thing a fragment is, so it turns with the thing — and
   every other group through a build without it, which pays nothing.
+- **A surface that flows is a pattern too, in a build of its own.** Kinds 5
+  (ripple), 6 (crust) and 7 (drift) are written with `packFlow` (`flow.ts`):
+  kind, scale, speed, glow, then the second colour. The pattern travels along
+  the mesh's own +x by `renderer.time * speed`, so the game's clock moves it
+  and a paused game, or a test that sets the same time twice, draws the same
+  frame; nothing reads a wall clock. Scale and speed are in the mesh's own
+  units, and scale is how many of the pattern's cells fit in one of them: one
+  suits a strip a few units across, so a mesh in millimetres wants about a
+  thousandth and one in tenths of a metre about a tenth, and speed is
+  the mesh's own length a second. The pattern is drawn from where on the
+  mesh a fragment is, so lay the surface in the mesh's x and y, x the way it
+  flows, with its normal along z. Ripple turns the surface normal by its
+  height field's slope so the lights and the sky glint on it; crust is dark
+  plates over cracks; drift is scratches fixed to the mesh with flecks and a
+  few glints moving along it. A flow kind's glow is light the surface gives out
+  itself, the second colour times the glow times the kind's own field (the
+  crests, the cracks, the flecks), added whatever light falls on it, so lava
+  shows in a pitch-black cave; nought, the default, adds nothing. The build
+  that draws them is compiled the first time `setStatic` or `setDynamic` is
+  handed a group with one, in every rung of the economy and, if asked for,
+  every antialiasing mode, and `prepare()` says when it is in; until then the
+  group is drawn through the patterned build, as the still speckle of kind 4
+  with no glow. A game that has no such group compiles nothing and draws as it
+  did. A kept static half (`'keep'`) redraws a flowing static group each frame
+  and keeps the rest, so it costs what that group costs and no more. Edges,
+  foam and banks are the game's to draw as geometry of its own.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
   group through a permutation that lights a surface at its own colour, in
   one smooth ramp from a shade to the full sun, and tints the sky's light by

@@ -21,6 +21,7 @@
  * all, where compiling it out saved five milliseconds a megapixel.
  */
 
+import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
 
 /** What a permutation of the scene shader may leave out. */
@@ -67,6 +68,15 @@ export interface SceneVariant {
    * beside ground shaded by the ramp would not match.
    */
   matte?: boolean;
+  /**
+   * Whether the flow kinds (a placement's pattern kinds 5 to 7: ripple,
+   * crust and drift) are built in, with their clock, their slope on the
+   * normal and their glow. It is a patterned build too, and the only one
+   * that has any of it: every other build is the text it was, to the byte, so
+   * a game that never asks pays for none of it. Compiled when a group first
+   * asks (see `flow.ts`), not up front; it needs the group's own vertex stage.
+   */
+  flowing?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -653,10 +663,22 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false }: SceneVariant = {}): string {
+  let head = SCENE_HEAD, stage = vertex, material = SCENE_MATERIAL, fragment = SCENE_FRAGMENT;
+  let flow = '';
+  if (flowing) {
+    // the flowing build is the patterned build with the flow's pieces put in: the tangents the slope turns the normal by, the kinds' fields, and the glow after the lights
+    if (!vertex.includes(FLOW_SPLICES.vertex.from)) throw new Error('the flowing build needs the group\'s own vertex stage, which has the tangents to give it');
+    patterned = true;
+    head = spliced(head, FLOW_SPLICES.struct.from, FLOW_SPLICES.struct.to);
+    stage = spliced(stage, FLOW_SPLICES.vertex.from, FLOW_SPLICES.vertex.to);
+    material += FLOW_WGSL;
+    fragment = spliced(spliced(spliced(fragment, FLOW_SPLICES.normal.from, FLOW_SPLICES.normal.to), FLOW_SPLICES.albedo.from, FLOW_SPLICES.albedo.to), FLOW_SPLICES.glow.from, FLOW_SPLICES.glow.to);
+    flow = 'const FLOWING: bool = true;\n';
+  }
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
-    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + SCENE_HEAD + vertex + SCENE_MATERIAL + SCENE_FRAGMENT;
+    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + flow + head + stage + material + fragment;
 }
 
 /**

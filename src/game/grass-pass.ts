@@ -277,7 +277,7 @@ fn windBend(p: vec2f, give: f32, phase: f32) -> f32 {
 `;
 
 /** The scene variants a blade is drawn through: a group's, without the patterns, and always matte. */
-type GrassVariant = Required<Omit<SceneVariant, 'patterned' | 'matte'>>;
+type GrassVariant = Required<Omit<SceneVariant, 'patterned' | 'matte' | 'flowing'>>;
 
 function variantKey(v: GrassVariant, far: boolean, samples = 1) {
   return `${v.cullLights ? 'c' : 'n'}${v.points ? 'p' : 's'}${v.shadows ? 'S' : 'f'}${v.toon ? 't' : 'r'}${far ? 'F' : 'N'}${samples > 1 ? `x${samples}` : ''}`;

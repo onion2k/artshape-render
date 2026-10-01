@@ -130,6 +130,20 @@ What to copy the shape of:
   is built without the highlight, sheen and tint (`SceneVariant.matte`):
   code in the scene shader is paid by every blade whether it is asked for
   or not, so time a change to it in a game with a dense field too.
+- **Builds compiled when first handed a thing that wants them:** the flow
+  kinds. A placement's pattern kind 5, 6 or 7 (`flow.ts`: ripple, crust,
+  drift) is drawn through `SceneVariant.flowing`, a build made only of
+  strings spliced into the scene shader's text, so every other build is the
+  text it was to the byte; it is compiled when `setStatic` or `setDynamic` is
+  first handed such a group (`askFlow`, sixteen builds, and again at four
+  samples if `compileMsaa` has run or runs), and `prepare()` waits for it.
+  Its clock is the frame uniform's `spare0`, written from `GameRenderer.time`
+  and read by no other build. A static flowing group is not in the kept
+  frame: `keep` redraws it each frame over the kept rest. `flow.test.ts`
+  holds the packing, the splices and `shaders.test.ts` the "not a word of it
+  elsewhere"; `flow.gpu.test.ts` holds that a game that does not ask draws
+  the same at any time and compiles nothing, and each kind, the clock, the
+  glow and the rest of the checklist; `perf.gpu.test.ts` has its scene.
 - **A setting of the look read under a uniform:** the toon light
   (`bandSoftness`, `shadeColour`, `rim`, `skyLight`, `form`). A few instructions a
   pixel, so a uniform and not a permutation; `toonUniform` packs a look that

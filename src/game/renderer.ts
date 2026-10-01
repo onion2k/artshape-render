@@ -37,6 +37,7 @@ import { ContactOcclusion } from '../render/ao';
 import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from './grass';
 import { GrassPass } from './grass-pass';
 import { MAX_GLOSS, MAX_SHEEN } from './toon';
+import { usesFlow } from './flow';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
 export interface DrawnBlade { x: number; y: number; z: number; id: number }
@@ -102,11 +103,23 @@ export interface GameGroup {
    * and then the second colour it mixes in and a spare. Drawn from where on
    * the thing a fragment is, so it turns with the thing. Left out, the group
    * draws through a shader with no pattern code in it at all.
+   *
+   * Kinds 5 to 7 flow (see `flow.ts`, and `packFlow` for writing one): 5
+   * ripple, 6 crust, 7 drift. Their floats read kind, scale (cells to the
+   * mesh's own unit), speed (the mesh's own x a second, along +x, by the
+   * renderer's `time`), glow (light the surface gives out of itself, nought
+   * for none), then the second colour. A group with any is drawn through a
+   * build compiled when it is first handed in: `prepare()` says when it is
+   * in, and until then such a group is drawn as the speckle of kind 4, from
+   * the same floats, still and without glow.
    */
   patterns?: Float32Array;
 }
 
-/** Eight floats a placement's pattern: kind, scale, seed and a spare, then the second colour and a spare. */
+/** Where the frame uniform's clock is: the toon light's first spare, after `toonUniform`'s 32 and the finish's 21. */
+const CLOCK_AT = 32 + 21;
+
+/** Eight floats a placement's pattern: kind, scale, seed and a spare, then the second colour and a spare; a flow kind's seed is its speed and its spare its glow. */
 export const PATTERN_STRIDE = 8;
 
 /** Four floats a placement: colour and roughness, as the shader reads them. */
@@ -538,6 +551,17 @@ const PATTERN_LAYOUT: GPUVertexBufferLayout = {
     { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
   ],
 };
+/**
+ * The builds of the scene shader that have the flow kinds: every rung of the
+ * ladder, in both looks, and always patterned. Not made up front: a game
+ * that has no flowing group never compiles one.
+ */
+const FLOW_VARIANTS: SceneVariant[] = [];
+for (const toon of [false, true])
+  for (const shadows of [true, false])
+    for (const points of [true, false])
+      for (const cullLights of [true, false]) FLOW_VARIANTS.push({ cullLights, points, shadows, patterned: true, flowing: true, toon });
+
 /** Every build of the scene shader, each with and without patterns and toon shading. */
 const SCENE_VARIANTS: SceneVariant[] = [];
 for (const toon of [false, true]) {
@@ -560,6 +584,8 @@ interface Uploaded {
   pattern: GPUBuffer;
   /** Whether the group has patterns, and draws through the build with the pattern code in it. */
   patterned: boolean;
+  /** Whether any placement's pattern is a flow kind, which the static half redraws every frame and the flowing build draws. */
+  flowing: boolean;
   indexCount: number;
   capacity: number;
   count: number;
@@ -586,6 +612,8 @@ export class GameRenderer {
   private antialiasAsked = 0;
   private antialiasBuilt: Promise<void> = Promise.resolve();
   private msaaBuild: Promise<void> | null = null;
+  /** The flowing builds, made the first time a group with a flow kind is handed in and never before. */
+  private flowBuild: Promise<void> | null = null;
   private fxaaBuild: Promise<void> | null = null;
   private msaaCompiled = false;
   private fxaaCompiled = false;
@@ -952,7 +980,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant, samples = 1) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
   }
 
   /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
@@ -1012,6 +1040,32 @@ export class GameRenderer {
     await this.ready;
     this.askAntialias();
     await this.antialiasBuilt;
+    await this.flowBuild;
+  }
+
+  /**
+   * Starts the flowing builds, once, the first time a group with a flow
+   * kind is handed in: at one sample a pixel, and at four if four samples
+   * have been asked for already (if they are asked for later, `compileMsaa`
+   * makes these too). Each is made as the others are, from the same
+   * descriptor, so a rung of the ladder or a mode of antialiasing has its own.
+   */
+  private askFlow() {
+    this.flowBuild ??= this.compileFlow();
+  }
+
+  private compileFlow(): Promise<void> {
+    const { device } = this.ctx;
+    const four = this.msaaBuild !== null;
+    const waits: Promise<unknown>[] = [];
+    for (const v of FLOW_VARIANTS) {
+      const key = GameRenderer.key(v);
+      const module = shader(device, sceneSource(v), `game scene ${key}`);
+      this.sceneModules.set(key, module);
+      waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1)).then((p) => { this.scenePipelines.set(key, p); }));
+      if (four) waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, SAMPLES)).then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
+    }
+    return Promise.all(waits).then(() => undefined);
   }
 
   /** Starts the builds the look's antialiasing needs, each once; every other time, nothing. */
@@ -1041,7 +1095,9 @@ export class GameRenderer {
 
   private async compileMsaa() {
     const { device } = this.ctx;
-    const waits: Promise<unknown>[] = SCENE_VARIANTS.map((v) =>
+    // the flowing builds too, if a group has asked for them: their modules are made as soon as it does
+    const variants = this.flowBuild ? [...SCENE_VARIANTS, ...FLOW_VARIANTS] : SCENE_VARIANTS;
+    const waits: Promise<unknown>[] = variants.map((v) =>
       device.createRenderPipelineAsync(this.sceneDescriptor(v, this.sceneModules.get(GameRenderer.key(v))!, SAMPLES))
         .then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
     waits.push(device.createRenderPipelineAsync(this.effectDescriptor(SAMPLES)).then((p) => { this.effectMsaa = p; }));
@@ -1216,11 +1272,14 @@ export class GameRenderer {
         label: 'patterns', size: Math.max(PATTERN_STRIDE * 4, capacity * PATTERN_STRIDE * 4),
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
+      let flowing = false;
       if (g.patterns) {
         const out = new Float32Array(Math.max(PATTERN_STRIDE, capacity * PATTERN_STRIDE));
         out.set(g.patterns.subarray(0, out.length));
         device.queue.writeBuffer(pattern, 0, out);
+        flowing = usesFlow(out, PATTERN_STRIDE);
       }
+      if (flowing) this.askFlow();
       return {
         position: bufferFrom(device, g.mesh.positions, GPUBufferUsage.VERTEX, 'positions'),
         normal: bufferFrom(device, g.mesh.normals, GPUBufferUsage.VERTEX, 'normals'),
@@ -1229,6 +1288,7 @@ export class GameRenderer {
         material,
         pattern,
         patterned: !!g.patterns,
+        flowing,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -1549,6 +1609,8 @@ export class GameRenderer {
     f[30] = this.look.ambient;
     f[31] = this.economy.points === false ? 0 : this.lightCount;
     toonUniform(f, this.look, 32);
+    // the game's clock, in the slot the toon light leaves spare, which the flowing build alone reads
+    f[CLOCK_AT] = this.time;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
   }
 
@@ -1561,20 +1623,28 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private scenePipeline(patterned: boolean, samples: number) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, toon: this.look.shading === 'toon' }, samples));
+  private scenePipeline(patterned: boolean, samples: number, flowing = false) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, toon: this.look.shading === 'toon' }, samples));
   }
 
-  private draw(pass: GPURenderPassEncoder, groups: Uploaded[], samples = 1) {
+  /**
+   * Draws `groups`: all of them, or only those that flow or only those that
+   * do not, which is how a kept static half is split. A group that flows is
+   * drawn through the flowing build once it is in, and until then through the
+   * patterned one, which draws its kinds from five up as the speckle of four.
+   */
+  private draw(pass: GPURenderPassEncoder, groups: Uploaded[], samples = 1, only?: 'still' | 'flowing') {
     const plain = this.scenePipeline(false, samples);
     const patterned = this.scenePipeline(true, samples);
     if (!plain || !patterned || !this.sceneBind) return;
+    const flowing = this.scenePipeline(true, samples, true) ?? patterned;
     pass.setBindGroup(0, this.sceneBind);
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
     let on: GPURenderPipeline | null = null;
     for (const g of groups) {
       if (!g.count) continue;
-      const want = g.patterned ? patterned : plain;
+      if (only && g.flowing !== (only === 'flowing')) continue;
+      const want = g.flowing ? flowing : g.patterned ? patterned : plain;
       if (want !== on) {
         pass.setPipeline(want);
         on = want;
@@ -1599,7 +1669,8 @@ export class GameRenderer {
       colorAttachments: [{ view: colour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.clearValue }],
       depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
-    this.draw(pass, this.staticGroups, samples);
+    // a group that flows is not kept: it is drawn again in each frame's scene pass, over what is
+    this.draw(pass, this.staticGroups, samples, 'still');
     pass.end();
     if (samples > 1) this.keptStaleMsaa = false;
     else this.keptStale = false;
@@ -1710,7 +1781,8 @@ export class GameRenderer {
         depthStoreOp: 'store',
       },
     });
-    if (mode === 'redraw') this.draw(pass, this.staticGroups, samples);
+    // a kept frame holds the static half but for what flows, which is drawn over it as the movers are
+    this.draw(pass, this.staticGroups, samples, mode === 'redraw' ? undefined : 'flowing');
     this.draw(pass, this.dynamicGroups, samples);
     // the grass moves every frame, so it is drawn with the movers and never kept with the static half
     if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' }, samples);
