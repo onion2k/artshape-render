@@ -22,7 +22,8 @@
 import { emptyBuffer, shader, type Gpu } from '../gpu/context';
 import type { Camera } from '../gpu/camera';
 import { FINITE_WGSL } from './shaders';
-import { WASH_CAPACITY, WASH_EPSILON_MM, WASH_STRIDE, WASH_WGSL, packWashes, type Wash } from './wash';
+import { FOG_AHEAD_WGSL, FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
+import { AIR_WGSL, WASH_CAPACITY, WASH_EPSILON_MM, WASH_WGSL, WIND_AT, packWashes, packWind, type Wash } from './wash';
 
 /** Floats a particle: position and age, velocity and life, colour and
  *  alpha, then size, growth, floor and gravity, then the colour it fades to
@@ -120,8 +121,10 @@ const COMPUTE_WGSL = STRUCTS + `
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> emitters: array<Emitter>;
 // two vec4s a wash, as packWashes lays them out; frame.washCount of them are live
-@group(0) @binding(3) var<uniform> washes: array<vec4f, ${WASH_CAPACITY * 2}>;
+// and after them the wind, one vec4 more, which with none set is noughts
+@group(0) @binding(3) var<uniform> washes: array<vec4f, ${WASH_CAPACITY * 2 + 1}>;
 ${WASH_WGSL}
+${AIR_WGSL}
 
 // A hash, not a generator: every particle draws its randomness from its own
 // slot and the frame's seed, so nothing has to remember a state.
@@ -182,8 +185,12 @@ fn unitDir(a: f32, b: f32) -> vec3f {
   // is as steady at a long step as at a short one; a floating particle
   // settles to nearly all of it and a falling one to hardly any. With no wash
   // set this is not reached, and the particle moves as it always did.
-  if (frame.washCount > 0.0) {
-    let air = washAt(p.pos, u32(frame.washCount), frame.washEpsilon);
+  // A wind is the same air everywhere, added to the wash's; with neither set
+  // this is not reached either.
+  let wind = washes[${WASH_CAPACITY * 2}u].xyz;
+  if (frame.washCount > 0.0 || any(wind != vec3f(0.0))) {
+    var air = wind;
+    if (frame.washCount > 0.0) { air = airAt(p.pos, u32(frame.washCount), frame.washEpsilon, wind); }
     p.vel += air * (washFollow(p.gravity) * (1.0 - exp(-drag * dt)));
   }
   p.vel.z -= frame.gravity * p.gravity * dt;
@@ -290,6 +297,62 @@ struct VsOut {
 }
 `;
 
+/**
+ * A particle's or a sprite's shader made to fog itself, for
+ * `GameRenderer.particleFog = 'own'`: the same quad, the same softness and
+ * the same premultiplied colour, with the fog between the eye and the quad
+ * taken out of the colour and put back as light.
+ *
+ * It is built from the plain shader's text and not written again beside it,
+ * so the shape of a puff is said once and the plain build is untouched to the
+ * byte. What the plain fragment returns is colour times its opacity and the
+ * opacity; fogged, that is the colour times what the fog lets through, plus
+ * the fog's own light, all times the opacity. Since the colour is already
+ * multiplied by the opacity, that is `rgb * through + scattered * a`, which
+ * for an additive particle, whose opacity is nought, is its glow dimmed and
+ * nothing else: a spark hides nothing, so the haze in front of it is not
+ * drawn over what is behind it.
+ *
+ * Where the fog is worked out is the one choice. A sprite works it out for
+ * every fragment, by the distance to the very point of the quad it is: they
+ * are few (`SPRITE_CAPACITY`) and may be large and near, and then the distance
+ * across one is not the distance to its middle. A particle works it out at the
+ * four corners of its quad and lets the rasteriser blend it: there are
+ * thousands of them, overdrawn, and the fog's three exponentials and a power
+ * for every fragment of twelve thousand smoke puffs more than doubled a fire's
+ * frame (3.9 ms to 8.3 at 1280 by 800), where at the corners it costs a
+ * quarter of one (to 4.9). The error of that grows with the square of the
+ * quad's width over its distance and is a fraction of the fog taken, which is
+ * itself a fraction of the colour: 0.2% at the middle of a puff whose
+ * half-width is a fifth of its distance, which is a fat one, and a sprite is
+ * the kind to use for anything wider and near.
+ */
+export function ownFogged(plain: string, lastVarying: string, next: number, perFragment: boolean): string {
+  const tail = '@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {';
+  const place = '  out.pos = frame.viewProj * vec4f(world, 1.0);';
+  const last = `  ${lastVarying},\n};`;
+  for (const piece of [tail, place, last])
+    if (!plain.includes(piece)) throw new Error('a particle shader is no longer written as the fogged build splices it, so it cannot be made from it');
+  const carried = perFragment ? `@location(${next}) world: vec3f` : `@location(${next}) fog: vec4f`;
+  const made = perFragment ? 'out.world = world;' : 'out.fog = fogAhead(world);';
+  const got = perFragment ? 'fogAhead(in.world)' : 'in.fog';
+  return plain
+    .replace(last, `  ${lastVarying},\n  ${carried},\n};`)
+    .replace(place, place + `\n  ${made}`)
+    .replace(tail, 'fn plain(in: VsOut) -> vec4f {') + `
+@group(1) @binding(0) var<uniform> fog: Fog;
+${FOG_STRUCT_WGSL}${FOG_PHASE_WGSL}${FOG_AHEAD_WGSL}
+@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
+  let p = plain(in);
+  let f = ${got};
+  return vec4f(finite(p.rgb * f.a + f.rgb * p.a), p.a);
+}
+`;
+}
+
+export const DRAW_OWN_WGSL = ownFogged(DRAW_WGSL, '@location(3) fade: f32', 4, false);
+export const SPRITE_OWN_WGSL = ownFogged(SPRITE_WGSL, '@location(2) alpha: f32', 3, true);
+
 export class Particles {
   readonly capacity: number;
   readonly maxEmitters: number;
@@ -308,7 +371,7 @@ export class Particles {
   readonly spriteCapacity = SPRITE_CAPACITY;
   private emitterBuffer: GPUBuffer;
   private washBuffer: GPUBuffer;
-  private washData = new Float32Array(WASH_CAPACITY * WASH_STRIDE);
+  private washData = new Float32Array(WIND_AT + 4);
   private washCount = 0;
   private washDirty = false;
   private frameBuffer: GPUBuffer;
@@ -338,7 +401,11 @@ export class Particles {
   private msaa: { draw: GPURenderPipeline; sprite: GPURenderPipeline } | null = null;
   private msaaBuild: Promise<void> | null = null;
   /** What the draw pipelines are made from, kept to make them again at another sample count. */
-  private drawPipeline: (samples: number, sprites: boolean) => GPURenderPipelineDescriptor;
+  private drawPipeline: (samples: number, sprites: boolean, own?: boolean) => GPURenderPipelineDescriptor;
+  /** The builds that fog themselves, made only when a renderer first asks for `particleFog = 'own'`. */
+  private own: { draw: GPURenderPipeline; sprite: GPURenderPipeline; bind: GPUBindGroup } | null = null;
+  private ownBuild: Promise<void> | null = null;
+  private fogLayout: GPUBindGroupLayout | null = null;
   private computeBind: GPUBindGroup;
   private drawBind: GPUBindGroup;
   private compiled = false;
@@ -350,7 +417,7 @@ export class Particles {
     this.pending = new Float32Array(this.maxEmitters * EMITTER_STRIDE);
     this.pool = emptyBuffer(device, this.capacity * PARTICLE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'particles');
     this.emitterBuffer = emptyBuffer(device, this.maxEmitters * EMITTER_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'emitters');
-    this.washBuffer = device.createBuffer({ label: 'particle washes', size: WASH_CAPACITY * WASH_STRIDE * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.washBuffer = device.createBuffer({ label: 'particle washes', size: (WIND_AT + 4) * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.frameBuffer = device.createBuffer({ label: 'particle frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.spriteBuffer = emptyBuffer(device, SPRITE_CAPACITY * SPRITE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'sprites');
 
@@ -403,12 +470,19 @@ export class Particles {
       color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
       alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     };
-    this.drawPipeline = (samples, sprites) => {
-      const m = sprites ? spriteModule : drawModule;
-      const name = sprites ? 'sprite draw' : 'particle draw';
+    // the fogged builds are compiled from their own text when first asked for, and not before
+    let ownModules: { draw: GPUShaderModule; sprite: GPUShaderModule } | null = null;
+    this.drawPipeline = (samples, sprites, own = false) => {
+      if (own) this.fogLayout ??= device.createBindGroupLayout({
+        label: 'particle fog',
+        entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+      });
+      if (own) ownModules ??= { draw: shader(device, DRAW_OWN_WGSL, 'particles draw fogged'), sprite: shader(device, SPRITE_OWN_WGSL, 'sprites draw fogged') };
+      const m = own ? (sprites ? ownModules!.sprite : ownModules!.draw) : sprites ? spriteModule : drawModule;
+      const name = `${sprites ? 'sprite draw' : 'particle draw'}${own ? ' fogged' : ''}`;
       return {
         label: samples > 1 ? `${name} x${samples}` : name,
-        layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout] }),
+        layout: device.createPipelineLayout({ bindGroupLayouts: own ? [drawLayout, this.fogLayout!] : [drawLayout] }),
         vertex: { module: m, entryPoint: 'vsMain' },
         fragment: { module: m, entryPoint: 'fsMain', targets: [{ format: colourFormat, blend: premultiplied }] },
         primitive: { topology: 'triangle-list' },
@@ -456,6 +530,20 @@ export class Particles {
     this.washCount = count;
     this.washDirty = true;
     return dropped === 0;
+  }
+
+  /**
+   * The air's own velocity everywhere, world units a second, kept until set
+   * again: `[0, 0, 0]` is none, and with none (and no wash) the update does
+   * exactly what it did before there was a wind. The drag pulls a particle's
+   * velocity toward the wind and the wash's air where it is, as closely as
+   * `washFollow` says for its gravity: smoke rides it, and a drop hardly feels
+   * it. Sprites are placed by the game and are not moved by it. A wind that is
+   * not a number is taken as none.
+   */
+  setWind(wind: readonly [number, number, number]) {
+    packWind(this.washData, wind);
+    this.washDirty = true;
   }
 
   /** How many bursts are waiting for the next frame. */
@@ -539,23 +627,63 @@ export class Particles {
     return this.msaaBuild;
   }
 
+  /**
+   * The fogged builds, made the first time a renderer asks for
+   * `particleFog = 'own'` and resolving when they are in. They are drawn at
+   * one sample a pixel whatever the scene is drawn with, after the fog, into
+   * the frame's resolved colour, so no count of samples is kept for them, and
+   * they read the fog from `fog`, the very buffer the march reads.
+   */
+  ownFog(fog: GPUBuffer): Promise<void> {
+    const { device } = this.ctx;
+    this.ownBuild ??= Promise.all([
+      device.createRenderPipelineAsync(this.drawPipeline(1, false, true)),
+      device.createRenderPipelineAsync(this.drawPipeline(1, true, true)),
+    ]).then(([draw, sprite]) => {
+      const bind = device.createBindGroup({ label: 'particle fog', layout: this.fogLayout!, entries: [{ binding: 0, resource: { buffer: fog } }] });
+      this.own = { draw, sprite, bind };
+    });
+    return this.ownBuild;
+  }
+
+  /** Whether the fogged builds are in. */
+  get ownReady(): boolean {
+    return this.own !== null;
+  }
+
   /** Every live particle, and every sprite, as a quad, into the pass that drew the scene, at the samples a pixel it has. */
   draw(pass: GPURenderPassEncoder, samples = 1) {
     if (!this.compiled) return;
     const msaa = samples > 1 ? this.msaa : null;
     if (samples > 1 && !msaa) return;
+    this.issue(pass, msaa ? msaa.draw : this.drawPipe, msaa ? msaa.sprite : this.spritePipe);
+  }
+
+  /** The same quads through the fogged builds, into a pass over the frame the fog has already been laid on. Nothing before `ownFog` is in. */
+  drawOwn(pass: GPURenderPassEncoder) {
+    if (!this.compiled || !this.own) return;
+    pass.setBindGroup(1, this.own.bind);
+    this.issue(pass, this.own.draw, this.own.sprite);
+  }
+
+  /** What there is to draw: the sprites, then the live run of the ring, in two pieces where it wraps the end. */
+  private issue(pass: GPURenderPassEncoder, draw: GPURenderPipeline, sprite: GPURenderPipeline) {
     if (this.spriteCount) {
-      pass.setPipeline(msaa ? msaa.sprite : this.spritePipe);
+      pass.setPipeline(sprite);
       pass.setBindGroup(0, this.spriteBind);
       pass.draw(6, this.spriteCount);
     }
     if (!this.liveCount) return;
-    pass.setPipeline(msaa ? msaa.draw : this.drawPipe);
+    pass.setPipeline(draw);
     pass.setBindGroup(0, this.drawBind);
-    // the live run, in two pieces where it wraps the end of the ring
     const first = Math.min(this.liveCount, this.capacity - this.liveStart);
     pass.draw(6, first, 0, this.liveStart);
     if (first < this.liveCount) pass.draw(6, this.liveCount - first, 0, 0);
+  }
+
+  /** Whether anything would be drawn: a sprite, or a live particle. */
+  get drawing(): boolean {
+    return this.spriteCount > 0 || this.liveCount > 0;
   }
 
   dispose() {

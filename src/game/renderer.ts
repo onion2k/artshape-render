@@ -30,7 +30,7 @@ import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
 import { WASH_EPSILON_MM, type Wash } from './wash';
 import {
-  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, sceneSource,
+  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, depthResolveSource, sceneSource,
   type SceneVariant,
 } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
@@ -375,6 +375,18 @@ const ANTIALIAS: readonly Antialias[] = ['none', 'fxaa', 'msaa'];
 export const SAMPLES = 4;
 
 /**
+ * What a particle or a sprite is fogged by. `'behind'`, the default and what
+ * the renderer always did, draws them in the scene pass, which writes no depth
+ * for them, so the march fogs each pixel they cover to whatever is behind it:
+ * a puff in front of open sky is fogged as if it stood at the fog's reach, and
+ * one in front of a hill as if it stood on the hill. `'own'` draws them after
+ * the fog is laid on the scene, each fragment fogged in its own shader by its
+ * own distance along the view ray (`fogAhead` in `fog.ts`). See
+ * `GameRenderer.particleFog`.
+ */
+export type ParticleFog = 'behind' | 'own';
+
+/**
  * The antialiasing a frame is drawn with: what the look asks for, held to
  * what the economy allows. The economy never raises it: a look that asks
  * for none gets none on every rung.
@@ -659,6 +671,44 @@ export class GameRenderer {
    * no passes; see `fog.ts` for what the rest of it means.
    */
   fog: Fog = { ...NO_FOG };
+  /**
+   * What fogs the particles and sprites: `'behind'` (the default, drawing
+   * exactly as before) or `'own'`.
+   *
+   * `'own'` is for smoke seen against the sky. A particle writes no depth, so
+   * with `'behind'` the march fogs it by what is behind it, which over open sky
+   * is the fog's whole reach, and a column of smoke over a hazy island is
+   * hazed into the sky. With `'own'` they are drawn after the fog has been laid
+   * on the scene and before the bloom and the post chain read it, still tested
+   * against the scene's depth, and each fragment is fogged by its own distance
+   * from the eye: its colour times what the fog lets through, plus the fog's
+   * light in front of it, in its own premultiplied blend.
+   *
+   * That fog is the march's in closed form and has no maps to read, so it
+   * leaves out the sun's shadows and the spot cones, and it does not taper
+   * over the last third of the reach as the march does (see `fogAhead`). With
+   * the fog off (its rung, or no density) or the particles rung off, nothing
+   * changes: with no fog there is nothing to lay on them, and they are drawn in
+   * the scene pass as with `'behind'`. The effect layers are not particles and
+   * stay in the scene pass, so the march fogs them as ever.
+   *
+   * At four samples a pixel the particles are still depth-tested against the
+   * scene, by a depth resolved from the four (the nearest of them, see
+   * `depthResolveSource`) into the frame's own single-sample depth, since the
+   * scene pass has been resolved and its samples thrown away by the time the
+   * fog is on; they are then drawn into the resolved colour at one sample, so
+   * they are not smoothed at their edges, which soft quads do not have.
+   *
+   * The builds it needs are compiled the first time it is asked for, never
+   * before; `prepare` compiles them and says when they are in, and until then
+   * a frame is drawn as with `'behind'`.
+   */
+  particleFog: ParticleFog = 'behind';
+  /** The fogged particles' own builds, asked for once, and the depth resolve at four samples that goes with them. */
+  private ownBuild: Promise<void> | null = null;
+  private resolveLayout: GPUBindGroupLayout | null = null;
+  private resolvePipeline: GPURenderPipeline | null = null;
+  private resolveBind: GPUBindGroup | null = null;
   private fogLayout: GPUBindGroupLayout;
   private fogBlendLayout: GPUBindGroupLayout;
   private fogPipeline!: GPURenderPipeline;
@@ -1043,6 +1093,44 @@ export class GameRenderer {
     this.askAntialias();
     await this.antialiasBuilt;
     await this.flowBuild;
+    this.askOwnFog();
+    await this.ownBuild;
+  }
+
+  /**
+   * Starts what `particleFog = 'own'` needs, once, the first time it is
+   * asked for: the particles' fogged builds, and the pass that makes the
+   * multisampled depth one sample a pixel, whose bind group is made as soon
+   * as there is a multisampled depth for it to read.
+   */
+  private askOwnFog() {
+    if (this.particleFog !== 'own' || this.ownBuild) return;
+    const { device } = this.ctx;
+    this.resolveLayout = device.createBindGroupLayout({
+      label: 'game depth resolve',
+      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', multisampled: true } }],
+    });
+    const module = shader(device, depthResolveSource(SAMPLES), 'game depth resolve');
+    this.ownBuild = Promise.all([
+      this.particles.ownFog(this.fogBuffer),
+      device.createRenderPipelineAsync({
+        label: 'game depth resolve',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [this.resolveLayout] }),
+        vertex: { module, entryPoint: 'vsMain' },
+        fragment: { module, entryPoint: 'fsMain', targets: [] },
+        primitive: { topology: 'triangle-list' },
+        depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'always' },
+      }).then((p) => { this.resolvePipeline = p; }),
+    ]).then(() => { this.makeResolveBind(); });
+  }
+
+  /** The depth resolve's bind group over the multisampled depth, once there are both; made again with the targets on a resize. */
+  private makeResolveBind() {
+    if (!this.resolveLayout || !this.msaaDepth) return;
+    this.resolveBind = this.ctx.device.createBindGroup({
+      label: 'game depth resolve', layout: this.resolveLayout,
+      entries: [{ binding: 0, resource: this.msaaDepth.createView() }],
+    });
   }
 
   /**
@@ -1188,6 +1276,7 @@ export class GameRenderer {
         { binding: 5, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
       ],
     });
+    this.makeResolveBind();
     this.keptStaleMsaa = true;
   }
 
@@ -1470,6 +1559,21 @@ export class GameRenderer {
   private effectQuads = 0;
 
   /**
+   * The wind: the air's own velocity everywhere, in world units a second,
+   * kept until set again. `[0, 0, 0]`, the default, is none, and then the
+   * particles are moved exactly as they were before there was one. A
+   * particle's drag pulls its velocity toward the wind (and the wash's air
+   * where there is one) and not toward nothing, as closely as its gravity
+   * lets it follow: smoke rides it, and falling drops hardly feel it. Sprites
+   * are the game's, placed by it each frame, and the wind does not touch them.
+   * A velocity is a length a second, so it is in the game's own units like
+   * every other; a wind set between frames blows from the next.
+   */
+  setWind(velocity: readonly [number, number, number]) {
+    this.particles.setWind(velocity);
+  }
+
+  /**
    * The air blowing on the particles from the next frame on, as a rotor's
    * would: a few sources, each pushing what is under it down and out, smoke
    * closely and drops hardly at all. Kept until set again, so a game that sets
@@ -1700,6 +1804,7 @@ export class GameRenderer {
     this.writeFrame();
     // what the frame is antialiased with: the look's ask, held to the rung and to what has compiled
     this.askAntialias();
+    this.askOwnFog();
     const aa = this.antialiasing;
     const samples = aa === 'msaa' ? SAMPLES : 1;
     const multisampled = samples > 1;
@@ -1772,6 +1877,11 @@ export class GameRenderer {
     // where they are now
     const particles = this.economy.particles !== false;
     if (particles) this.particles.simulate(encoder, dt, this.camera, this.gravity);
+    // Whether the fog is laid on this frame, and so whether the particles can
+    // be drawn after it: with no fog there is nothing to lay on them, and
+    // they are drawn in the scene pass as ever.
+    const fogOn = this.economy.fog !== false && this.fog.density > 0 && !!this.fogPipeline && !!this.fogBlendPipeline && !!this.fogMap;
+    const afterFog = particles && fogOn && this.particleFog === 'own' && this.particles.ownReady && (!multisampled || (!!this.resolveBind && !!this.resolvePipeline));
 
     const pass = encoder.beginRenderPass({
       label: 'game scene',
@@ -1800,7 +1910,7 @@ export class GameRenderer {
     this.draw(pass, this.dynamicGroups, samples);
     // the grass moves every frame, so it is drawn with the movers and never kept with the static half
     if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' }, samples);
-    if (particles) this.particles.draw(pass, samples);
+    if (particles && !afterFog) this.particles.draw(pass, samples);
     const layers = Math.round(this.effectQuads * Math.max(0, Math.min(1, this.economy.effects)));
     if (layers && this.effectBind) {
       pass.setPipeline(multisampled ? this.effectMsaa! : this.effect);
@@ -1812,7 +1922,7 @@ export class GameRenderer {
     // The fog, over the frame, before any of the post chain sees it. It
     // needs the sun's map, which the shadow block above has just drawn, and
     // the depth the scene pass has just written.
-    if (this.economy.fog !== false && this.fog.density > 0 && this.fogPipeline && this.fogBlendPipeline && this.fogMap) {
+    if (fogOn) {
       const shadowed = this.economy.shadows !== false && this.sunBox !== null;
       // The cones: the shadowed spots, each with its own map's matrix, so
       // the march can light the air from them and cut what stands in the
@@ -1837,7 +1947,7 @@ export class GameRenderer {
       device.queue.writeBuffer(this.fogBuffer, 0, this.fogData);
       const march = encoder.beginRenderPass({
         label: 'game fog',
-        colorAttachments: [{ view: this.fogMap.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+        colorAttachments: [{ view: this.fogMap!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       });
       march.setPipeline(multisampled ? this.fogMsaaPipeline! : this.fogPipeline);
       march.setBindGroup(0, multisampled ? this.fogMsaaBind! : this.fogBind!);
@@ -1851,6 +1961,32 @@ export class GameRenderer {
       over.setPipeline(this.fogBlendPipeline);
       over.setBindGroup(0, this.fogBlendBind!);
       over.draw(3);
+      over.end();
+    }
+
+    // The particles and sprites, over the fogged scene and before the post
+    // chain, each fogged by its own distance. They are tested against the
+    // scene's depth: the frame's own where it was drawn at one sample, and at
+    // four samples one made from the four, since the scene pass has resolved
+    // its colour and thrown the samples away.
+    if (afterFog) {
+      if (multisampled) {
+        const resolve = encoder.beginRenderPass({
+          label: 'game depth resolve',
+          colorAttachments: [],
+          depthStencilAttachment: { view: this.depth!.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+        });
+        resolve.setPipeline(this.resolvePipeline!);
+        resolve.setBindGroup(0, this.resolveBind!);
+        resolve.draw(3);
+        resolve.end();
+      }
+      const over = encoder.beginRenderPass({
+        label: 'game particles fogged',
+        colorAttachments: [{ view: colourView, loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: { view: this.depth!.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+      });
+      this.particles.drawOwn(over);
       over.end();
     }
 

@@ -21,6 +21,7 @@
  * all, where compiling it out saved five milliseconds a megapixel.
  */
 
+import { FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
 import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
 
@@ -879,26 +880,7 @@ const CONE_SLOTS: u32 = ${SPOT_SHADOWS}u;
  * worst.
  */
 const CONE_LIVE: i32 = 8;
-struct Fog {
-  sun: mat4x4f,
-  camPos: vec3f, near: f32,
-  right: vec3f, far: f32,
-  up: vec3f, tanHalf: f32,
-  back: vec3f, aspect: f32,
-  sunDir: vec3f, density: f32,
-  sunColour: vec3f, height: f32,
-  colour: vec3f, base: f32,
-  // shift x and y, steps, anisotropy
-  lens: vec4f,
-  // reach, ambient, shadow bias, whether there is a sun map
-  march: vec4f,
-  // time, how many cones, the half distance their fall is measured by, and
-  // the spot maps' own bias
-  when: vec4f,
-  // how much the cones scatter, and the spot maps' texel size
-  lamps: vec4f,
-};
-/**
+${FOG_STRUCT_WGSL}/**
  * A light that throws a cone through the mist: where it is, which way it
  * points, how wide, what colour, and the map it casts by. Its own shadow
  * matrix travels with it rather than being looked up in the scene's Shadows
@@ -920,17 +902,7 @@ struct Cone {
 @group(0) @binding(4) var<uniform> cones: array<Cone, CONE_SLOTS>;
 @group(0) @binding(5) var spotShadow: texture_depth_2d_array;
 
-/**
- * Henyey-Greenstein, scaled so that g of zero is exactly one: how much of
- * the light coming from the sun leaves in the direction of the eye. Over
- * zero it peaks looking toward the sun, which is where a mist glows.
- */
-fn phase(c: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  let d = 1.0 + g2 - 2.0 * g * c;
-  return (1.0 - g2) / max(pow(max(d, 1e-4), 1.5), 1e-4);
-}
-
+${FOG_PHASE_WGSL}
 /**
  * Where along the reach the fog starts tapering off, as a fraction of it.
  * The last third, which at the arena's nine thousand is three thousand units
@@ -1086,6 +1058,26 @@ export function multisampledFog(source: string): string {
   if (!source.includes(plain)) throw new Error('the fog no longer declares its depth as it did, so its multisampled build cannot be made from it');
   return source.replace(plain, 'var depthTex: texture_depth_multisampled_2d;');
 }
+
+/**
+ * The multisampled scene depth made one sample a pixel, for the particles and
+ * sprites that are drawn after the fog and so after the samples are gone: a
+ * depth cannot be resolved by the pass, so a pass of its own writes the
+ * nearest of a pixel's four samples as that pixel's depth. The nearest, so
+ * that smoke behind a hill is hidden along the hill's edge, where a pixel is
+ * part hill, rather than showing through a rim of it; a puff in front of the
+ * hill is in front of every sample and is not touched by the choice. The
+ * count is the renderer's `SAMPLES`, handed in since this file cannot see it.
+ */
+export const depthResolveSource = (samples: number) => POST_VERT + `
+@group(0) @binding(0) var depthTex: texture_depth_multisampled_2d;
+@fragment fn fsMain(in: VsOut) -> @builtin(frag_depth) f32 {
+  let at = vec2i(in.pos.xy);
+  var nearest = textureLoad(depthTex, at, 0);
+  for (var s = 1; s < ${samples}; s++) { nearest = min(nearest, textureLoad(depthTex, at, s)); }
+  return nearest;
+}
+`;
 
 /**
  * Antialiasing after the fact, for a machine that cannot afford four samples

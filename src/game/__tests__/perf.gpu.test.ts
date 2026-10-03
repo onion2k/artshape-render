@@ -278,6 +278,20 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.setWash([FIRE_WASH_COST]);
     measured['standard fire wash cost'] = await timeFire();
     r.setWash([]);
+    // a wind of three units a second over the fire: the update's sums for it in every particle, and the smoke carried where it blows
+    r.setWind([3, 0, 0]);
+    measured['standard fire windy'] = await timeFire();
+    r.setWind([0, 0, 0]);
+    // the same fire in the standard scene's haze, its smoke fogged by what is behind it (as above) and by its own distance, at one sample a pixel and at four
+    r.particleFog = 'own';
+    await r.prepare();
+    measured['standard fire own'] = await timeFire();
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['standard fire own msaa'] = await timeFire();
+    r.particleFog = 'behind';
+    measured['standard fire msaa'] = await timeFire();
+    r.look = plain;
     console.log(`blades drawn at the home view: ${home.near} near, ${home.far} far`);
 
     const file = await server.commands.readFile(BASELINE).catch(() => '');

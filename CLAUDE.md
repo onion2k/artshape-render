@@ -70,7 +70,7 @@ each pins today:
 | --- | --- | --- |
 | bearing | v0.22.1 | game |
 | ooergolf | v0.22.2 | game |
-| chopdrop | v0.22.2 | game |
+| chopdrop | v0.24.0 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
 | heist, artshape (the still-life viewer) | v0.15.0 | render (`Viewer`) |
@@ -91,7 +91,7 @@ What to copy the shape of:
   sprite array). `GameRenderer` owns one, exposes `emit`, `setSprites` and
   `setWash`, and gates it on the economy (`particles`). Its tests are
   `particles.test.ts`, which holds the layouts, and `particles.gpu.test.ts`
-  and `sprites.gpu.test.ts`, which check pixels. Two things a game may ask
+  and `sprites.gpu.test.ts`, which check pixels. Three things a game may ask
   of it, each off by default to the pixel: a **wash** (`wash.ts`: `Wash`,
   `washVelocity`, the packing and the WGSL built from the same constants,
   held equal by `wash.gpu.test.ts`; at most `WASH_CAPACITY` sources, in the
@@ -99,12 +99,32 @@ What to copy the shape of:
   following the air and a falling one hardly, told apart by `gravity`) and a
   **fade** (`Emit.fade`, the colour reached at the end of life by a
   smooth-step of age, flagged in the particle's fifth vec4 so that a particle
-  with none is not mixed at all). `wash.test.ts` holds the field and the
-  packings; `perf:gpu` has the `standard fire` scenes (about 12,000 live).
+  with none is not mixed at all) and a **wind** (`setWind`: one velocity for
+  the whole air, in the wash's uniform after the washes, `packWind` and
+  `airVelocity` in `wash.ts`, `AIR_WGSL` built beside them and held equal by
+  `wind.gpu.test.ts`; the update's drag pulls toward it as closely as
+  `washFollow` says; sprites are the game's and are not moved by it; with none
+  and no wash the update is skipped as before, held by `wind-golden.json`, pixels
+  from before the wind). `wash.test.ts` and `wind.test.ts` hold the field, the
+  wind and the packings; `perf:gpu` has the `standard fire` scenes (about 12,000 live).
+  A fourth, **`GameRenderer.particleFog`** (`'behind'` by default, the old
+  draw to the pixel; `'own'`): the particles and sprites drawn after the fog
+  is laid on the scene, each fogged by its own distance by `fogAhead` (`fog.ts`,
+  the closed form of the march with no shadows or cones, its WGSL spliced into
+  `ownFogged` in `particles.ts` from the same text as the plain shaders), a
+  sprite per fragment and a particle per corner; at four samples a pixel they
+  are tested against a depth resolved from the four (`depthResolveSource`)
+  and drawn into the resolved colour. Built when first asked for (`askOwnFog`,
+  `prepare` waits). `particlefog.test.ts` holds the sum against a numeric
+  integral and the old shaders' text by hash; `particlefog.gpu.test.ts` holds
+  the pixels, against `particlefog-golden.json` (pixels of v0.24.0 for each
+  adapter that has them, skipped and said where none are).
 - **A pass over the frame with its maths on the CPU:** fog. `fog.ts` holds
   the record (`Fog`, with `noFog(mmPerUnit)` as the default that costs
-  nothing) and the packing (`fogUniform`). `fog.test.ts` checks it against
-  the camera's own projection. `fog.gpu.test.ts`, `fogreach.gpu.test.ts`
+  nothing) and the packing (`fogUniform`), and the closed form of the march
+  without its maps (`opticalDepth`, `fogAhead`, and their WGSL) that fogs the
+  particles by their own distance when `particleFog` is `'own'`.
+  `fog.test.ts` checks it against the camera's own projection. `fog.gpu.test.ts`, `fogreach.gpu.test.ts`
   and `fogcones.gpu.test.ts` check pixels.
 - **An effect a look turns on, with a rung that turns it off:** occlusion.
   It is `look.occlusion` (0 is none and no passes) and `economy.occlusion`,
@@ -231,8 +251,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,100 tests in 70 files at v0.24.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish; 211 tests in 27 files at v0.24.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,133 tests in 72 files at v0.25.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance; 244 tests in 29 files at v0.25.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

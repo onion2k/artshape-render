@@ -148,3 +148,41 @@ fn washFollow(gravity: f32) -> f32 {
   return mix(${num(WASH_FOLLOW_FLOAT)}, ${num(WASH_FOLLOW_FALL)}, clamp(gravity, 0.0, 1.0));
 }
 `;
+
+/**
+ * Where the wind sits in the wash's uniform, in floats: after the washes, in
+ * a vec4 of its own. Held in the same buffer so that a game that sets no wind
+ * has one binding and one upload, as it had before the wind.
+ */
+export const WIND_AT = WASH_CAPACITY * WASH_STRIDE;
+
+/**
+ * The wind written to `out` at `WIND_AT`, a velocity in world units a second.
+ * Returns whether it blows at all: a wind of nothing, or one that is not a
+ * number in any of its parts (which is refused whole, as no wind and not as
+ * the parts that were numbers), is written as noughts and says no, and the
+ * update then skips every sum of it.
+ */
+export function packWind(out: Float32Array, wind: readonly [number, number, number]): boolean {
+  const ok = wind.every(Number.isFinite) && wind.some((v) => v !== 0);
+  for (let k = 0; k < 4; k++) out[WIND_AT + k] = ok && k < 3 ? wind[k] : 0;
+  return ok;
+}
+
+/**
+ * The air's velocity at `point`: the wind, which is the same everywhere, and
+ * the wash's air on top of it. What a particle's drag pulls its velocity
+ * toward, scaled by `washFollow`. `airAt` in `AIR_WGSL` is its WGSL, and
+ * `wind.gpu.test.ts` holds the two equal.
+ */
+export function airVelocity(wind: readonly [number, number, number], washes: readonly Wash[], point: readonly [number, number, number], epsilon = 1e-6): [number, number, number] {
+  const w = washVelocity(washes, point, epsilon);
+  return [wind[0] + w[0], wind[1] + w[1], wind[2] + w[2]];
+}
+
+/** `airVelocity` in WGSL, after `WASH_WGSL`, which it calls: the wind is handed in, and `count` washes are read from `washes`. */
+export const AIR_WGSL = `
+fn airAt(p: vec3f, count: u32, epsilon: f32, wind: vec3f) -> vec3f {
+  return wind + washAt(p, count, epsilon);
+}
+`;

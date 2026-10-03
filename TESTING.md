@@ -194,6 +194,28 @@ know where a game puts its lamp relative to its lamp mesh; a game that sees
 a hard-edged bite out of every pool should look for a blocker within a few
 units of the light before it looks anywhere else.
 
+## Particles fogged by their own distance
+
+`particlefog.test.ts` holds the closed form of the fog (`opticalDepth`,
+`fogAhead` in `fog.ts`) to a fine numeric integral of the same density along
+rays that are level, rising, falling and cross the base, and the old fog and
+particle shaders' text, by hash, to what it was at v0.24.0.
+`particlefog.gpu.test.ts` holds the pixels: that a sprite in front of open sky
+keeps the colour the fog gives it at its distance, and with `'behind'` does
+not; that an opaque sprite and an opaque wall of the same colour come out
+within one percent of each other (they measured 0.00 to 0.08% apart at up to
+two thirds of the reach, and 6% at nine tenths, where the march tapers and the
+closed form does not); that a hill hides what is behind it at one sample and at
+four; and that the WGSL is the TypeScript at a set of points.
+
+"Nothing asked draws the same to the pixel" is held twice: in the run, with
+`'behind'` said and not said, and against the old code, by a hash of four
+scenes' pixels kept in `particlefog-golden.json` under the adapter's key. The
+hashes were written at 9cf02e5 before the change and are a fact about one
+GPU's rounding, so an adapter with none skips that test and says so;
+`VITE_GOLDEN=1` writes this adapter's, and is only to be done on code known to
+draw what it should.
+
 ## Particles on the game path
 
 `src/game/__tests__/particles.gpu.test.ts` emits into an otherwise black

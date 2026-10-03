@@ -182,8 +182,14 @@ What the measurements settled, so nobody has to re-argue it:
   `wash.ts`, which the shader is held equal to. It is kept until set again, and
   `[]` is none. An `Emit`'s `fade` is a second colour its particles move to
   over their life, by a smooth-step on their age: dark smoke at the fire that
-  pales as it rises. A game that sets neither draws every particle as it did,
-  to the pixel.
+  pales as it rises. `setWind([x, y, z])` is the air's own velocity
+  everywhere, world units a second, kept until set again: the drag pulls a
+  particle's velocity toward the wind plus the wash's air where it is, not
+  toward nothing, as closely as `washFollow` says for its gravity, so smoke
+  rides the wind and falling drops hardly feel it (`airVelocity` in `wash.ts`
+  is the sum, which the shader is held equal to). A wind set between frames
+  blows from the next, and sprites, which the game places, are not moved by it.
+  A game that sets none of these draws every particle as it did, to the pixel.
 - **Sprites are particles the game places.** `setSprites(data, count)`,
   eight floats each (`SPRITE_STRIDE`: position and size, colour and alpha),
   draws soft camera-facing puffs where the game says, every frame, with the
@@ -191,6 +197,22 @@ What the measurements settled, so nobody has to re-argue it:
   follow the game's own clock — smoke in a game that steps its own time —
   where a particle is born and aged on the GPU and moves only when a frame is
   drawn.
+- **Particles and sprites can be fogged by their own distance.** The fog is
+  marched to the depth the scene wrote, and a particle writes none, so smoke in
+  front of open sky is fogged as if it stood at the fog's `reach`, and a hazy
+  world hazes a column of it away. `particleFog = 'own'` (default `'behind'`,
+  which is exactly what was drawn before, to the pixel) draws them after the
+  fog is laid on the scene and before the bloom, each fogged by its own
+  distance in closed form: the optical depth of the exponential layer along the
+  ray (`opticalDepth`, `fogAhead` in `fog.ts`, which the WGSL is held equal to),
+  its transmittance on the colour and its in-scatter over it. That leaves out
+  what the march reads from maps, the sun's shadows and the spot cones, and the
+  taper over the last third of the reach, so smoke near the reach is a little
+  hazier (6% at 1,100 of 1,200) than a surface. Sprites are fogged for every
+  fragment; particles at the corners of their quad. They are still tested
+  against the scene's depth, with four samples a pixel too. With no fog, or its
+  rung off, nothing changes. The builds are compiled when first asked for;
+  `prepare` waits for them.
 
 **A world unit is the game's to choose.** `new GameRenderer(gpu, lights,
 effects, particles, mmPerUnit)` says how many millimetres one of them is, and
