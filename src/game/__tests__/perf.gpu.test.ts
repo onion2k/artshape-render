@@ -25,6 +25,8 @@ import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
 import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, packFlow } from '../flow';
 import { judge, median, recorded } from './perf';
+import type { Emit } from '../particles';
+import type { Wash } from '../wash';
 
 const W = 1280, H = 800;
 const BASELINE = 'src/game/__tests__/perf-baseline.json';
@@ -41,6 +43,24 @@ const REFERENCE = 'apple/metal-3';
  * once the GPU is going.
  */
 const WARM_UP = 300;
+
+/** The particle pool's size: room for a fire's twelve thousand live particles. The standard scene has none of them, and an idle pool costs a frame nothing. */
+const FIRE_POOL = 16384;
+/**
+ * A forest fire's worth of particles, in the golf's units (a tenth of a metre):
+ * smoke that rises from one place and swells, dark at its start and pale at
+ * its end, and embers that fly off it and fall. Each frame emits 45 smoke, which
+ * lives four seconds, and 12 embers of a second and a half, which is about
+ * 11,900 live once it has filled.
+ */
+const FIRE: Emit[] = [
+  { position: [0, 0, 0.5], velocity: [0, 0, 5], spread: 2, count: 45, life: 4, size: 1.2, growth: 0.5, colour: [0.08, 0.07, 0.07], fade: [0.75, 0.75, 0.78], alpha: 0.7, gravity: -0.1, floor: 0 },
+  { position: [0, 0, 0.5], velocity: [0, 0, 6], spread: 5, count: 12, life: 1.5, size: 0.15, colour: [1, 0.55, 0.1], fade: [0.5, 0.05, 0.02], alpha: 0, gravity: 0.3, floor: 0 },
+];
+/** A rotor's air over the fire: a hub a few units above the smoke's top, blowing it down and out. */
+const FIRE_WASH: Wash = { position: [0, 0, 14], radius: 5, speed: 15, reach: 20 };
+/** The same air at a thousandth of the speed: the particles are where they would be with none, and the update does all its sums. */
+const FIRE_WASH_COST: Wash = { ...FIRE_WASH, speed: 0.015 };
 
 /** A flat square of `size`, facing up. */
 function plane(size: number): Mesh {
@@ -135,7 +155,7 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
 
   beforeAll(async () => {
     gpu = await createDevice();
-    r = new GameRenderer(gpu, 32, 32, 1024, 100);
+    r = new GameRenderer(gpu, 32, 32, FIRE_POOL, 100);
     await r.ready;
     target = gpu.device.createTexture({ size: [W, H], format: gpu.format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
     const env = bakeEnvironment(gpu, 'daylight', { size: 128, mips: 6 });
@@ -170,6 +190,22 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     for (let k = 0; k < 7; k++) {
       const t0 = performance.now();
       for (let i = 0; i < 30; i++) r.frame(view);
+      await gpu.queue.onSubmittedWorkDone();
+      runs.push((performance.now() - t0) / 30);
+    }
+    return median(runs);
+  }
+
+  /** The same, with a frame's fire emitted before each frame drawn. */
+  async function timeFire(): Promise<number> {
+    const view = target.createView();
+    const frame = () => { for (const e of FIRE) r.emit(e); r.frame(view, 'redraw', 1 / 60); };
+    for (let i = 0; i < 10; i++) frame();
+    await gpu.queue.onSubmittedWorkDone();
+    const runs: number[] = [];
+    for (let k = 0; k < 7; k++) {
+      const t0 = performance.now();
+      for (let i = 0; i < 30; i++) frame();
       await gpu.queue.onSubmittedWorkDone();
       runs.push((performance.now() - t0) / 30);
     }
@@ -230,6 +266,18 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.look = plain;
     r.time = 0;
     r.setStatic(standardScene());
+    // the fire over the standard scene: four seconds of it let fill the pool first, then timed as it burns, with a wash, and with a wash that blows too gently to move anything
+    for (let i = 0; i < 300; i++) { for (const e of FIRE) r.emit(e); r.frame(view, 'redraw', 1 / 60); }
+    await gpu.queue.onSubmittedWorkDone();
+    console.log(`particles live in the fire: ${r.particles.live} slots in the run`);
+    measured['standard fire'] = await timeFire();
+    r.setWash([FIRE_WASH]);
+    measured['standard fire washed'] = await timeFire();
+    console.log(`particles live washed: ${r.particles.live} slots in the run`);
+    // the wash's own sums over the same particles, which it hardly moves, so its cost is not hidden by what it does to the overdraw
+    r.setWash([FIRE_WASH_COST]);
+    measured['standard fire wash cost'] = await timeFire();
+    r.setWash([]);
     console.log(`blades drawn at the home view: ${home.near} near, ${home.far} far`);
 
     const file = await server.commands.readFile(BASELINE).catch(() => '');

@@ -206,6 +206,20 @@ higher is off the frame; and a particle fades in over its first tenth, so a
 reading straight after emission is dimmer than one later — compare separate
 runs, never two moments of one.
 
+`src/game/__tests__/wash.test.ts` and `wash.gpu.test.ts` hold the wash and
+the fade. A game that asks for neither draws to the pixel as before, and the
+GPU test cannot show that by comparing two runs of the new code (an update
+that nudged every particle would nudge both), so a lone particle is held to
+the position its own drag and gravity work out, with a wash set to nothing and
+to somewhere it never reaches, against one placed there and left still. The
+same scenes' pixels were also hashed at v0.23.0 and again after the change,
+as a one-off by hand, and matched. Two things the tests learned: drops fall
+out of a frame in a second at the world's own gravity, so the test that drops
+are hardly moved by a wash lowers it, or both pictures are empty; and the
+frame's own count reaches the grain, so a run with frames drawn while the
+particles were off differs from one without by a hair of noise, and is held
+by where its light is and not by pixel.
+
 ## Post-processing on the game path
 
 `src/game/__tests__/post.gpu.test.ts` drives the post chain — bloom, the

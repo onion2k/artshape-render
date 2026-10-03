@@ -22,11 +22,13 @@
 import { emptyBuffer, shader, type Gpu } from '../gpu/context';
 import type { Camera } from '../gpu/camera';
 import { FINITE_WGSL } from './shaders';
+import { WASH_CAPACITY, WASH_EPSILON_MM, WASH_STRIDE, WASH_WGSL, packWashes, type Wash } from './wash';
 
 /** Floats a particle: position and age, velocity and life, colour and
- *  alpha, then size, growth, floor and gravity. Four vec4s. */
-export const PARTICLE_STRIDE = 16;
-/** Floats an emitter: six vec4s, the last a spare. */
+ *  alpha, then size, growth, floor and gravity, then the colour it fades to
+ *  and whether it does. Five vec4s. */
+export const PARTICLE_STRIDE = 20;
+/** Floats an emitter: six vec4s, the last the colour its particles fade to and whether they do. */
 export const EMITTER_STRIDE = 24;
 /** Floats a sprite: position and size, colour and alpha. Two vec4s. */
 export const SPRITE_STRIDE = 8;
@@ -50,6 +52,15 @@ export interface Emit {
   /** Size gained a second: smoke swells, sparks do not. */
   growth?: number;
   colour: [number, number, number];
+  /**
+   * The colour a particle has reached by the end of its life, moving there
+   * from `colour` as it ages, slowly at first and last and quickest in the
+   * middle (a smooth-step on the share of its life gone), so that it keeps
+   * its starting colour while it is thick and dense near where it was born
+   * and settles into the end one as it thins out: dark smoke at the fire,
+   * pale when it has risen. Left out, a particle keeps `colour` for life.
+   */
+  fade?: [number, number, number];
   /** Zero draws it additively; above zero it is translucent, this opaque at most. */
   alpha: number;
   /** How much of gravity it feels: one falls, zero floats, less than zero rises. */
@@ -58,12 +69,29 @@ export interface Emit {
   floor?: number;
 }
 
+/**
+ * One burst written into the emitter list at float `o` of `d`: where it
+ * starts, how many, the ring's slot it fills from and the seed its particles
+ * draw their chance from. The last vec4 is the colour they fade to and a one
+ * if they do, so that a burst with no fade holds noughts there and the colour
+ * is kept for life.
+ */
+export function packEmitter(d: Float32Array, o: number, e: Emit, count: number, slot: number, seed: number) {
+  d[o] = e.position[0]; d[o + 1] = e.position[1]; d[o + 2] = e.position[2]; d[o + 3] = count;
+  d[o + 4] = e.velocity[0]; d[o + 5] = e.velocity[1]; d[o + 6] = e.velocity[2]; d[o + 7] = e.spread;
+  d[o + 8] = e.colour[0]; d[o + 9] = e.colour[1]; d[o + 10] = e.colour[2]; d[o + 11] = e.alpha;
+  d[o + 12] = e.life; d[o + 13] = e.size; d[o + 14] = e.growth ?? 0; d[o + 15] = e.floor ?? -1e9;
+  d[o + 16] = e.gravity ?? 1; d[o + 17] = slot; d[o + 18] = e.lifeSpread ?? 0; d[o + 19] = seed;
+  d[o + 20] = e.fade?.[0] ?? 0; d[o + 21] = e.fade?.[1] ?? 0; d[o + 22] = e.fade?.[2] ?? 0; d[o + 23] = e.fade ? 1 : 0;
+}
+
 const STRUCTS = `
 struct Particle {
   pos: vec3f, age: f32,
   vel: vec3f, life: f32,
   colour: vec3f, alpha: f32,
   size: f32, growth: f32, floor: f32, gravity: f32,
+  fade: vec3f, fading: f32,
 };
 struct Emitter {
   pos: vec3f, count: f32,
@@ -71,7 +99,7 @@ struct Emitter {
   colour: vec3f, alpha: f32,
   life: f32, size: f32, growth: f32, floor: f32,
   gravity: f32, slot: f32, lifeSpread: f32, seed: f32,
-  _spare: vec4f,
+  fade: vec3f, fading: f32,
 };
 struct Frame {
   viewProj: mat4x4f,
@@ -79,7 +107,7 @@ struct Frame {
   up: vec3f, time: f32,
   gravity: f32, capacity: f32, emitters: f32, drag: f32,
   // the run of the ring that may hold a live particle: see simulate()
-  rangeStart: f32, rangeCount: f32, _r0: f32, _r1: f32,
+  rangeStart: f32, rangeCount: f32, washEpsilon: f32, washCount: f32,
 };
 
 `;
@@ -91,6 +119,9 @@ const COMPUTE_WGSL = STRUCTS + `
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> emitters: array<Emitter>;
+// two vec4s a wash, as packWashes lays them out; frame.washCount of them are live
+@group(0) @binding(3) var<uniform> washes: array<vec4f, ${WASH_CAPACITY * 2}>;
+${WASH_WGSL}
 
 // A hash, not a generator: every particle draws its randomness from its own
 // slot and the frame's seed, so nothing has to remember a state.
@@ -129,6 +160,8 @@ fn unitDir(a: f32, b: f32) -> vec3f {
     p.growth = e.growth;
     p.floor = e.floor;
     p.gravity = e.gravity;
+    p.fade = e.fade;
+    p.fading = e.fading;
     particles[slot] = p;
   }
 }
@@ -145,6 +178,14 @@ fn unitDir(a: f32, b: f32) -> vec3f {
   // they feel, so there is one knob and not two.
   let drag = mix(frame.drag, frame.drag * 0.15, clamp(p.gravity, 0.0, 1.0));
   p.vel = p.vel * exp(-drag * dt);
+  // Air under a rotor pulls the velocity toward its own, as drag does, so it
+  // is as steady at a long step as at a short one; a floating particle
+  // settles to nearly all of it and a falling one to hardly any. With no wash
+  // set this is not reached, and the particle moves as it always did.
+  if (frame.washCount > 0.0) {
+    let air = washAt(p.pos, u32(frame.washCount), frame.washEpsilon);
+    p.vel += air * (washFollow(p.gravity) * (1.0 - exp(-drag * dt)));
+  }
   p.vel.z -= frame.gravity * p.gravity * dt;
   p.pos += p.vel * dt;
   p.size += p.growth * dt;
@@ -182,10 +223,11 @@ struct VsOut {
   let world = p.pos + (frame.right * c.x + frame.up * c.y) * p.size;
   out.pos = frame.viewProj * vec4f(world, 1.0);
   out.uv = c;
+  let t = p.age / p.life;
   out.colour = p.colour;
+  if (p.fading > 0.0) { out.colour = mix(p.colour, p.fade, t * t * (3.0 - 2.0 * t)); }
   out.alpha = p.alpha;
   // in quickly, out slowly: the shape of a puff and of a splash both
-  let t = p.age / p.life;
   out.fade = min(1.0, t * 6.0) * (1.0 - t) * (1.0 - t);
   return out;
 }
@@ -254,6 +296,8 @@ export class Particles {
   readonly ready: Promise<void>;
   /** Drag on a floating particle, a second; a falling one has a sixth of it. */
   drag = 2.4;
+  /** The width, in world units, under which a point is on a wash's axis: a millimetre, set by the renderer to the game's own unit. */
+  washEpsilon = WASH_EPSILON_MM;
 
   private pool: GPUBuffer;
   private spriteBuffer: GPUBuffer;
@@ -263,6 +307,10 @@ export class Particles {
   /** How many sprites a frame may have: what `setSprites` is given past this is left out. */
   readonly spriteCapacity = SPRITE_CAPACITY;
   private emitterBuffer: GPUBuffer;
+  private washBuffer: GPUBuffer;
+  private washData = new Float32Array(WASH_CAPACITY * WASH_STRIDE);
+  private washCount = 0;
+  private washDirty = false;
   private frameBuffer: GPUBuffer;
   private frameData = new Float32Array(32);
   private pending: Float32Array<ArrayBuffer>;
@@ -302,6 +350,7 @@ export class Particles {
     this.pending = new Float32Array(this.maxEmitters * EMITTER_STRIDE);
     this.pool = emptyBuffer(device, this.capacity * PARTICLE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'particles');
     this.emitterBuffer = emptyBuffer(device, this.maxEmitters * EMITTER_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'emitters');
+    this.washBuffer = device.createBuffer({ label: 'particle washes', size: WASH_CAPACITY * WASH_STRIDE * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.frameBuffer = device.createBuffer({ label: 'particle frame', size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.spriteBuffer = emptyBuffer(device, SPRITE_CAPACITY * SPRITE_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'sprites');
 
@@ -311,6 +360,7 @@ export class Particles {
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
     const drawLayout = device.createBindGroupLayout({
@@ -326,6 +376,7 @@ export class Particles {
         { binding: 0, resource: { buffer: this.frameBuffer } },
         { binding: 1, resource: { buffer: this.pool } },
         { binding: 2, resource: { buffer: this.emitterBuffer } },
+        { binding: 3, resource: { buffer: this.washBuffer } },
       ],
     });
     this.drawBind = device.createBindGroup({
@@ -385,19 +436,26 @@ export class Particles {
     if (this.pendingCount >= this.maxEmitters) return false;
     const count = Math.max(0, Math.min(Math.floor(e.count), this.capacity));
     if (count === 0) return true;
-    const o = this.pendingCount * EMITTER_STRIDE;
-    const d = this.pending;
-    d[o] = e.position[0]; d[o + 1] = e.position[1]; d[o + 2] = e.position[2]; d[o + 3] = count;
-    d[o + 4] = e.velocity[0]; d[o + 5] = e.velocity[1]; d[o + 6] = e.velocity[2]; d[o + 7] = e.spread;
-    d[o + 8] = e.colour[0]; d[o + 9] = e.colour[1]; d[o + 10] = e.colour[2]; d[o + 11] = e.alpha;
-    d[o + 12] = e.life; d[o + 13] = e.size; d[o + 14] = e.growth ?? 0; d[o + 15] = e.floor ?? -1e9;
-    d[o + 16] = e.gravity ?? 1; d[o + 17] = this.cursor; d[o + 18] = e.lifeSpread ?? 0; d[o + 19] = this.seed++;
-    d[o + 20] = 0; d[o + 21] = 0; d[o + 22] = 0; d[o + 23] = 0;
+    packEmitter(this.pending, this.pendingCount * EMITTER_STRIDE, e, count, this.cursor, this.seed++);
     this.bursts.push({ start: this.emitted, until: this.time + e.life * (1 + (e.lifeSpread ?? 0)) + 0.05 });
     this.emitted += count;
     this.cursor = this.emitted % this.capacity;
     this.pendingCount++;
     return true;
+  }
+
+  /**
+   * The air blowing on the particles from the next frame on, kept until it is
+   * set again: `[]` is none, and with none the update does exactly what it
+   * did before there were washes. Returns whether every wash was taken, since
+   * at most `WASH_CAPACITY` are and the rest are dropped; a wash that could
+   * blow nothing is left out without being counted.
+   */
+  setWash(washes: readonly Wash[]): boolean {
+    const { count, dropped } = packWashes(washes, this.washData);
+    this.washCount = count;
+    this.washDirty = true;
+    return dropped === 0;
   }
 
   /** How many bursts are waiting for the next frame. */
@@ -429,8 +487,12 @@ export class Particles {
     const count = this.bursts.length ? Math.min(this.capacity, this.emitted - this.bursts[0].start) : 0;
     const start = this.bursts.length ? this.bursts[0].start % this.capacity : this.cursor;
     this.liveStart = start; this.liveCount = count;
-    f[28] = start; f[29] = count;
+    f[28] = start; f[29] = count; f[30] = this.washEpsilon; f[31] = this.washCount;
     queue.writeBuffer(this.frameBuffer, 0, f);
+    if (this.washDirty) {
+      queue.writeBuffer(this.washBuffer, 0, this.washData);
+      this.washDirty = false;
+    }
     if (this.pendingCount) {
       queue.writeBuffer(this.emitterBuffer, 0, this.pending, 0, this.pendingCount * EMITTER_STRIDE);
     }
@@ -497,6 +559,6 @@ export class Particles {
   }
 
   dispose() {
-    for (const b of [this.pool, this.emitterBuffer, this.frameBuffer, this.spriteBuffer]) b.destroy();
+    for (const b of [this.pool, this.emitterBuffer, this.washBuffer, this.frameBuffer, this.spriteBuffer]) b.destroy();
   }
 }

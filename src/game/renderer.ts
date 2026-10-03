@@ -28,6 +28,7 @@ import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
 import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
 import { Particles, type Emit } from './particles';
+import { WASH_EPSILON_MM, type Wash } from './wash';
 import {
   BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, sceneSource,
   type SceneVariant,
@@ -777,6 +778,7 @@ export class GameRenderer {
     this.fog = noFog(this.mmPerUnit);
     this.gravity = this.mm(EARTH_MM);
     this.particles = new Particles(ctx, particleCapacity, 128, HDR, DEPTH);
+    this.particles.washEpsilon = this.mm(WASH_EPSILON_MM);
     this.frameBuffer = device.createBuffer({ label: 'game frame', size: (32 + TOON_FLOATS) * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.lightBuffer = emptyBuffer(device, Math.max(1, lightCapacity) * LIGHT_STRIDE * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 'point lights');
     this.effectBuffer = device.createBuffer({ label: 'effect', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1466,6 +1468,18 @@ export class GameRenderer {
     if (this.effectQuads) this.ctx.device.queue.writeBuffer(this.quadBuffer, 0, quads, 0, this.effectQuads * EFFECT_STRIDE);
   }
   private effectQuads = 0;
+
+  /**
+   * The air blowing on the particles from the next frame on, as a rotor's
+   * would: a few sources, each pushing what is under it down and out, smoke
+   * closely and drops hardly at all. Kept until set again, so a game that sets
+   * it once has it every frame; `[]` is none, and with none the particles are
+   * drawn exactly as they were. At most `WASH_CAPACITY` are taken: returns
+   * false when it had to drop some. In the game's own units. See `wash.ts`.
+   */
+  setWash(washes: readonly Wash[]): boolean {
+    return this.particles.setWash(washes);
+  }
 
   /** A burst of particles this frame: smoke, spray, sparks. See `particles.ts`. */
   emit(e: Emit): boolean {

@@ -70,6 +70,7 @@ each pins today:
 | --- | --- | --- |
 | bearing | v0.22.1 | game |
 | ooergolf | v0.22.2 | game |
+| chopdrop | v0.22.2 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
 | heist, artshape (the still-life viewer) | v0.15.0 | render (`Viewer`) |
@@ -87,10 +88,19 @@ What to copy the shape of:
   takes the device and its capacities in its constructor, compiles its
   pipelines off the main thread into a `ready` promise, and has a fixed
   pool that is never resized. The game hands it plain data (`Emit`, a
-  sprite array). `GameRenderer` owns one, exposes `emit` and `setSprites`,
-  and gates it on the economy (`particles`). Its tests are
+  sprite array). `GameRenderer` owns one, exposes `emit`, `setSprites` and
+  `setWash`, and gates it on the economy (`particles`). Its tests are
   `particles.test.ts`, which holds the layouts, and `particles.gpu.test.ts`
-  and `sprites.gpu.test.ts`, which check pixels.
+  and `sprites.gpu.test.ts`, which check pixels. Two things a game may ask
+  of it, each off by default to the pixel: a **wash** (`wash.ts`: `Wash`,
+  `washVelocity`, the packing and the WGSL built from the same constants,
+  held equal by `wash.gpu.test.ts`; at most `WASH_CAPACITY` sources, in the
+  update pass only, skipped entirely with none set, a floating particle
+  following the air and a falling one hardly, told apart by `gravity`) and a
+  **fade** (`Emit.fade`, the colour reached at the end of life by a
+  smooth-step of age, flagged in the particle's fifth vec4 so that a particle
+  with none is not mixed at all). `wash.test.ts` holds the field and the
+  packings; `perf:gpu` has the `standard fire` scenes (about 12,000 live).
 - **A pass over the frame with its maths on the CPU:** fog. `fog.ts` holds
   the record (`Fog`, with `noFog(mmPerUnit)` as the default that costs
   nothing) and the packing (`fogUniform`). `fog.test.ts` checks it against
@@ -221,8 +231,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,071 tests in 68 files at v0.22.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish; 164 tests in 25 files at v0.22.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,100 tests in 70 files at v0.24.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish; 211 tests in 27 files at v0.24.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

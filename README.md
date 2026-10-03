@@ -172,6 +172,18 @@ What the measurements settled, so nobody has to re-argue it:
   straight with a shoulder that keeps a bright colour's hue. Together they
   are a bright, saturated world, finished as a toy is (see below). Left out,
   shading and tone are what they always were, to the pixel.
+- **Particles can be blown, and can change colour.** `emit` takes a burst
+  of them, born and aged on the GPU. `setWash(washes)` hands the renderer up
+  to four sources of air (`Wash`: a position, a radius, a speed and a reach, in
+  world units) that push what is under them, straight down at the source and
+  turning outward as the air nears the end of its reach, weaker across and down
+  the column, and nothing above it or past it. Smoke follows the air closely
+  and a drop, which falls, hardly at all; the field is `washVelocity` in
+  `wash.ts`, which the shader is held equal to. It is kept until set again, and
+  `[]` is none. An `Emit`'s `fade` is a second colour its particles move to
+  over their life, by a smooth-step on their age: dark smoke at the fire that
+  pales as it rises. A game that sets neither draws every particle as it did,
+  to the pixel.
 - **Sprites are particles the game places.** `setSprites(data, count)`,
   eight floats each (`SPRITE_STRIDE`: position and size, colour and alpha),
   draws soft camera-facing puffs where the game says, every frame, with the
