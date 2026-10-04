@@ -39,6 +39,8 @@ import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from
 import { GrassPass } from './grass-pass';
 import { MAX_GLOSS, MAX_SHEEN } from './toon';
 import { usesFlow } from './flow';
+import { TEXTURE_STRIDE, checkLayers, mipLevels, usesTexture } from './texture';
+import { GROUND_FORMAT, MipBlitter } from './mips';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
 export interface DrawnBlade { x: number; y: number; z: number; id: number }
@@ -115,6 +117,21 @@ export interface GameGroup {
    * the same floats, still and without glow.
    */
   patterns?: Float32Array;
+  /**
+   * A texture per placement, `TEXTURE_STRIDE` floats each: the layer of the
+   * ground texture it wears (counted from one; nought for none), how many
+   * times the layer tiles across a unit of the world, how far the layer's
+   * colour modulates the albedo, and how far its alpha lights and shades the
+   * placement before the toon bands are cut (see `texture.ts`, and
+   * `packTexture` for writing one). The layer is sampled by the world's x and
+   * y, so ground that abuts is one field with no seam. Left out, the group is
+   * drawn exactly as it was. A group with any is drawn through a build
+   * compiled when it is first handed in (`prepare()` says when it is in, and
+   * until then the group is drawn without its texture); it may also have
+   * patterns, and keeps them. It may not have a flow kind among them. The
+   * layers themselves are the renderer's, set by `setGroundTexture`.
+   */
+  texture?: Float32Array;
 }
 
 /** Where the frame uniform's clock is: the toon light's first spare, after `toonUniform`'s 32 and the finish's 21. */
@@ -122,6 +139,9 @@ const CLOCK_AT = 32 + 21;
 
 /** Eight floats a placement's pattern: kind, scale, seed and a spare, then the second colour and a spare; a flow kind's seed is its speed and its spare its glow. */
 export const PATTERN_STRIDE = 8;
+
+/** Four floats a placement's texture: layer, repeat, albedo strength and shade strength. */
+export { TEXTURE_STRIDE };
 
 /** Four floats a placement: colour and roughness, as the shader reads them. */
 export const MATERIAL_STRIDE = 4;
@@ -564,6 +584,23 @@ const PATTERN_LAYOUT: GPUVertexBufferLayout = {
     { shaderLocation: 10, offset: 16, format: 'float32x4' as GPUVertexFormat },
   ],
 };
+// The placement's texture rides in an instance buffer of its own, made only for a group that has one and
+// read only by the textured build, so every other build's vertex layout is what it was.
+const TEXTURE_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: TEXTURE_STRIDE * 4, stepMode: 'instance',
+  attributes: [{ shaderLocation: 11, offset: 0, format: 'float32x4' as GPUVertexFormat }],
+};
+/**
+ * The builds of the scene shader that have the ground texture: every rung of
+ * the ladder, in both looks, and always patterned (a group that has none has
+ * the kind nought). Not made up front: a game that has no textured group
+ * never compiles one.
+ */
+const TEXTURED_VARIANTS: SceneVariant[] = [];
+for (const toon of [false, true])
+  for (const shadows of [true, false])
+    for (const points of [true, false])
+      for (const cullLights of [true, false]) TEXTURED_VARIANTS.push({ cullLights, points, shadows, patterned: true, textured: true, toon });
 /**
  * The builds of the scene shader that have the flow kinds: every rung of the
  * ladder, in both looks, and always patterned. Not made up front: a game
@@ -599,6 +636,10 @@ interface Uploaded {
   patterned: boolean;
   /** Whether any placement's pattern is a flow kind, which the static half redraws every frame and the flowing build draws. */
   flowing: boolean;
+  /** Every placement's texture, four floats each, for a group that has any layer named; none for a group that does not, which is drawn by a build that never reads it. */
+  texture: GPUBuffer | null;
+  /** Whether the group draws through the textured build. */
+  textured: boolean;
   indexCount: number;
   capacity: number;
   count: number;
@@ -627,6 +668,8 @@ export class GameRenderer {
   private msaaBuild: Promise<void> | null = null;
   /** The flowing builds, made the first time a group with a flow kind is handed in and never before. */
   private flowBuild: Promise<void> | null = null;
+  /** The textured builds, made the first time a group with a texture is handed in and never before. */
+  private textureBuild: Promise<void> | null = null;
   private fxaaBuild: Promise<void> | null = null;
   private msaaCompiled = false;
   private fxaaCompiled = false;
@@ -733,6 +776,12 @@ export class GameRenderer {
   private occlusionPassBuffer: GPUBuffer;
   private occlusionPassBind: GPUBindGroup;
   private noOcclusion: GPUTexture;
+  /** The ground texture the scene binds when a game has set none: one neutral grey texel, which modulates nothing, so a group that asks before the layers are in is drawn as it would be without. */
+  private noTexture: GPUTexture;
+  private groundSampler: GPUSampler;
+  /** The layers a game set, or null; and the pass that makes their mips, made with the first. */
+  private groundTexture: GPUTexture | null = null;
+  private mipBlitter: MipBlitter | null = null;
   private effectBind: GPUBindGroup | null = null;
   private compositeBind: GPUBindGroup | null = null;
 
@@ -862,6 +911,10 @@ export class GameRenderer {
     this.occlusionPassBind = device.createBindGroup({ label: 'occlusion depth pass', layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: this.occlusionPassBuffer } }] });
     this.noOcclusion = device.createTexture({ label: 'no occlusion', size: [1, 1], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: this.noOcclusion }, new Uint8Array([255]), {}, [1, 1]);
+    // mid-grey, not white: the build reads a texel about its mid-grey and doubles it, so this one is the identity (128 of 255, a part in 250 high)
+    this.noTexture = device.createTexture({ label: 'no ground texture', size: [1, 1, 1], format: GROUND_FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.noTexture }, new Uint8Array([128, 128, 128, 128]), {}, [1, 1, 1]);
+    this.groundSampler = device.createSampler({ label: 'ground texture', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16 });
 
     this.sceneLayout = device.createBindGroupLayout({
       label: 'game scene',
@@ -876,6 +929,8 @@ export class GameRenderer {
         { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
       ],
     });
     this.effectLayout = device.createBindGroupLayout({
@@ -1032,7 +1087,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant, samples = 1) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
   }
 
   /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
@@ -1048,6 +1103,7 @@ export class GameRenderer {
           INSTANCE_LAYOUT,
           MATERIAL_LAYOUT,
           PATTERN_LAYOUT,
+          ...(v.textured ? [TEXTURE_LAYOUT] : []),
         ],
       },
       fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
@@ -1093,6 +1149,7 @@ export class GameRenderer {
     this.askAntialias();
     await this.antialiasBuilt;
     await this.flowBuild;
+    await this.textureBuild;
     this.askOwnFog();
     await this.ownBuild;
   }
@@ -1158,6 +1215,26 @@ export class GameRenderer {
     return Promise.all(waits).then(() => undefined);
   }
 
+  /** Starts the textured builds, once, the first time a group with a texture is handed in; as `askFlow` does the flowing ones. */
+  private askTexture() {
+    this.textureBuild ??= this.compileTexture();
+  }
+
+  private compileTexture(): Promise<void> {
+    const { device } = this.ctx;
+    const four = this.msaaBuild !== null;
+    const waits: Promise<unknown>[] = [];
+    for (const v of TEXTURED_VARIANTS) {
+      const key = GameRenderer.key(v);
+      const module = shader(device, sceneSource(v), `game scene ${key}`);
+      this.sceneModules.set(key, module);
+      waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1)).then((p) => { this.scenePipelines.set(key, p); }));
+      if (four) waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, SAMPLES)).then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
+    }
+    // a kept frame baked before the builds were in drew the textured groups plain
+    return Promise.all(waits).then(() => { this.keptStale = true; this.keptStaleMsaa = true; });
+  }
+
   /** Starts the builds the look's antialiasing needs, each once; every other time, nothing. */
   private askAntialias() {
     const asked = Math.max(0, ANTIALIAS.indexOf(this.look.antialias ?? 'none'));
@@ -1186,7 +1263,7 @@ export class GameRenderer {
   private async compileMsaa() {
     const { device } = this.ctx;
     // the flowing builds too, if a group has asked for them: their modules are made as soon as it does
-    const variants = this.flowBuild ? [...SCENE_VARIANTS, ...FLOW_VARIANTS] : SCENE_VARIANTS;
+    const variants = [...SCENE_VARIANTS, ...(this.flowBuild ? FLOW_VARIANTS : []), ...(this.textureBuild ? TEXTURED_VARIANTS : [])];
     const waits: Promise<unknown>[] = variants.map((v) =>
       device.createRenderPipelineAsync(this.sceneDescriptor(v, this.sceneModules.get(GameRenderer.key(v))!, SAMPLES))
         .then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
@@ -1323,6 +1400,46 @@ export class GameRenderer {
     });
   }
 
+  /**
+   * Sets the ground texture: one image a layer, up to eight, all square, all
+   * the same size, a power of two and at most 1024 across, or else refused by
+   * name. Each layer is copied in, its mips are drawn, and the scene's bind
+   * group is made again to hold it, so a group that wears a layer of it
+   * (`GameGroup.texture`) draws it from the next frame. Nothing is compiled
+   * here: the textured builds are the groups', made when the first is handed
+   * in. `null` takes the texture away, and the scene binds its neutral texel.
+   *
+   * The layers are read as they come: make each bitmap with
+   * `createImageBitmap(source, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })`
+   * or its alpha, which is a height, will have been folded into its colour.
+   * The colour is modulation about mid-grey and the alpha is a height about
+   * mid-grey, so both are data and neither is sRGB light.
+   */
+  setGroundTexture(layers: ImageBitmap[] | null) {
+    const { device } = this.ctx;
+    const old = this.groundTexture;
+    if (layers === null) {
+      this.groundTexture = null;
+    } else {
+      const side = checkLayers(layers);
+      const levels = mipLevels(side);
+      const texture = device.createTexture({
+        label: 'ground texture', size: [side, side, layers.length], mipLevelCount: levels, format: GROUND_FORMAT,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      layers.forEach((source, layer) => {
+        device.queue.copyExternalImageToTexture({ source }, { texture, origin: [0, 0, layer], premultipliedAlpha: false }, [side, side]);
+      });
+      (this.mipBlitter ??= new MipBlitter(device)).generate(texture, layers.length, levels);
+      this.groundTexture = texture;
+    }
+    this.bindScene();
+    // a kept frame holds the ground as it was
+    this.keptStale = true;
+    this.keptStaleMsaa = true;
+    old?.destroy();
+  }
+
   /** The scene's bind group: made with the environment, and again whenever the occlusion's texture is. */
   private bindScene() {
     if (!this.environment) return;
@@ -1341,6 +1458,8 @@ export class GameRenderer {
         { binding: 7, resource: this.spotMaps.createView({ dimension: '2d-array' }) },
         { binding: 8, resource: this.shadowSampler },
         { binding: 9, resource: this.occlusion.view ?? this.noOcclusion.createView() },
+        { binding: 10, resource: (this.groundTexture ?? this.noTexture).createView({ dimension: '2d-array' }) },
+        { binding: 11, resource: this.groundSampler },
       ],
     });
   }
@@ -1349,6 +1468,8 @@ export class GameRenderer {
     const { device } = this.ctx;
     return groups.map((g) => {
       const capacity = g.matrices.length / 16;
+      const textured = usesTexture(g.texture);
+      if (textured && usesFlow(g.patterns, PATTERN_STRIDE)) throw new Error('a group cannot have both a texture and a flow kind: a surface that flows is not ground that is textured');
       const instance = device.createBuffer({
         label: 'instances', size: Math.max(64, capacity * 64),
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -1371,6 +1492,17 @@ export class GameRenderer {
         flowing = usesFlow(out, PATTERN_STRIDE);
       }
       if (flowing) this.askFlow();
+      let texture: GPUBuffer | null = null;
+      if (textured) {
+        texture = device.createBuffer({
+          label: 'textures', size: Math.max(TEXTURE_STRIDE * 4, capacity * TEXTURE_STRIDE * 4),
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        const out = new Float32Array(Math.max(TEXTURE_STRIDE, capacity * TEXTURE_STRIDE));
+        out.set(g.texture!.subarray(0, out.length));
+        device.queue.writeBuffer(texture, 0, out);
+        this.askTexture();
+      }
       return {
         position: bufferFrom(device, g.mesh.positions, GPUBufferUsage.VERTEX, 'positions'),
         normal: bufferFrom(device, g.mesh.normals, GPUBufferUsage.VERTEX, 'normals'),
@@ -1380,6 +1512,8 @@ export class GameRenderer {
         pattern,
         patterned: !!g.patterns,
         flowing,
+        texture,
+        textured,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -1404,7 +1538,7 @@ export class GameRenderer {
   private static release(groups: Uploaded[]) {
     for (const g of groups) {
       g.position.destroy(); g.normal.destroy(); g.index.destroy();
-      g.instance.destroy(); g.material.destroy(); g.pattern.destroy();
+      g.instance.destroy(); g.material.destroy(); g.pattern.destroy(); g.texture?.destroy();
     }
   }
 
@@ -1741,8 +1875,8 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private scenePipeline(patterned: boolean, samples: number, flowing = false) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, toon: this.look.shading === 'toon' }, samples));
+  private scenePipeline(patterned: boolean, samples: number, flowing = false, textured = false) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, textured, toon: this.look.shading === 'toon' }, samples));
   }
 
   /**
@@ -1756,13 +1890,15 @@ export class GameRenderer {
     const patterned = this.scenePipeline(true, samples);
     if (!plain || !patterned || !this.sceneBind) return;
     const flowing = this.scenePipeline(true, samples, true) ?? patterned;
+    const textured = this.scenePipeline(true, samples, false, true);
     pass.setBindGroup(0, this.sceneBind);
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
     let on: GPURenderPipeline | null = null;
     for (const g of groups) {
       if (!g.count) continue;
       if (only && g.flowing !== (only === 'flowing')) continue;
-      const want = g.flowing ? flowing : g.patterned ? patterned : plain;
+      // a textured group is drawn plain, or as its speckle, until its build is in
+      const want = g.flowing ? flowing : g.textured && textured ? textured : g.patterned ? patterned : plain;
       if (want !== on) {
         pass.setPipeline(want);
         on = want;
@@ -1772,6 +1908,7 @@ export class GameRenderer {
       pass.setVertexBuffer(2, g.instance);
       pass.setVertexBuffer(3, g.material);
       pass.setVertexBuffer(4, g.pattern);
+      if (want === textured) pass.setVertexBuffer(5, g.texture!);
       pass.setIndexBuffer(g.index, 'uint32');
       pass.drawIndexed(g.indexCount, g.count);
     }
@@ -2110,6 +2247,8 @@ export class GameRenderer {
     this.grass?.dispose();
     this.occlusion.dispose();
     this.noOcclusion.destroy();
+    this.noTexture.destroy();
+    this.groundTexture?.destroy();
     this.occlusionPassBuffer.destroy();
   }
 }

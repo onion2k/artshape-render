@@ -23,6 +23,7 @@
 
 import { FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
 import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
+import { TEXTURE_SPLICES } from './texture';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
 
 /** What a permutation of the scene shader may leave out. */
@@ -78,6 +79,16 @@ export interface SceneVariant {
    * asks (see `flow.ts`), not up front; it needs the group's own vertex stage.
    */
   flowing?: boolean;
+  /**
+   * Whether the ground texture is built in: the shared array sampled by the
+   * world's x and y, its colour modulating the albedo and its alpha the sun's
+   * light before the toon bands are cut. A patterned build too, and the only
+   * one that has any of it: every other build is the text it was, to the byte,
+   * so a game that never asks pays for none of it. Compiled when a group first
+   * asks (see `texture.ts`), not up front; it needs the group's own vertex
+   * stage and is not also a flowing build.
+   */
+  textured?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -664,7 +675,7 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false }: SceneVariant = {}): string {
   let head = SCENE_HEAD, stage = vertex, material = SCENE_MATERIAL, fragment = SCENE_FRAGMENT;
   let flow = '';
   if (flowing) {
@@ -676,6 +687,17 @@ export function sceneWith(vertex: string, { cullLights = true, points = true, sh
     material += FLOW_WGSL;
     fragment = spliced(spliced(spliced(fragment, FLOW_SPLICES.normal.from, FLOW_SPLICES.normal.to), FLOW_SPLICES.albedo.from, FLOW_SPLICES.albedo.to), FLOW_SPLICES.glow.from, FLOW_SPLICES.glow.to);
     flow = 'const FLOWING: bool = true;\n';
+  }
+  if (textured) {
+    // the textured build is the patterned build with the ground texture's pieces put in: the array and its sampler, the placement's four floats, the sample and the two ways it is used
+    if (flowing) throw new Error('the textured build cannot also be the flowing build: a surface that flows is not ground that is textured');
+    if (!vertex.includes(TEXTURE_SPLICES.input.from)) throw new Error('the textured build needs the group\'s own vertex stage, which has the placement\'s texture to give it');
+    patterned = true;
+    const t = TEXTURE_SPLICES;
+    head = spliced(spliced(head, t.bindings.from, t.bindings.to, 'textured'), t.struct.from, t.struct.to, 'textured');
+    stage = spliced(spliced(stage, t.input.from, t.input.to, 'textured'), t.vertex.from, t.vertex.to, 'textured');
+    fragment = spliced(spliced(fragment, t.albedo.from, t.albedo.to, 'textured'), t.shade.from, t.shade.to, 'textured');
+    flow = 'const TEXTURED: bool = true;\n';
   }
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`

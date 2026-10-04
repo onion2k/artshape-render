@@ -73,9 +73,9 @@ export function usesFlow(patterns: Float32Array | undefined, stride: number): bo
   return false;
 }
 
-/** Replaces `from` by `to` in `text`, which must hold it once or the build is wrong: a change to the scene shader must change this too. */
-export function spliced(text: string, from: string, to: string): string {
-  if (!text.includes(from)) throw new Error(`the flowing build cannot be made: the scene shader no longer has "${from}"`);
+/** Replaces `from` by `to` in `text`, which must hold it once or the build (named `build`) is wrong: a change to the scene shader must change this too. */
+export function spliced(text: string, from: string, to: string, build = 'flowing'): string {
+  if (!text.includes(from)) throw new Error(`the ${build} build cannot be made: the scene shader no longer has "${from}"`);
   return text.replace(from, () => to);
 }
 
