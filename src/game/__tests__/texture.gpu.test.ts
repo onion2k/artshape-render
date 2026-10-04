@@ -316,6 +316,11 @@ describe('the ground texture on the game renderer', () => {
     // a texel is a few thousand to a pixel: far ground, which a grey mip would otherwise make of the layer
     const far = await drawn(ground({ repeat: 20, shade: 1 }));
     expect(worst(plain, far), 'at twenty tiles a unit').toBeLessThanOrEqual(2);
+    // and a layer whose average is not neutral, which a grey mip would make of the plane: all dark, colour and height
+    r.setGroundTexture([await layer(256, () => [60, 60, 60, 60])]);
+    expect(worst(plain, await drawn(ground({ repeat: 20, shade: 1 }))), 'a dark layer at twenty tiles a unit').toBeLessThanOrEqual(2);
+    expect(worst(plain, await drawn(ground({ repeat: 0.1, shade: 1 }))), 'and the same layer near, where it darkens').toBeGreaterThan(40);
+    r.setGroundTexture([await blocks()]);
     const near = await drawn(ground({ repeat: 0.1, shade: 1 }));
     expect(worst(plain, near), 'at a tenth of a tile a unit').toBeGreaterThan(40);
     // and between, the strength goes from one to nought without a step: the spread of the grain falls as the repeat rises
@@ -418,15 +423,25 @@ describe('the ground texture on the game renderer', () => {
     });
   });
 
-  it('is not left stale in a kept frame: a texture set after the static half was kept shows in the next', async () => {
+  it('is not left stale in a kept frame: a texture set after the static half was kept, or a build that lands after, shows in the next', async () => {
     r.setGroundTexture([await blocks()]);
     r.setStatic([ground({ repeat: 0.1 })]);
     await r.prepare();
-    const first = await draw('', 'redraw');
+    const first = await draw('', 'keep');
     r.setGroundTexture([await blocks(100, 150)]);
     const kept = await draw('', 'keep');
     expect(differing(first, kept), 'a keep frame after a new texture').toBeGreaterThan(5000);
-    expect(differing(kept, await draw('', 'redraw'))).toBe(0);
+    expect(differing(kept, await draw('', 'redraw')), 'is the frame a redraw makes').toBe(0);
+    // the group handed in and a frame kept at once, before its build is in: drawn plain and kept so, then textured when it lands
+    const fresh = await make();
+    fresh.setGroundTexture([await blocks()]);
+    fresh.setStatic([ground({ repeat: 0.1 })]);
+    const early = await draw('', 'keep', fresh);
+    await fresh.prepare();
+    const late = await draw('', 'keep', fresh);
+    expect(differing(early, late), 'the kept frame, before and after the build lands').toBeGreaterThan(5000);
+    expect(differing(late, await draw('', 'redraw', fresh))).toBe(0);
+    fresh.dispose();
   });
 
   it('refuses layers it cannot make an array of, by name, and leaves the texture it had', async () => {
