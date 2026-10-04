@@ -24,6 +24,7 @@ import { noFog } from '../fog';
 import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
 import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, packFlow } from '../flow';
+import { packTexture } from '../texture';
 import { judge, median, recorded } from './perf';
 import type { Emit } from '../particles';
 import type { Wash } from '../wash';
@@ -121,6 +122,18 @@ export function standardScene(): GameGroup[] {
     { mesh: plane(600), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), albedo: [0.1, 0.42, 0.08], roughness: 0.85 },
     { mesh: box(), matrices: boxes, albedo: [0.58, 0.3, 0.13], roughness: 0.55 },
   ];
+}
+
+/** A layer of two-tone noise in blocks of two texels, colour and height alike, about mid-grey: made here, since a game's is its own. */
+async function noiseLayer(side: number): Promise<ImageBitmap> {
+  const data = new ImageData(side, side);
+  const hash = (x: number, y: number) => { let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  for (let y = 0; y < side; y++)
+    for (let x = 0; x < side; x++) {
+      const v = hash(x >> 1, y >> 1) < 0.5 ? 90 : 166;
+      data.data.set([v, v, v, v], (y * side + x) * 4);
+    }
+  return createImageBitmap(data, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 }
 
 /** The toon light's four settings together, as a sunny game would have them: see `Look`. */
@@ -265,6 +278,13 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     measured['standard flow msaa'] = await time();
     r.look = plain;
     r.time = 0;
+    // the ground texture over the standard scene: its ground wears a 256-square two-tone noise, colour and height, at four metres a tile, through the textured builds
+    r.setGroundTexture([await noiseLayer(256)]);
+    const [floor, crates] = standardScene();
+    r.setStatic([{ ...floor, texture: packTexture(new Float32Array(4), 0, { layer: 1, repeat: 0.25, albedo: 0.5, shade: 0.5 }) }, crates]);
+    await r.prepare();
+    measured['standard textured'] = await time();
+    r.setGroundTexture(null);
     r.setStatic(standardScene());
     // the fire over the standard scene: four seconds of it let fill the pool first, then timed as it burns, with a wash, and with a wash that blows too gently to move anything
     for (let i = 0; i < 300; i++) { for (const e of FIRE) r.emit(e); r.frame(view, 'redraw', 1 / 60); }

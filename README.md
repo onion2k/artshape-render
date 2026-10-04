@@ -162,6 +162,40 @@ What the measurements settled, so nobody has to re-argue it:
   did. A kept static half (`'keep'`) redraws a flowing static group each frame
   and keeps the rest, so it costs what that group costs and no more. Edges,
   foam and banks are the game's to draw as geometry of its own.
+- **Ground can wear an image, in a build of its own.** `setGroundTexture(layers)`
+  takes up to eight `ImageBitmap`s, all square, all the same size, a power of
+  two and at most 1024 across (anything else is refused by name, and the
+  texture it had is kept), makes mips for each, and binds them to the scene as
+  one `texture_2d_array` with a repeating, trilinear, 16-times anisotropic
+  sampler of its own at bindings 10 and 11. `null` takes it away. Make each
+  bitmap with `createImageBitmap(source, { premultiplyAlpha: 'none',
+  colorSpaceConversion: 'none' })`, or its alpha will have been folded into
+  its colour: the colour is a modulation about mid-grey and the alpha a
+  height about mid-grey, both data, and neither is read as sRGB light. A
+  group opts in with `texture`, four floats a placement (`TEXTURE_STRIDE`,
+  written with `packTexture`): the layer, counted from one (nought is none,
+  and a layer past the last wears the last), how many times the layer tiles
+  across a unit of the world, the albedo strength and the shade strength,
+  each 0 to 1. The layer is sampled by the world's x and y and not the mesh's,
+  so ground that abuts is one field with no seam between its kinds, and a
+  placement moved on by a tile draws the same. The colour multiplies the
+  albedo by `mix(1, rgb * 2, albedo strength)` after any pattern mix, so the
+  game's palette stays the game's; the alpha multiplies the sun's light by
+  `mix(1, alpha * 2, shade strength)` before the toon ramp cuts it, so a
+  band's edge and the ramp pick the grain up instead of flattening it (the
+  physically based look takes it on the same term). Both fade to nothing as
+  the texels shrink below a pixel (from four texels a pixel to sixty-four, by
+  octave), so far ground settles to its flat colour and not to a grey mip.
+  Strength nought and layer nought are the flat placement to the bit. A
+  textured group may also have `patterns` and keeps its speckle; it may not
+  have a flow kind among them. The build that draws it is compiled the first
+  time `setStatic` or `setDynamic` is handed a group with a layer named, in every
+  rung and, if asked for, every antialiasing mode, and `prepare()` says when it
+  is in; until then the group is drawn without its texture, and a kept static
+  half is baked again when it lands. Setting a texture compiles one pipeline,
+  the mips', and nothing else: a game that never sets one, or sets one and
+  puts it on no group, compiles the same 46 as before. Until a texture is set
+  the scene binds one neutral grey texel, which modulates nothing.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
   group through a permutation that lights a surface at its own colour, in
   one smooth ramp from a shade to the full sun, and tints the sky's light by
@@ -287,6 +321,7 @@ GPU other programs were using:
 | `antialias: 'fxaa'` | +0.04 ms | +0.13 ms |
 | the toon light's four, together | +0.01 ms, rounds spread ±0.07 | +0.03 ms, rounds spread ±0.1 |
 | `form: 1.5` (0.21.0) | +0.003 ms, rounds spread -0.06 to 0.03 | +0.04 ms, rounds spread -0.03 to 0.11 |
+| a textured ground (0.26.0): the 600-unit ground wearing a 256-square layer, colour and shade at 0.5 | +0.18 ms (0.62 to 0.80, four runs of the perf gate, a machine at load 4.5) | not measured |
 
 Each of the toon light's settings alone read under 0.01 ms on the standard
 scene, which is to say no cost could be told from the noise. Alternating
