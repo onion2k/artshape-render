@@ -140,6 +140,16 @@ describe('the flowing build of the scene shader', () => {
     expect(src).toContain('colour += flow.glow;');
   });
 
+  it('bends the sheet before the waves are laid on it, and keeps the swell weak, so the sky in it does not repeat', () => {
+    const src = sceneSource({ flowing: true });
+    expect(src).toContain('const WATER_WARP: f32 = 0.45;');
+    expect(src).toContain('let p = p0 + WATER_WARP * vec2f(');
+    // three swell waves at 0.18, 0.144 and 0.126, where they were 0.34, 0.28 and 0.22: the clouds in the mirror
+    expect(src).toContain('1.9, 0.9, 0.0, 0.18,');
+    expect(src).toContain('2.6, 1.1, 1.7, 0.144,');
+    expect(src).toContain('3.3, 1.3, 4.1, 0.126,');
+  });
+
   it('has open water: its waves in the world, its mirror and its glint after the lights, and no flow kind past it', () => {
     const src = sceneSource({ flowing: true });
     for (const word of ['waterSlope', 'waterWave', 'WATER_RF0', 'WATER_GLINT']) expect(src, word).toContain(word);

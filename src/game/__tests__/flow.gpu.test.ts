@@ -718,7 +718,8 @@ describe('the flow material on the game renderer', () => {
   });
 
   it('puts the glint where the camera is: turned about the surface\'s up by a large angle, from a low view, the water is as bright and has glints from every side', async () => {
-    r.setStatic([square(WATER, BODY, 0.3)]);
+    // at the steepness a game gives its sea (0.8 in ooergolf), where the swell is weak and the glints are the fine waves'
+    r.setStatic([square({ ...WATER, glow: 0.8 }, BODY, 0.3)]);
     await r.prepare();
     // thirty degrees above the horizon, where the mirror's glint is well to one side of straight down, so a glint fixed in
     // the world and not the camera's would be found on one heading and lost on the next

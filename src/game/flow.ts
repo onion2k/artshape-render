@@ -227,6 +227,9 @@ const WATER_FLOOR: f32 = 0.12;
 const WATER_MIRROR: f32 = 1.1;
 const WATER_SHINY: f32 = 900.0;
 const WATER_GLINT: f32 = 4.0;
+// How far the slow swirls bend the sheet, in cells of the biggest wave: enough that the swell's sines do not line up, and
+// not so much that it reads as whirlpools.
+const WATER_WARP: f32 = 0.45;
 
 /**
  * One wave's slope at p at time t: its direction times the cosine of its phase, which is the slope of a sine's height, so
@@ -241,15 +244,18 @@ fn waterWave(p: vec2f, t: f32, dir: vec2f, k: f32, w: f32, phase: f32, weight: f
 /**
  * The slope of the waves at p at time t: twelve sine waves in four groups of three, as three.js sums four normal-map reads
  * (a swell, a chop, a ripple and a fine grain), each wave its own wavenumber, heading and pace, so no one direction shows
- * and the sum does not repeat within a view. Sines and not value noise, whose slope is nought along every lattice line and
+ * and the sum, bent by a slow warp, does not repeat within a view. Sines and not value noise, whose slope is nought along every lattice line and
  * shows the grid.
  */
-fn waterSlope(p: vec2f, t: f32, pixel: f32) -> vec2f {
+fn waterSlope(p0: vec2f, t: f32, pixel: f32) -> vec2f {
   var s = vec2f(0.0);
+  // the sheet is bent by slow swirls before the waves are laid on it, so no crest is the one beside it over again
+  let p = p0 + WATER_WARP * vec2f(sin(p0.y * 0.53 + t * 0.21 + 1.0) + sin(p0.y * 1.31 - p0.x * 0.7 + t * 0.13),
+                                  sin(p0.x * 0.61 - t * 0.17) + sin(p0.x * 1.17 + p0.y * 0.9 + t * 0.11));
   // swell
-  s += waterWave(p, t, vec2f( 0.92,  0.38), 1.9, 0.9, 0.0, 0.34, pixel);
-  s += waterWave(p, t, vec2f(-0.31,  0.95), 2.6, 1.1, 1.7, 0.28, pixel);
-  s += waterWave(p, t, vec2f( 0.62, -0.78), 3.3, 1.3, 4.1, 0.22, pixel);
+  s += waterWave(p, t, vec2f( 0.92,  0.38), 1.9, 0.9, 0.0, 0.18, pixel);
+  s += waterWave(p, t, vec2f(-0.31,  0.95), 2.6, 1.1, 1.7, 0.144, pixel);
+  s += waterWave(p, t, vec2f( 0.62, -0.78), 3.3, 1.3, 4.1, 0.126, pixel);
   // chop
   s += waterWave(p, t, vec2f(-0.84, -0.54), 5.7, 1.9, 2.3, 0.20, pixel);
   s += waterWave(p, t, vec2f( 0.18,  0.98), 7.1, 2.2, 5.5, 0.17, pixel);
