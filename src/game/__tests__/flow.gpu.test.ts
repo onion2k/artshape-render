@@ -1,7 +1,7 @@
 /**
  * The flow material on a real device: a surface drawn with a pattern that
- * travels along the mesh's own +x by `time * speed`, in three kinds (5 ripple,
- * 6 crust, 7 drift), through a build of the scene shader that is compiled only
+ * travels along the mesh's own +x by `time * speed`, in four kinds (5 ripple,
+ * 6 crust, 7 drift, 8 water, which is laid in the world and not on the mesh), through a build of the scene shader that is compiled only
  * when a group first asks for one. A game that asks for none of it draws as it
  * did and compiles nothing; each kind draws its second colour over its first;
  * the same time is the same frame, and a later time is the same picture moved
@@ -18,7 +18,7 @@ import { MeshBuilder, type Mesh } from '../../mesh/types';
 import { bakeEnvironment } from '../../render/env';
 import { DEFAULT_POST, FULL_ECONOMY, GameRenderer, PATTERN_STRIDE, type Antialias, type FrameMode, type GameEconomy, type GameGroup } from '../renderer';
 import { LightPool } from '../lights';
-import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, packFlow } from '../flow';
+import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, packFlow } from '../flow';
 import { differing, readPixels, saveFrame, type Pixels } from './frame';
 
 const W = 192, H = 192;
@@ -654,6 +654,133 @@ describe('the flow material on the game renderer', () => {
     gpu.device.pushErrorScope('validation');
     fresh.dispose();
     expect((await gpu.device.popErrorScope())?.message ?? null).toBeNull();
+  });
+
+  // open water: kind eight, waves in the world, lit as a mirror of the sky with a glint of the camera's own
+  const WATER: Flow = { kind: FLOW_WATER, scale: 0.4, speed: 1, glow: 0.3, second: [0.6, 0.8, 1] };
+  const BODY: [number, number, number] = [0.02, 0.12, 0.2];
+
+  /** The middle of the frame, which a square turned about its own up always fills: the mean of all three channels, and the pixels that are near white, which the sea's body and mirror never reach and a glint does. */
+  function middle(px: Pixels, bright = 235): { mean: number; glints: number } {
+    let sum = 0, glints = 0, n = 0;
+    for (let y = 60; y < 132; y++)
+      for (let x = 60; x < 132; x++) {
+        const i = (y * px.width + x) * 3;
+        const v = px.rgb[i] + px.rgb[i + 1] + px.rgb[i + 2];
+        sum += v / 3; n++;
+        if (v / 3 > bright) glints++;
+      }
+    return { mean: sum / n, glints };
+  }
+
+  it('draws open water: a surface that is not one colour, not the plain one under it, and not a ripple', async () => {
+    r.setStatic([square({ kind: 0 }, BODY)]);
+    const plain = await draw();
+    r.setStatic([square(WATER, BODY)]);
+    await r.prepare();
+    const water = await at_(1.5, 'water');
+    expect(spread(water), 'a surface that is not one colour').toBeGreaterThan(4);
+    expect(differing(plain, water), 'the water over the plain surface').toBeGreaterThan(3000);
+    for (const px of [plain, water]) for (const v of px.rgb) expect(Number.isNaN(v)).toBe(false);
+    r.setStatic([square({ kind: FLOW_RIPPLE, scale: 0.4, speed: 1, glow: 0.3, second: [0.6, 0.8, 1] }, BODY)]);
+    expect(differing(await at_(1.5), water), 'water is not a ripple').toBeGreaterThan(3000);
+  });
+
+  it('draws water at the same time as the same frame, and a later time as another', async () => {
+    r.setStatic([square(WATER, BODY)]);
+    await r.prepare();
+    const a = await at_(4.25);
+    expect(differing(a, await at_(4.25)), 'the same time twice').toBe(0);
+    expect(differing(a, await at_(5.5)), 'a later time').toBeGreaterThan(1000);
+    expect(differing(a, await at_(4.25)), 'and back again').toBe(0);
+    // and a speed of nought holds it still
+    r.setStatic([square({ ...WATER, speed: 0 }, BODY)]);
+    expect(differing(await at_(1), await at_(50)), 'at a speed of nought').toBe(0);
+  });
+
+  it('lays its waves in the world, not on the mesh: a square moved over the water shows other waves, and two squares side by side are one sea', async () => {
+    // the same square at two places is two views of one sea, so the picture of it moves with it
+    const g = (x: number): GameGroup => ({ ...square(WATER, BODY, 0.5, 12), matrices: at(1, x, 0, 0) });
+    r.setStatic([g(0)]);
+    await r.prepare();
+    const here = await at_(2);
+    r.setStatic([g(0.7)]);
+    expect(differing(here, await at_(2)), 'a square moved').toBeGreaterThan(1000);
+    // two squares that meet are drawn as one: the seam between them is no brighter a line than any other
+    r.setStatic([{ ...square(WATER, BODY, 0.5, 6), matrices: new Float32Array([...at(1, -3, 0, 0), ...at(1, 3, 0, 0)]), patterns: new Float32Array([...flowOf(WATER), ...flowOf(WATER)]) }]);
+    const two = await at_(2, 'water two squares');
+    r.setStatic([square(WATER, BODY, 0.5, 12)]);
+    const one = await at_(2, 'water one square');
+    // the two cover a band twelve by six, so the rows they share with the one are the band's middle
+    const band = (px: Pixels): Pixels => ({ ...px, rgb: px.rgb.subarray(75 * px.width * 3, 118 * px.width * 3), height: 43 });
+    expect(spread(two), 'the two are drawn').toBeGreaterThan(4);
+    expect(differing(band(one), band(two)), 'one square of twelve and two of six, which are one sea').toBeLessThan(43 * W * 0.01);
+  });
+
+  it('puts the glint where the camera is: turned about the surface\'s up by a large angle, from a low view, the water is as bright and has glints from every side', async () => {
+    r.setStatic([square(WATER, BODY, 0.3)]);
+    await r.prepare();
+    // thirty degrees above the horizon, where the mirror's glint is well to one side of straight down, so a glint fixed in
+    // the world and not the camera's would be found on one heading and lost on the next
+    const LOW = [0, -300 * Math.cos(0.5), 300 * Math.sin(0.5)];
+    const turn = (angle: number): [number, number, number] =>
+      [LOW[0] * Math.cos(angle) - LOW[1] * Math.sin(angle), LOW[0] * Math.sin(angle) + LOW[1] * Math.cos(angle), LOW[2]];
+    const seen: { mean: number; glints: number }[] = [];
+    for (const angle of [0, 1.6, 3.1, 4.7, 2.4, -1.3]) {
+      r.camera.position = turn(angle);
+      seen.push(middle(await at_(2, `water low turned ${angle}`)));
+    }
+    r.camera.position = [0, -30, 300];
+    const means = seen.map((s) => s.mean), glints = seen.map((s) => s.glints);
+    const [lo, hi] = [Math.min(...means), Math.max(...means)];
+    expect(lo, 'not a black frame').toBeGreaterThan(8);
+    expect(hi / lo, `the mean brightness, ${means.map((m) => m.toFixed(1))}, in every heading`).toBeLessThan(1.25);
+    // every heading has glints, and not the few a fixed glint would leave on the one heading it faces: the sea is the same
+    // sea from each side and the fine waves are not, so the counts differ by a few times and are never nought
+    expect(Math.min(...glints), `the glints, ${glints}, in every heading`).toBeGreaterThan(15);
+  });
+
+  it('is a flat sea at a steepness of nought, one colour, and a steeper sea is not', async () => {
+    r.setStatic([square({ ...WATER, glow: 0 }, BODY, 0.3)]);
+    await r.prepare();
+    const flat = await at_(2);
+    expect(spread(flat), 'a flat sea is one colour').toBeLessThan(2);
+    r.setStatic([square({ ...WATER, glow: 0.6 }, BODY, 0.3)]);
+    expect(spread(await at_(2)), 'a steep one is not').toBeGreaterThan(spread(flat) + 4);
+  });
+
+  it('keeps water finite with a steepness as large as can be asked, and draws it in both looks and under every rung', async () => {
+    for (const shading of ['pbr', 'toon'] as const)
+      for (const rung of [{}, { shadows: false, points: false, cullLights: false }] as Partial<GameEconomy>[]) {
+        r.look = { ...r.look, shading };
+        r.economy = { ...FULL_ECONOMY, shadows: true, ...rung };
+        r.setStatic([square({ ...WATER, glow: 1e9 }, BODY)]);
+        await r.prepare();
+        const px = await at_(2);
+        expect(Number.isNaN(most(px))).toBe(false);
+        expect(spread(await at_(3)), `${shading} ${JSON.stringify(rung)}`).toBeGreaterThanOrEqual(0);
+      }
+    r.economy = { ...FULL_ECONOMY, shadows: true };
+  });
+
+  it('compiles no more for water than for the other flow kinds: the flowing builds are the same sixteen', async () => {
+    const device = gpu.device as unknown as Record<string, (...a: unknown[]) => unknown>;
+    let made = 0;
+    const originals: Record<string, (...a: unknown[]) => unknown> = {};
+    for (const m of ['createRenderPipelineAsync', 'createComputePipelineAsync', 'createRenderPipeline', 'createComputePipeline']) {
+      originals[m] = device[m];
+      device[m] = function (this: unknown, ...a: unknown[]) { made++; return originals[m].apply(this, a); };
+    }
+    try {
+      const fresh = await make();
+      expect(made, 'pipelines made before ready').toBe(PIPELINES_AT_0_19);
+      fresh.setStatic([square(WATER, BODY)]);
+      await fresh.prepare();
+      expect(made, 'pipelines made for the first group of water').toBe(PIPELINES_AT_0_19 + FLOWING_BUILDS);
+      fresh.dispose();
+    } finally {
+      for (const m of Object.keys(originals)) device[m] = originals[m];
+    }
   });
 
   it('draws nothing before the environment, as the game path never has, and says so', async () => {

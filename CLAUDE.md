@@ -161,8 +161,8 @@ What to copy the shape of:
   code in the scene shader is paid by every blade whether it is asked for
   or not, so time a change to it in a game with a dense field too.
 - **Builds compiled when first handed a thing that wants them:** the flow
-  kinds. A placement's pattern kind 5, 6 or 7 (`flow.ts`: ripple, crust,
-  drift) is drawn through `SceneVariant.flowing`, a build made only of
+  kinds. A placement's pattern kind 5, 6, 7 or 8 (`flow.ts`: ripple, crust,
+  drift, water) is drawn through `SceneVariant.flowing`, a build made only of
   strings spliced into the scene shader's text, so every other build is the
   text it was to the byte; it is compiled when `setStatic` or `setDynamic` is
   first handed such a group (`askFlow`, sixteen builds, and again at four

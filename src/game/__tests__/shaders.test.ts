@@ -118,10 +118,17 @@ describe('the frame is half floats, and every stage is held to what they have', 
 });
 
 
+/** FNV-1a over a text's UTF-16 units, in eight hex digits: enough to say a text is the one it was. */
+function fnv(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 describe('the flowing build of the scene shader', () => {
   const body = (s: string) => s.slice(s.indexOf('struct Frame'));
   // the words that only the flow code has: not one may be in any other build
-  const FLOW_WORDS = ['flowSurface', 'flowFbm', 'flowVoro', 'flowHash', 'FLOWING', 'frame.spare0', 'in.tx', 'in.ty'];
+  const FLOW_WORDS = ['flowSurface', 'flowFbm', 'flowVoro', 'flowHash', 'FLOWING', 'frame.spare0', 'in.tx', 'in.ty', 'waterSlope', 'waterWave', 'WATER_RF0', 'WATER_GLINT'];
 
   it('has the flow code, a constant to say so, and the clock read from the frame', () => {
     const src = sceneSource({ flowing: true });
@@ -131,6 +138,21 @@ describe('the flowing build of the scene shader', () => {
     expect(src).toContain('tx: vec3f');
     expect(src).toContain('out.tx = m0.xyz;');
     expect(src).toContain('colour += flow.glow;');
+  });
+
+  it('has open water: its waves in the world, its mirror and its glint after the lights, and no flow kind past it', () => {
+    const src = sceneSource({ flowing: true });
+    for (const word of ['waterSlope', 'waterWave', 'WATER_RF0', 'WATER_GLINT']) expect(src, word).toContain(word);
+    expect(src).toContain('if (kind > 7.5 && kind < 8.5) {');
+    expect(src).toContain('if (in.pattern.x > 7.5 && in.pattern.x < 8.5) {');
+    // the glint is the camera's: aimed from the view vector and not from the light
+    expect(src).toContain('let ahead = vec3f(heading * sqrt(1.0 - rise * rise), rise);');
+    expect(src).toContain('textureSampleLevel(envSpecular, samp,');
+    // the dead value noise of the experiment is not carried
+    expect(src).not.toContain('flowNoiseD');
+    expect(src).not.toContain('waterHash');
+    // the water branch is in the glow splice's place, before the return (that it compiles is the GPU suite's)
+    expect(src.indexOf('colour += flow.glow;')).toBeLessThan(src.indexOf('let ahead'));
   });
 
   it('is a patterned build too, so kinds one to four draw in it as they do in the patterned one', () => {
@@ -151,6 +173,13 @@ describe('the flowing build of the scene shader', () => {
   it('leaves every other build as it was to the byte: the same text with or without the setting named', () => {
     for (const patterned of [false, true]) expect(sceneSource({ patterned, flowing: false })).toBe(sceneSource({ patterned }));
     expect(sceneSource({ patterned: true })).toContain('const PATTERNED: bool = true;\nconst TOON: bool = false;');
+  });
+
+  it('leaves the builds that are not flowing as they were in v0.26.0, to the byte: their text hashed then and now', () => {
+    const hashes: string[] = [];
+    for (const patterned of [false, true]) for (const toon of [false, true]) for (const shadows of [false, true])
+      hashes.push(fnv(sceneSource({ patterned, toon, shadows })));
+    expect(hashes).toEqual(['f6ab41e9', '683d8520', '50097900', '85dc461f', '58aed0e0', 'bfa8474b', '595493df', '7ca25eba']);
   });
 
   it('is built in the ladder\'s and toon\'s constants as the other builds are', () => {

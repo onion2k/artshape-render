@@ -23,7 +23,7 @@ import { FULL_ECONOMY, GameRenderer, type GameGroup, type Look } from '../render
 import { noFog } from '../fog';
 import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
-import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, packFlow } from '../flow';
+import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, packFlow } from '../flow';
 import { packTexture } from '../texture';
 import { judge, median, recorded } from './perf';
 import type { Emit } from '../particles';
@@ -277,6 +277,17 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard flow msaa'] = await time();
     r.look = plain;
+    // one strip of ripple and one of open water, the same thirty units by eight, so the price of the water's twelve waves, mirror and glint is read against the ripple's
+    const lone = (kind: number, scale: number, glow: number): GameGroup => ({
+      mesh: strip(30, 8), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0.05, 1]), albedo: [0.05, 0.08, 0.1], roughness: 0.3,
+      patterns: packFlow(new Float32Array(8), 0, { kind, scale, speed: 3, glow, second: [0.6, 0.8, 1] }),
+    });
+    r.setStatic([...standardScene(), lone(FLOW_RIPPLE, 1, 0)]);
+    await r.prepare();
+    measured['standard ripple'] = await time();
+    r.setStatic([...standardScene(), lone(FLOW_WATER, 0.4, 0.3)]);
+    await r.prepare();
+    measured['standard water'] = await time();
     r.time = 0;
     // the ground texture over the standard scene: its ground wears a 256-square two-tone noise, colour and height, at four metres a tile, through the textured builds
     r.setGroundTexture([await noiseLayer(256)]);

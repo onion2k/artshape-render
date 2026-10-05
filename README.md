@@ -137,8 +137,8 @@ What the measurements settled, so nobody has to re-argue it:
   from where on the thing a fragment is, so it turns with the thing — and
   every other group through a build without it, which pays nothing.
 - **A surface that flows is a pattern too, in a build of its own.** Kinds 5
-  (ripple), 6 (crust) and 7 (drift) are written with `packFlow` (`flow.ts`):
-  kind, scale, speed, glow, then the second colour. The pattern travels along
+  (ripple), 6 (crust), 7 (drift) and 8 (water, from 0.27.0) are written with
+  `packFlow` (`flow.ts`): kind, scale, speed, glow, then the second colour. The pattern travels along
   the mesh's own +x by `renderer.time * speed`, so the game's clock moves it
   and a paused game, or a test that sets the same time twice, draws the same
   frame; nothing reads a wall clock. Scale and speed are in the mesh's own
@@ -153,7 +153,24 @@ What the measurements settled, so nobody has to re-argue it:
   few glints moving along it. A flow kind's glow is light the surface gives out
   itself, the second colour times the glow times the kind's own field (the
   crests, the cracks, the flecks), added whatever light falls on it, so lava
-  shows in a pitch-black cave; nought, the default, adds nothing. The build
+  shows in a pitch-black cave; nought, the default, adds nothing. **Water**
+  (`FLOW_WATER`, kind 8, after three.js's water example) is the exception to
+  most of that: twelve sine waves laid in the world's x and y, not the mesh's,
+  so ponds of any shape are one sea, each travelling its own way at its own
+  pace by the game's clock, turn the normal, and the surface is a deep body
+  colour mixed with the environment's sky mirrored in the waves by a Fresnel
+  term, with a glint that is the camera's own (a lobe of the mirror direction
+  straight ahead along the view, a little higher than a flat sheet's, so a
+  wave tipped toward the eye lights and flat water does not, whichever way the
+  camera is turned). Its floats: `scale` is how many cells of the biggest wave
+  fit in a world unit (about 0.4 for a pond a few tens of units across), `speed`
+  how fast the waves go, `glow` how steeply they tilt the normal (0.3 is a
+  lively sea, nought a flat mirror: it gives out no light), and `second` the
+  tint of the mirrored sky; the first colour is the body. No scene is
+  reflected, only the environment's sky, and there is no occlusion on it. It
+  costs a frame about what the ripple does (0.63 ms against 0.65 on the
+  standard scene with one strip of each, thirty units by eight; see the
+  `standard ripple` and `standard water` rows of `perf:gpu`). The build
   that draws them is compiled the first time `setStatic` or `setDynamic` is
   handed a group with one, in every rung of the economy and, if asked for,
   every antialiasing mode, and `prepare()` says when it is in; until then the

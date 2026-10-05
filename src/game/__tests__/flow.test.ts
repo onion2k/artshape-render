@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, isFlowKind, packFlow, usesFlow } from '../flow';
+import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, isFlowKind, packFlow, usesFlow } from '../flow';
 import { PATTERN_STRIDE } from '../renderer';
 
 describe('a flowing placement\'s eight floats', () => {
@@ -16,8 +16,9 @@ describe('a flowing placement\'s eight floats', () => {
     expect(out[3]).toBe(0);
   });
 
-  it('name the three kinds five, six and seven', () => {
-    expect([FLOW_RIPPLE, FLOW_CRUST, FLOW_DRIFT]).toEqual([5, 6, 7]);
+  it('name the four kinds five, six, seven and eight', () => {
+    expect([FLOW_RIPPLE, FLOW_CRUST, FLOW_DRIFT, FLOW_WATER]).toEqual([5, 6, 7, 8]);
+    expect(isFlowKind(FLOW_WATER)).toBe(true);
     for (const k of [0, 1, 2, 3, 4]) expect(isFlowKind(k)).toBe(false);
     for (const k of [5, 6, 7, 9]) expect(isFlowKind(k)).toBe(true);
   });
@@ -30,5 +31,12 @@ describe('a flowing placement\'s eight floats', () => {
     expect(usesFlow(p, PATTERN_STRIDE)).toBe(false);
     p[PATTERN_STRIDE * 2] = 5;
     expect(usesFlow(p, PATTERN_STRIDE)).toBe(true);
+  });
+
+  it('say a group of open water is flowing, and pack its steepness in the glow and its sky\'s tint in the second colour', () => {
+    const p = new Float32Array(PATTERN_STRIDE * 2);
+    packFlow(p, PATTERN_STRIDE, { kind: FLOW_WATER, scale: 0.4, speed: 1.5, glow: 0.3, second: [0.5, 0.7, 1] });
+    expect(usesFlow(p, PATTERN_STRIDE)).toBe(true);
+    expect([...p.subarray(PATTERN_STRIDE)]).toEqual([8, Math.fround(0.4), 1.5, Math.fround(0.3), 0.5, Math.fround(0.7), 1, 0]);
   });
 });
