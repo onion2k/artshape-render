@@ -204,7 +204,9 @@ struct Shadows {
   spotParams: vec4f,
   // x: the soft kernel's own bias, in the spot map's depth — the near plane
   // times the angle one of its texels spans, which is a length and so is the
-  // renderer's to compute in the unit the world is in. The rest is spare.
+  // renderer's to compute in the unit the world is in. y: how far apart the
+  // sun's softened taps are, in texels, nought for its four sharp ones. z: one
+  // when open water takes the sun's shadow. w is spare.
   spotSoft: vec4f,
 };
 
@@ -270,6 +272,17 @@ const MATTE: f32 = 0.8;
 // derivatives may not be made under a branch and these are all under one.
 fn sunLit(uv: vec2f, z: f32) -> f32 {
   let t = shadows.sunParams.x;
+  // softened when the look asks: nine compared taps on a square that many texels apart, each itself four texels
+  let r = shadows.spotSoft.y;
+  if (r > 0.0) {
+    var w = 0.0;
+    for (var j = -1; j <= 1; j++) {
+      for (var i = -1; i <= 1; i++) {
+        w += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(f32(i), f32(j)) * r * t, z);
+      }
+    }
+    return w / 9.0;
+  }
   var s = textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(-0.5, -0.5) * t, z);
   s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(0.5, -0.5) * t, z);
   s += textureSampleCompareLevel(sunShadow, cmp, uv + vec2f(-0.5, 0.5) * t, z);
@@ -470,6 +483,11 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
       // where a map's texel spans the most depth
       let slope = sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.05);
       lit = sunLit(uv, sp.z - shadows.sunParams.y * (1.0 + min(slope, 8.0)));
+      // a map fitted to the view fades its shadows to the lit toward its edge, so nothing is seen to stop there
+      if (shadows.sunParams.w > 0.0) {
+        let edge = max(abs(uv.x * 2.0 - 1.0), abs(uv.y * 2.0 - 1.0));
+        lit = mix(lit, 1.0, smoothstep(1.0 - shadows.sunParams.w, 1.0, edge));
+      }
     }
   }
   let sunSpec = ggx(n, v, l, ndv, a2, k) * fresnel(f0, max(dot(normalize(l + v), v), 0.0));

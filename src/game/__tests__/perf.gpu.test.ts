@@ -288,6 +288,14 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.setStatic([...standardScene(), lone(FLOW_WATER, 0.4, 0.3)]);
     await r.prepare();
     measured['standard water'] = await time();
+    // v0.28.0's settings together over the same water: the sky, the sun's map fitted to the view and softened over nine
+    // taps, and the water darkened in its shadow
+    r.look = { ...plain, sky: { zenith: [0.03, 0.33, 0.9], horizon: [0.6, 0.85, 1] }, shadowSoftness: 2, waterShadow: true };
+    r.setSunShadow({ min: [-50, -50, -4], max: [50, 50, 12] }, { reach: 60 });
+    await r.prepare();
+    measured['standard sky fit'] = await time();
+    r.look = plain;
+    r.setSunShadow({ min: [-50, -50, -4], max: [50, 50, 12] });
     r.time = 0;
     // the ground texture over the standard scene: its ground wears a 256-square two-tone noise, colour and height, at four metres a tile, through the textured builds
     r.setGroundTexture([await noiseLayer(256)]);

@@ -185,11 +185,14 @@ describe('the flowing build of the scene shader', () => {
     expect(sceneSource({ patterned: true })).toContain('const PATTERNED: bool = true;\nconst TOON: bool = false;');
   });
 
-  it('leaves the builds that are not flowing as they were in v0.26.0, to the byte: their text hashed then and now', () => {
+  // Written again for v0.28.0, whose sun shadow can be softened and faded at a fitted map's edge in every build, each
+  // behind a uniform that is nought unless asked (held to the pixel by shadowfit.gpu.test.ts); the flowing splices are
+  // still held out of these builds' text by the test above.
+  it('leaves the builds that are not flowing as they were in v0.28.0, to the byte: their text hashed then and now', () => {
     const hashes: string[] = [];
     for (const patterned of [false, true]) for (const toon of [false, true]) for (const shadows of [false, true])
       hashes.push(fnv(sceneSource({ patterned, toon, shadows })));
-    expect(hashes).toEqual(['f6ab41e9', '683d8520', '50097900', '85dc461f', '58aed0e0', 'bfa8474b', '595493df', '7ca25eba']);
+    expect(hashes).toEqual(['2c3e5b81', 'ac8c8ec8', 'e1d6c7a8', '1709f9ff', '7cbacd88', '3334178b', 'fb49cfbf', '235c2dba']);
   });
 
   it('is built in the ladder\'s and toon\'s constants as the other builds are', () => {

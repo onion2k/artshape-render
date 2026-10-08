@@ -180,6 +180,18 @@ What to copy the shape of:
   asks for none of it as noughts, and every branch reading it is skipped.
   `toonlight.gpu.test.ts` holds that each moves only what it says.
 
+- **Settings a game asks for, held to the old pixels when it does not:** v0.28.0's sky (`sky.ts`, `look.sky`: a pass
+  compiled when first asked for and drawn first in the scene pass and the kept bake, at one sample and four), the sun's
+  map fitted to the view (`sunShadowFitted` in `shadows.ts`, `setSunShadow`'s second argument: a square of `reach`
+  over the ground ahead, its light view fixed by the box so it moves only by whole texels, faded to lit at its edge by
+  `sunParams.w`), its softness (`look.shadowSoftness`, nine taps, `spotSoft.y`) and open water in its shadow
+  (`look.waterShadow`, `spotSoft.z`, spliced into the water's glow only). `unasked.gpu.test.ts` holds a golf-like scene
+  (`golfscene.ts`) drawn plain, at four samples, kept and without fog to the hash of v0.27.1's pixels
+  (`unasked-golden.json`, written from 7561228 with `VITE_GOLDEN=1`, only ever on the old code); `sky.test.ts`,
+  `shadows.test.ts`, `sky.gpu.test.ts` and `shadowfit.gpu.test.ts` hold what each does when asked. The shader text
+  hash in `shaders.test.ts` was written again for it: the sun's softening and fade are in every build behind uniforms
+  that are nought unless asked.
+
 ## The test API
 
 A library's test API is its own constructors, run headless:
@@ -251,8 +263,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,133 tests in 72 files at v0.25.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance; 244 tests in 29 files at v0.25.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,161 tests in 74 files at v0.28.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance; 279 tests in 34 files at v0.28.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

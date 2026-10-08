@@ -125,15 +125,20 @@ export const FLOW_SPLICES = {
     let rd = reflect(-v, n);
     let mirror = min(textureSampleLevel(envSpecular, samp, vec3f(rd.xy, abs(rd.z)), frame.maxLod * WATER_SHARP).rgb, vec3f(WATER_CAP));
     let reflectance = WATER_RF0 + (1.0 - WATER_RF0) * pow(1.0 - ndv, 3.0);
-    let body = f0 * (sunTint * max(dot(l, n), 0.0) * WATER_DIFFUSE + WATER_AMBIENT + ndv * 0.5);
+    // the sun's shadow on it, where the look asks: one, and nothing changed, where it does not
+    let shaded = select(1.0, lit, shadows.spotSoft.z > 0.5);
+    let body = f0 * (sunTint * max(dot(l, n), 0.0) * shaded * WATER_DIFFUSE + WATER_AMBIENT + ndv * 0.5);
     // The glint is the camera's own, so that it is seen however the camera is turned: a lobe of the mirror direction straight
     // ahead along the view and a little higher than a flat sheet would show, which a wave tipped toward the eye reaches and
     // flat water does not.
     let heading = normalize(-v.xy + vec2f(1e-5, 0.0));
     let rise = min(v.z + WATER_LIFT, 0.97);
     let ahead = vec3f(heading * sqrt(1.0 - rise * rise), rise);
-    let glint = pow(max(dot(vec3f(rd.xy, abs(rd.z)), ahead), 0.0), WATER_SHINY) * WATER_GLINT;
+    let glint = pow(max(dot(vec3f(rd.xy, abs(rd.z)), ahead), 0.0), WATER_SHINY) * WATER_GLINT * shaded;
     colour = mix(body, vec3f(WATER_FLOOR) + mirror * in.second * WATER_MIRROR + sunTint * glint, reflectance);
+    // in a shadow the whole of it is darkened as much as the ground beside it is, so a shadow that falls across a bank
+    // onto the water is one shadow; the sun is too small a share of open water's light for its own term to show one
+    colour *= 1.0 - WATER_SHADOW * (1.0 - shaded);
   }
   return vec4f(finite(colour * frame.exposure), 1.0);
 `,
@@ -227,6 +232,9 @@ const WATER_FLOOR: f32 = 0.12;
 const WATER_MIRROR: f32 = 1.1;
 const WATER_SHINY: f32 = 900.0;
 const WATER_GLINT: f32 = 4.0;
+// How much darker the whole of open water is in the sun's shadow, when the look asks for it: about as much as a toon
+// look's ground goes from its top band to its shade.
+const WATER_SHADOW: f32 = 0.2;
 // How far the slow swirls bend the sheet, in cells of the biggest wave: enough that the swell's sines do not line up, and
 // not so much that it reads as whirlpools.
 const WATER_WARP: f32 = 0.45;

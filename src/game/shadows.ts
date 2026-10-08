@@ -61,6 +61,76 @@ export function sunShadowMatrix(out: Float32Array, toLight: [number, number, num
   multiply(out, proj, view);
 }
 
+/** How the sun's map is fitted to the view: the side of the square of ground it covers, in world units. */
+export interface SunFit {
+  reach: number;
+}
+
+/**
+ * The sun's map fitted to the view and not to the whole box: a square `reach` across, in the light's own plane, over the
+ * ground ahead of the camera (from a tenth of the reach behind it to nine tenths ahead), so a long hole's shadows are as
+ * sharp as a short one's. The light looks from the box's own place along `toLight`, which does not move with the camera,
+ * and the square moves across it by whole texels of a map `mapSize` across, so a still edge stays on its texel as the
+ * camera slides and does not swim. Its depth spans the whole box, so every caster the box holds still casts. Where the
+ * square is bigger than the box is across, it sits on the box, and where it is smaller it is kept inside it, so no texel
+ * is spent on nothing.
+ */
+/** The light's view and its square, made once: the fit is worked out every frame, and a frame makes nothing. */
+const FIT_VIEW = new Float32Array(16), FIT_PROJ = new Float32Array(16);
+
+export function sunShadowFitted(
+  out: Float32Array,
+  toLight: [number, number, number],
+  box: Box,
+  eye: [number, number, number],
+  target: [number, number, number],
+  fit: SunFit,
+  mapSize: number,
+) {
+  const l = Math.hypot(toLight[0], toLight[1], toLight[2]) || 1;
+  const d: [number, number, number] = [toLight[0] / l, toLight[1] / l, toLight[2] / l];
+  const centre: [number, number, number] = [
+    (box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2,
+  ];
+  const span = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+  const from: [number, number, number] = [centre[0] + d[0] * span, centre[1] + d[1] * span, centre[2] + d[2] * span];
+  const view = FIT_VIEW;
+  lookAt(view, from, centre, upFor(d));
+  const toView = (x: number, y: number, z: number): [number, number, number] => [
+    view[0] * x + view[4] * y + view[8] * z + view[12],
+    view[1] * x + view[5] * y + view[9] * z + view[13],
+    view[2] * x + view[6] * y + view[10] * z + view[14],
+  ];
+  // the box in the light's view: its extent across, and its depth, which the map keeps whole
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < 8; i++) {
+    const v = toView(i & 1 ? box.max[0] : box.min[0], i & 2 ? box.max[1] : box.min[1], i & 4 ? box.max[2] : box.min[2]);
+    lo = [Math.min(lo[0], v[0]), Math.min(lo[1], v[1]), Math.min(lo[2], v[2])];
+    hi = [Math.max(hi[0], v[0]), Math.max(hi[1], v[1]), Math.max(hi[2], v[2])];
+  }
+  // the ground the square is laid over: four tenths of the reach ahead of the camera, along the ground, or what it looks at
+  // when it looks nearly straight down and has no ahead
+  const fx = target[0] - eye[0], fy = target[1] - eye[1], fz = target[2] - eye[2];
+  const across = Math.hypot(fx, fy);
+  const z = Math.min(box.max[2], Math.max(box.min[2], target[2]));
+  const at: [number, number, number] =
+    across > 0.1 * Math.hypot(fx, fy, fz)
+      ? [eye[0] + (fx / across) * fit.reach * 0.4, eye[1] + (fy / across) * fit.reach * 0.4, z]
+      : [target[0], target[1], z];
+  const [ax, ay] = toView(at[0], at[1], at[2]);
+  const side = Math.max(fit.reach, 1e-6);
+  const texel = side / mapSize;
+  // kept on the box: centred on it where the square is wider than it, and inside it where it is narrower
+  const keep = (c: number, a: number, b: number) =>
+    side >= b - a ? (a + b) / 2 : Math.min(b - side / 2, Math.max(a + side / 2, c));
+  const cx = Math.round(keep(ax, lo[0], hi[0]) / texel) * texel;
+  const cy = Math.round(keep(ay, lo[1], hi[1]) / texel) * texel;
+  const pad = span * 0.05;
+  const proj = FIT_PROJ;
+  orthographic(proj, cx - side / 2, cx + side / 2, cy - side / 2, cy + side / 2, -hi[2] - pad, -lo[2] + pad);
+  multiply(out, proj, view);
+}
+
 /** Orthographic with depth to [0, 1], column-major, eye looking down -z. */
 export function orthographic(out: Float32Array, left: number, right: number, bottom: number, top: number, near: number, far: number) {
   out.fill(0);

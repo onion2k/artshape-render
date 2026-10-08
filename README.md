@@ -283,6 +283,25 @@ stops at edges; the scene darkens its ambient term by all of it and its
 lights by `occlusionDirect` of it. `occlusionRadius` is the size of gap it
 darkens, in world units. The `occlusion` rung gives up the three passes.
 
+**A sky, and a sun whose shadow follows the view (from 0.28.0).** Each is asked for, and a game that asks for none of
+them draws the frame it drew at 0.27.1 to the pixel (held by `unasked.gpu.test.ts`):
+
+- `look.sky = { zenith, horizon, height?, below? }` draws a gradient past everything, by how high each pixel's ray
+  looks: the horizon colour at the level, the zenith from `height` up (the sine of the elevation, half by default), and
+  `below` under the level. It is compiled when first asked for (`prepare` waits), drawn first in the scene pass and in a
+  kept frame's static half, and replaces the flat `background` wherever it shows. `skyColour` in `sky.ts` is the sum.
+- `setSunShadow(box, { reach, fade? })` fits the sun's map to the view and not the whole box: a square `reach` across,
+  over the ground from a tenth of it behind the camera to nine tenths ahead, moved across the light's plane by whole
+  texels so a still edge does not swim. Its depth spans the whole box, so every caster still casts, and its shadows fade
+  out to the lit over the outer `fade` of the square (a tenth by default), so none is seen to stop. A long course's
+  shadows are then as sharp as a short one's.
+- `look.shadowSoftness` (texels, up to three) reads the sun's shadow over nine taps that far apart, for a soft edge.
+- `look.waterShadow` lets open water take the sun's shadow: its lit body and glint, and the whole of it darkened as the
+  ground beside it is, so a shadow across a bank is one shadow.
+
+Together they cost the standard scene with a strip of open water 0.06 ms (`standard sky fit` against `standard water`
+in `perf:gpu`).
+
 **Edges are smoothed when a look asks.** `look.antialias = 'msaa'` draws
 the scene at four samples a pixel, colour and depth, and resolves it before
 the fog and the post chain: every group, blade, particle, sprite and effect

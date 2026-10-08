@@ -26,7 +26,8 @@ import { bufferFrom, emptyBuffer, shader, type Gpu } from '../gpu/context';
 import { Camera } from '../gpu/camera';
 import type { Mesh as PartMesh } from '../mesh/types';
 import { LIGHT_STRIDE, type LightPool } from './lights';
-import { sunShadowMatrix, spotShadowMatrix, type Box } from './shadows';
+import { SKY_FLOATS, SKY_WGSL, packSky, type Sky } from './sky';
+import { sunShadowFitted, sunShadowMatrix, spotShadowMatrix, type Box, type SunFit } from './shadows';
 import { Particles, type Emit } from './particles';
 import { WASH_EPSILON_MM, type Wash } from './wash';
 import {
@@ -58,6 +59,8 @@ const SPOT_MAP = 512;
  * toward the lamp, so the same number is far more there — see the tests.
  */
 const SUN_BIAS = 0.0012;
+/** The widest the sun's shadow is softened, in texels of its map: past this the nine taps are far enough apart to be seen as nine. */
+export const MAX_SHADOW_SOFTNESS = 3;
 /**
  * The fog's own bias into the sun's map, and much smaller than a surface's.
  * A surface needs enough bias not to shadow itself; a point of air needs
@@ -202,6 +205,18 @@ export interface Look {
    */
   spotSoftness: number;
   /**
+   * How far the sun's shadow is softened, in texels of its map: its edge read over a square of nine of the hardware's own
+   * compared taps that far apart, for an edge as soft as a toy's in a bright sun. Left out, or nought, the four taps at
+   * half a texel there always were, and the edge is sharp. At most `MAX_SHADOW_SOFTNESS`.
+   */
+  shadowSoftness?: number;
+  /**
+   * Whether open water (`FLOW_WATER`) takes the sun's shadow: its lit body and its glint darkened where the sun's map says
+   * something stands between it and the sun, as every other surface is. Left out, or false, open water is lit everywhere,
+   * as it was.
+   */
+  waterShadow?: boolean;
+  /**
    * Screen-space ambient occlusion: how dark a crease, a corner or the
    * ground under a thing goes. 1 is the still-life renderer's contact
    * shadow, which is a fifth dark at a right-angled corner once blurred;
@@ -231,6 +246,12 @@ export interface Look {
    * sees past the arena's edge.
    */
   background: [number, number, number];
+  /**
+   * The sky past everything drawn: a gradient from a horizon colour at the level to a zenith colour overhead, by how high
+   * each pixel looks (`sky.ts`). Compiled the first time a look asks for it, which `prepare` waits for, and drawn first in
+   * the scene pass. Left out, the frame clears to `background`, as it always did, and nothing of it is compiled.
+   */
+  sky?: Sky;
   /**
    * How the edges of things are smoothed, so a rail, a string or a pole has
    * no stair steps and a thin thing does not shimmer as the camera moves.
@@ -657,6 +678,15 @@ export class GameRenderer {
   private effectModule: GPUShaderModule;
   private effect!: GPURenderPipeline;
   private effectMsaa: GPURenderPipeline | null = null;
+  /** The sky's pass, at one sample a pixel and at four, its uniform and its binding: made when a look first asks for a sky. */
+  private skyPipeline: GPURenderPipeline | null = null;
+  private skyMsaa: GPURenderPipeline | null = null;
+  private skyBuild: Promise<unknown> | null = null;
+  private skyBuffer: GPUBuffer | null = null;
+  private skyBind: GPUBindGroup | null = null;
+  private skyData = new Float32Array(SKY_FLOATS);
+  /** Whether this frame draws the sky: written once a frame, before the kept half is baked and the scene drawn. */
+  private skyOn = false;
 
   // The antialiasing: how much of it the look has asked for so far (an
   // index into ANTIALIAS), the builds each needs, compiled once when first
@@ -1152,6 +1182,8 @@ export class GameRenderer {
     await this.textureBuild;
     this.askOwnFog();
     await this.ownBuild;
+    this.askSky();
+    await this.skyBuild;
   }
 
   /**
@@ -1179,6 +1211,49 @@ export class GameRenderer {
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'always' },
       }).then((p) => { this.resolvePipeline = p; }),
     ]).then(() => { this.makeResolveBind(); });
+  }
+
+  /** Compiles the sky's pass the first time a look asks for one, at one sample a pixel and at four. */
+  private askSky() {
+    if (!this.look.sky || this.skyBuild) return;
+    const { device } = this.ctx;
+    const module = shader(device, SKY_WGSL, 'game sky');
+    const layout = device.createBindGroupLayout({
+      label: 'game sky',
+      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+    });
+    this.skyBuffer = device.createBuffer({ label: 'game sky', size: SKY_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.skyBind = device.createBindGroup({ label: 'game sky', layout, entries: [{ binding: 0, resource: { buffer: this.skyBuffer } }] });
+    const descriptor = (samples: number): GPURenderPipelineDescriptor => ({
+      label: samples > 1 ? `game sky x${samples}` : 'game sky',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      vertex: { module, entryPoint: 'vsMain' },
+      fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
+      primitive: { topology: 'triangle-list' },
+      // at the far plane, under everything, writing no depth: the scene is drawn over it as over the clear colour
+      depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'always' },
+      multisample: { count: samples },
+    });
+    this.skyBuild = Promise.all([
+      device.createRenderPipelineAsync(descriptor(1)).then((p) => { this.skyPipeline = p; }),
+      device.createRenderPipelineAsync(descriptor(SAMPLES)).then((p) => { this.skyMsaa = p; }),
+    ]);
+  }
+
+  /** Whether the sky is drawn this frame, its uniform written if so: asked for, compiled, and the camera's matrix invertible. */
+  private writeSky(): boolean {
+    const sky = this.look.sky;
+    if (!sky || !this.skyPipeline || !this.skyMsaa || !this.skyBuffer) return false;
+    if (!packSky(this.skyData, sky, this.camera.viewProjection, this.camera.position, this.width, this.height)) return false;
+    this.ctx.device.queue.writeBuffer(this.skyBuffer, 0, this.skyData);
+    return true;
+  }
+
+  /** The sky, drawn first into a pass at `samples` a pixel, where nothing else has been. */
+  private drawSky(pass: GPURenderPassEncoder, samples: number) {
+    pass.setPipeline(samples > 1 ? this.skyMsaa! : this.skyPipeline!);
+    pass.setBindGroup(0, this.skyBind!);
+    pass.draw(3);
   }
 
   /** The depth resolve's bind group over the multisampled depth, once there are both; made again with the targets on a resize. */
@@ -1631,18 +1706,29 @@ export class GameRenderer {
    * cast or catch one, in world units. Null turns the sun's shadow off; the
    * sun still lights, and still has its diffuse term.
    */
-  setSunShadow(box: Box | null) {
+  setSunShadow(box: Box | null, fit?: SunFit & { fade?: number }) {
     this.sunBox = box;
+    this.sunFit = fit && Number.isFinite(fit.reach) && fit.reach > 0 ? fit : null;
   }
+  /**
+   * The map fitted to the view and not the box, when the game asks (`setSunShadow`'s second argument): a square `reach`
+   * across over the ground ahead of the camera, its shadows faded out to the lit over the outer `fade` of it (a share of
+   * the square's half, a tenth when not said), so nothing is seen to stop at its edge. Null is the whole box, as it was.
+   */
+  private sunFit: (SunFit & { fade?: number }) | null = null;
 
   /** The matrices the maps are rendered with, and the lookups read with. */
   private writeShadows() {
     const f = this.shadowData;
     const sun = f.subarray(0, 16);
-    if (this.sunBox) sunShadowMatrix(sun, this.look.sunDir, this.sunBox);
+    const fit = this.sunFit;
+    if (this.sunBox && fit)
+      sunShadowFitted(sun, this.look.sunDir, this.sunBox, this.camera.position, this.camera.target, fit, SUN_MAP);
+    else if (this.sunBox) sunShadowMatrix(sun, this.look.sunDir, this.sunBox);
     else sun.fill(0);
-    // texel size, bias in depth units, on
-    f[16] = 1 / SUN_MAP; f[17] = SUN_BIAS; f[18] = this.sunBox ? 1 : 0; f[19] = 0;
+    // texel size, bias in depth units, on, and how much of the square's edge the shadow fades out over (none for the box)
+    const fade = fit ? Math.min(1, Math.max(0.001, fit.fade ?? 0.1)) : 0;
+    f[16] = 1 / SUN_MAP; f[17] = SUN_BIAS; f[18] = this.sunBox ? 1 : 0; f[19] = this.sunBox ? fade : 0;
     for (let i = 0; i < SPOT_SHADOWS; i++) {
       const m = f.subarray(20 + i * 16, 36 + i * 16);
       const s = this.spots[i];
@@ -1652,6 +1738,12 @@ export class GameRenderer {
     const tail = 20 + SPOT_SHADOWS * 16;
     f[tail] = 1 / SPOT_MAP; f[tail + 1] = SPOT_BIAS; f[tail + 2] = this.spots.length; f[tail + 3] = this.look.spotSoftness;
     f[tail + 4] = this.mm(SPOT_NEAR_MM) * SPOT_TEXEL_ANGLE;
+    // the sun's shadow softened over a wider kernel, in texels, and whether open water takes the sun's shadow: each nought
+    // unless the look asks, which reads the map as it always did
+    const soft = this.look.shadowSoftness;
+    f[tail + 5] = soft !== undefined && Number.isFinite(soft) ? Math.min(MAX_SHADOW_SOFTNESS, Math.max(0, soft)) : 0;
+    f[tail + 6] = this.look.waterShadow ? 1 : 0;
+    f[tail + 7] = 0;
     const { queue } = this.ctx.device;
     queue.writeBuffer(this.shadowBuffer, 0, f);
     queue.writeBuffer(this.passBuffers[0], 0, f, 0, 16);
@@ -1924,6 +2016,7 @@ export class GameRenderer {
       colorAttachments: [{ view: colour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.clearValue }],
       depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
+    if (this.skyOn) this.drawSky(pass, samples);
     // a group that flows is not kept: it is drawn again in each frame's scene pass, over what is
     this.draw(pass, this.staticGroups, samples, 'still');
     pass.end();
@@ -1939,9 +2032,11 @@ export class GameRenderer {
     const { device } = this.ctx;
     if (!this.compiled || !this.sceneBind || !this.compositeBind || !this.colour || !this.depth) return false;
     this.writeFrame();
+    this.skyOn = this.writeSky();
     // what the frame is antialiased with: the look's ask, held to the rung and to what has compiled
     this.askAntialias();
     this.askOwnFog();
+    this.askSky();
     const aa = this.antialiasing;
     const samples = aa === 'msaa' ? SAMPLES : 1;
     const multisampled = samples > 1;
@@ -2042,6 +2137,8 @@ export class GameRenderer {
         depthStoreOp: 'store',
       },
     });
+    // the sky first, under everything, unless the kept frame already has it
+    if (this.skyOn && mode === 'redraw') this.drawSky(pass, samples);
     // a kept frame holds the static half but for what flows, which is drawn over it as the movers are
     this.draw(pass, this.staticGroups, samples, mode === 'redraw' ? undefined : 'flowing');
     this.draw(pass, this.dynamicGroups, samples);
@@ -2250,5 +2347,6 @@ export class GameRenderer {
     this.noTexture.destroy();
     this.groundTexture?.destroy();
     this.occlusionPassBuffer.destroy();
+    this.skyBuffer?.destroy();
   }
 }
