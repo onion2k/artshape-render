@@ -106,6 +106,15 @@ export function frameAlong(origin: Vec3, x: Vec3, hint: Vec3 = [0, 0, 1], scale 
 
 /** General 4x4 inverse, for carrying a ray into a placed part's own space. */
 export function invert(m: Mat4): Mat4 | null {
+  const out = new Float32Array(16);
+  return invertInto(out, m) ? out : null;
+}
+
+/**
+ * The same inverse written into `out`, which may not be `m`, for what inverts a matrix every frame and must not make
+ * one to do it. Says whether there was one: `out` is left as it was when `m` has none.
+ */
+export function invertInto(out: Mat4, m: Mat4): boolean {
   const a = m;
   const b00 = a[0] * a[5] - a[1] * a[4], b01 = a[0] * a[6] - a[2] * a[4];
   const b02 = a[0] * a[7] - a[3] * a[4], b03 = a[1] * a[6] - a[2] * a[5];
@@ -114,9 +123,8 @@ export function invert(m: Mat4): Mat4 | null {
   const b08 = a[8] * a[15] - a[11] * a[12], b09 = a[9] * a[14] - a[10] * a[13];
   const b10 = a[9] * a[15] - a[11] * a[13], b11 = a[10] * a[15] - a[11] * a[14];
   let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (!det) return null;
+  if (!det) return false;
   det = 1 / det;
-  const out = new Float32Array(16);
   out[0] = (a[5] * b11 - a[6] * b10 + a[7] * b09) * det;
   out[1] = (a[2] * b10 - a[1] * b11 - a[3] * b09) * det;
   out[2] = (a[13] * b05 - a[14] * b04 + a[15] * b03) * det;
@@ -133,5 +141,5 @@ export function invert(m: Mat4): Mat4 | null {
   out[13] = (a[0] * b09 - a[1] * b07 + a[2] * b06) * det;
   out[14] = (a[13] * b01 - a[12] * b03 - a[14] * b00) * det;
   out[15] = (a[8] * b03 - a[9] * b01 + a[10] * b00) * det;
-  return out;
+  return true;
 }
