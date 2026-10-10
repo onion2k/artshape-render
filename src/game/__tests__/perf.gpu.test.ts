@@ -25,6 +25,7 @@ import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
 import { FLOW_CLEAR, FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, packFlow } from '../flow';
 import { packTexture } from '../texture';
+import leafAlpha from './fixtures/leaf-alpha-256.b64?raw';
 import { judge, median, recorded } from './perf';
 import type { Emit } from '../particles';
 import type { Wash } from '../wash';
@@ -135,6 +136,38 @@ export function standardScene(): GameGroup[] {
     { mesh: plane(600), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), albedo: [0.1, 0.42, 0.08], roughness: 0.85 },
     { mesh: box(), matrices: boxes, albedo: [0.58, 0.3, 0.13], roughness: 0.55 },
   ];
+}
+
+/**
+ * A bush of cards: two thousand small squares (four thousand triangles) scattered through a ball of about a unit
+ * across, each turned and tilted by a hash of its number so that the same mesh is made every run, their uvs running
+ * nought to one. It is a game's leaf cluster, which is what the cut is for.
+ */
+export function cardBush(): Mesh {
+  const b = new MeshBuilder();
+  const hash = (n: number) => { let h = Math.imul(n + 1, 374761393); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  for (let i = 0; i < 2000; i++) {
+    const [u, v, w, yaw, tilt] = [1, 2, 3, 4, 5].map((k) => hash(i * 8 + k));
+    const cx = (u - 0.5) * 1.2, cy = (v - 0.5) * 1.2, cz = 0.2 + w * 1.2;
+    const [cyaw, syaw, ct, st] = [Math.cos(yaw * 6.283), Math.sin(yaw * 6.283), Math.cos(tilt * 1.5), Math.sin(tilt * 1.5)];
+    // the square's edge along (cos yaw, sin yaw, 0) and its other along the tilt, a half unit across
+    const ex = [cyaw * 0.1, syaw * 0.1, 0], fy = [-syaw * ct * 0.1, cyaw * ct * 0.1, st * 0.1];
+    const n = [ex[1] * fy[2] - ex[2] * fy[1], ex[2] * fy[0] - ex[0] * fy[2], ex[0] * fy[1] - ex[1] * fy[0]];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    const base = b.vertexCount;
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]])
+      b.vertex(cx + su * ex[0] + sv * fy[0], cy + su * ex[1] + sv * fy[1], cz + su * ex[2] + sv * fy[2], n[0] / len, n[1] / len, n[2] / len, (su + 1) / 2, (sv + 1) / 2);
+    b.quad(base, base + 1, base + 2, base + 3);
+  }
+  return b.build();
+}
+
+/** The real leaf's alpha, 256 across, as a white image: a game's mask, made with its alpha unfolded. */
+async function leafMask(): Promise<ImageBitmap> {
+  const alpha = Uint8Array.from(atob(leafAlpha.trim()), (c) => c.charCodeAt(0));
+  const data = new Uint8ClampedArray(256 * 256 * 4).fill(255);
+  for (let i = 0; i < alpha.length; i++) data[i * 4 + 3] = alpha[i];
+  return createImageBitmap(new ImageData(data, 256, 256), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 }
 
 /** A layer of two-tone noise in blocks of two texels, colour and height alike, about mid-grey: made here, since a game's is its own. */
@@ -378,6 +411,21 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard textured'] = await time();
     r.setGroundTexture(null);
+    r.setStatic(standardScene());
+    // the cards over the standard scene: four hundred bushes of two thousand leaf cards each (four thousand triangles a
+    // bush, 1.6 million a frame) between the boxes, cut by a real leaf's alpha, at one sample a pixel and at four
+    r.setCardImages([await leafMask()]);
+    const bush = cardBush();
+    const bushes = new Float32Array(400 * 16);
+    for (let i = 0; i < 400; i++) bushes.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, (i % 20) * 4 - 36, Math.floor(i / 20) * 4 - 36, 0, 1], i * 16);
+    r.setStatic([...standardScene(), { mesh: bush, matrices: bushes, albedo: [0.1, 0.5, 0.1], roughness: 0.8, card: { layer: 1 } }]);
+    await r.prepare();
+    measured['standard cards'] = await time();
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['standard cards msaa'] = await time();
+    r.look = plain;
+    r.setCardImages(null);
     r.setStatic(standardScene());
     // the fire over the standard scene: four seconds of it let fill the pool first, then timed as it burns, with a wash, and with a wash that blows too gently to move anything
     for (let i = 0; i < 300; i++) { for (const e of FIRE) r.emit(e); r.frame(view, 'redraw', 1 / 60); }

@@ -31,7 +31,7 @@ import { sunShadowFitted, sunShadowMatrix, spotShadowMatrix, type Box, type SunF
 import { Particles, type Emit } from './particles';
 import { WASH_EPSILON_MM, type Wash } from './wash';
 import {
-  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, clearSource, depthResolveSource, sceneSource,
+  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_CUT_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, clearSource, depthResolveSource, sceneSource,
   type SceneVariant,
 } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
@@ -46,6 +46,7 @@ import { checkShoreField, packShoreField, type ShoreField } from './shore';
 import { invertInto } from '../geom/transform';
 import { TEXTURE_STRIDE, checkLayers, mipLevels, usesTexture } from './texture';
 import { GROUND_FORMAT, MipBlitter } from './mips';
+import { CARD_CUT, CARD_STRIDE, cardLevels, checkCards } from './cards';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
 export interface DrawnBlade { x: number; y: number; z: number; id: number }
@@ -139,6 +140,20 @@ export interface GameGroup {
    * layers themselves are the renderer's, set by `setGroundTexture`.
    */
   texture?: Float32Array;
+  /**
+   * Makes the group a card: a flat piece of mesh (a leaf, a flower, a blade of weed) whose `mesh.uvs` pick a texel
+   * from one layer of the card images (`setCardImages`), and whose fragments are thrown away where that texel's
+   * alpha is under `cut`. `layer` counts from one, `cut` is 0 to 1 and defaults to 0.5, and a group wears one image,
+   * since a mesh's uvs refer to one. Colour is unchanged: it is still the group's `albedo` or `materials`, and the
+   * image's own colour is not read. The mask repeats past a uv of one. The back of a card is lit as its front is
+   * (its normal is turned to face the eye), so a leaf is not black from below. The mesh needs two uvs a vertex. It
+   * may have patterns, but no flow kind, and no ground `texture`. A group with a card is drawn through a build
+   * compiled when it is first handed in (`prepare()` says when it is in, and until then it is drawn as a square,
+   * uncut, and casting its square's shadow and darkening the contact occlusion as a square does); a game that has
+   * none compiles none. Its shadow, from the sun and from a spot, and the contact occlusion it casts are of what is
+   * left after the cut, through two depth builds made with the others.
+   */
+  card?: { layer: number; cut?: number };
 }
 
 /** Where the frame uniform's clock is: the toon light's first spare, after `toonUniform`'s 32 and the finish's 21. */
@@ -632,6 +647,26 @@ for (const toon of [false, true])
   for (const shadows of [true, false])
     for (const points of [true, false])
       for (const cullLights of [true, false]) TEXTURED_VARIANTS.push({ cullLights, points, shadows, patterned: true, textured: true, toon });
+// A card's uv rides in a vertex buffer of its own and its layer and cut in an instance buffer of theirs, one pair a
+// placement, made only for a card group and read only by the carded build, so every other vertex layout is what it was.
+const UV_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: 8, stepMode: 'vertex',
+  attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x2' as GPUVertexFormat }],
+};
+const CARD_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: CARD_STRIDE * 4, stepMode: 'instance',
+  attributes: [{ shaderLocation: 11, offset: 0, format: 'float32x2' as GPUVertexFormat }],
+};
+/**
+ * The builds of the scene shader that are cards: every rung of the ladder, in both looks, and always patterned (as
+ * the textured builds are, so that a card may wear a pattern and one that does not has the kind nought). Not made up
+ * front: a game that has no card group never compiles one.
+ */
+const CARDED_VARIANTS: SceneVariant[] = [];
+for (const toon of [false, true])
+  for (const shadows of [true, false])
+    for (const points of [true, false])
+      for (const cullLights of [true, false]) CARDED_VARIANTS.push({ cullLights, points, shadows, patterned: true, carded: true, toon });
 /**
  * The builds of the scene shader that have the flow kinds: every rung of the
  * ladder, in both looks, and always patterned. Not made up front: a game
@@ -671,6 +706,12 @@ interface Uploaded {
   texture: GPUBuffer | null;
   /** Whether the group draws through the textured build. */
   textured: boolean;
+  /** A card group's uvs, two floats a vertex; none for a group that is not a card. */
+  uv: GPUBuffer | null;
+  /** A card group's layer and cut, two floats for each placement; none for a group that is not a card. */
+  card: GPUBuffer | null;
+  /** Whether the group draws through the carded build. */
+  carded: boolean;
   /** Whether the group is clear water, drawn in the clear pass and in no opaque pass, shadow map or occlusion. */
   clear: boolean;
   indexCount: number;
@@ -712,6 +753,8 @@ export class GameRenderer {
   private flowBuild: Promise<void> | null = null;
   /** The textured builds, made the first time a group with a texture is handed in and never before. */
   private textureBuild: Promise<void> | null = null;
+  /** The carded builds, made the first time a card group is handed in and never before. */
+  private cardBuild: Promise<void> | null = null;
   private fxaaBuild: Promise<void> | null = null;
   private msaaCompiled = false;
   private fxaaCompiled = false;
@@ -845,6 +888,10 @@ export class GameRenderer {
   /** The ground texture the scene binds when a game has set none: one neutral grey texel, which modulates nothing, so a group that asks before the layers are in is drawn as it would be without. */
   private noTexture: GPUTexture;
   private groundSampler: GPUSampler;
+  /** The card images the scene binds when a game has set none: one opaque white texel, so a card that asks before the images are in is not cut at all. */
+  private noCards: GPUTexture;
+  private cardSampler: GPUSampler;
+  private cardTexture: GPUTexture | null = null;
   /** The layers a game set, or null; and the pass that makes their mips, made with the first. */
   private groundTexture: GPUTexture | null = null;
   private mipBlitter: MipBlitter | null = null;
@@ -877,6 +924,17 @@ export class GameRenderer {
   private shadowData = new Float32Array(16 + 4 + SPOT_SHADOWS * 16 + 4 + 4);
   private depthPipeline!: GPURenderPipeline;
   private depthLayout: GPUBindGroupLayout;
+  /**
+   * The cut depth passes' layout: `depthLayout`'s one matrix, and the card images and their sampler after it, which is
+   * what `DEPTH_CUT_WGSL` declares. Its bind groups are made again with the images, and not before a card group is
+   * handed in, since until then there is no pipeline to read them.
+   */
+  private cutLayout: GPUBindGroupLayout;
+  private cutPassBinds: GPUBindGroup[] = [];
+  private cutOcclusionBind: GPUBindGroup | null = null;
+  /** The cut depth pipelines, made with the carded builds: the shadow maps' and the occlusion prepass's. */
+  private cutDepthPipeline: GPURenderPipeline | null = null;
+  private cutOcclusionPipeline: GPURenderPipeline | null = null;
   /** One matrix buffer and bind group per pass: the sun's, then a spot's each. */
   private passBuffers: GPUBuffer[] = [];
   private passBinds: GPUBindGroup[] = [];
@@ -972,6 +1030,14 @@ export class GameRenderer {
       this.passBuffers.push(b);
       this.passBinds.push(device.createBindGroup({ label: `shadow pass ${i}`, layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: b } }] }));
     }
+    this.cutLayout = device.createBindGroupLayout({
+      label: 'shadow pass, cut',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
     this.occlusion = new ContactOcclusion(ctx, DEPTH);
     this.occlusionPassBuffer = device.createBuffer({ label: 'occlusion depth pass', size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.occlusionPassBind = device.createBindGroup({ label: 'occlusion depth pass', layout: this.depthLayout, entries: [{ binding: 0, resource: { buffer: this.occlusionPassBuffer } }] });
@@ -982,6 +1048,14 @@ export class GameRenderer {
     device.queue.writeTexture({ texture: this.noTexture }, new Uint8Array([128, 128, 128, 128]), {}, [1, 1, 1]);
     this.groundSampler = device.createSampler({ label: 'ground texture', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16 });
 
+    // opaque white, so that a card with no image yet keeps every fragment; the cut is on alpha alone
+    this.noCards = device.createTexture({ label: 'no card images', size: [1, 1, 1], format: GROUND_FORMAT, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.noCards }, new Uint8Array([255, 255, 255, 255]), {}, [1, 1, 1]);
+    // repeat, since the kit's leaf cards tile their uvs past one; the mips come down to a single texel
+    this.cardSampler = device.createSampler({ label: 'card images', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
+
+    // The bindings past the ground texture's are the cards': a build that does not declare them (all but the carded
+    // ones) is given the same layout, which is allowed because the pipeline layout is explicit, not 'auto'.
     this.sceneLayout = device.createBindGroupLayout({
       label: 'game scene',
       entries: [
@@ -997,6 +1071,8 @@ export class GameRenderer {
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 11, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 13, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
       ],
     });
     this.effectLayout = device.createBindGroupLayout({
@@ -1153,7 +1229,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant, samples = 1) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.carded ? '-carded' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
   }
 
   /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
@@ -1170,13 +1246,26 @@ export class GameRenderer {
           MATERIAL_LAYOUT,
           PATTERN_LAYOUT,
           ...(v.textured ? [TEXTURE_LAYOUT] : []),
+          ...(v.carded ? [UV_LAYOUT, CARD_LAYOUT] : []),
         ],
       },
       fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
-      multisample: { count: samples },
+      multisample: v.coverage ? { count: samples, alphaToCoverageEnabled: true } : { count: samples },
     };
+  }
+
+  /**
+   * A card's pipeline at four samples: its own build of the shader, with alpha to coverage in place of the discard.
+   * The one-sample pipeline of the same variant shares neither the module nor the setting; the key is the same,
+   * for it says the samples, and there is still one pipeline a variant at each count.
+   */
+  private cardMsaa(v: SceneVariant) {
+    const coverage = { ...v, coverage: true };
+    const key = GameRenderer.key(v, SAMPLES);
+    const module = shader(this.ctx.device, sceneSource(coverage), `game scene ${key}`);
+    return this.ctx.device.createRenderPipelineAsync(this.sceneDescriptor(coverage, module, SAMPLES)).then((p) => { this.scenePipelines.set(key, p); });
   }
 
   /** The effect layers' pipeline, at one sample a pixel or several. */
@@ -1216,6 +1305,7 @@ export class GameRenderer {
     await this.antialiasBuilt;
     await this.flowBuild;
     await this.textureBuild;
+    await this.cardBuild;
     this.askOwnFog();
     await this.ownBuild;
     this.askSky();
@@ -1501,6 +1591,66 @@ export class GameRenderer {
     return Promise.all(waits).then(() => { this.keptStale = true; this.keptStaleMsaa = true; });
   }
 
+  /** Starts the carded builds, once, the first time a card group is handed in; as `askTexture` does the textured ones. */
+  private askCards() {
+    if (this.cardBuild) return;
+    this.cardBuild = this.compileCards();
+    this.bindCut();
+  }
+
+  private compileCards(): Promise<void> {
+    const { device } = this.ctx;
+    const four = this.msaaBuild !== null;
+    const waits: Promise<unknown>[] = [];
+    for (const v of CARDED_VARIANTS) {
+      const key = GameRenderer.key(v);
+      const module = shader(device, sceneSource(v), `game scene ${key}`);
+      this.sceneModules.set(key, module);
+      waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1)).then((p) => { this.scenePipelines.set(key, p); }));
+      if (four) waits.push(this.cardMsaa(v));
+    }
+    // The same two depth passes the square groups have, with the cut: the sun's and the spots' maps (the bias and slope
+    // of `shadow depth`) and the occlusion's prepass (the frame's depth, no bias, as `occlusion depth`).
+    const cut = shader(device, DEPTH_CUT_WGSL, 'shadow depth, cut');
+    const buffers = [
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }] },
+      INSTANCE_LAYOUT, UV_LAYOUT, CARD_LAYOUT,
+    ];
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [this.cutLayout] });
+    waits.push(device.createRenderPipelineAsync({
+      label: 'shadow depth, cut', layout,
+      vertex: { module: cut, entryPoint: 'vsMain', buffers },
+      fragment: { module: cut, entryPoint: 'fsMain', targets: [] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: SHADOW, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2 },
+    }).then((p) => { this.cutDepthPipeline = p; }));
+    waits.push(device.createRenderPipelineAsync({
+      label: 'occlusion depth, cut', layout,
+      vertex: { module: cut, entryPoint: 'vsMain', buffers },
+      fragment: { module: cut, entryPoint: 'fsMain', targets: [] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'less' },
+    }).then((p) => { this.cutOcclusionPipeline = p; }));
+    // a kept frame baked before the builds were in drew the card groups as squares, and lit by their square shadows
+    return Promise.all(waits).then(() => { this.keptStale = true; this.keptStaleMsaa = true; });
+  }
+
+  /**
+   * The cut depth passes' bind groups: each pass's matrix with the card images as they are now. Made when the carded
+   * builds are asked for and again whenever the images are set, so the next shadow and prepass read the new ones.
+   */
+  private bindCut() {
+    if (!this.cardBuild) return;
+    const { device } = this.ctx;
+    const images = (this.cardTexture ?? this.noCards).createView({ dimension: '2d-array' });
+    const bind = (label: string, buffer: GPUBuffer) => device.createBindGroup({
+      label, layout: this.cutLayout,
+      entries: [{ binding: 0, resource: { buffer } }, { binding: 1, resource: images }, { binding: 2, resource: this.cardSampler }],
+    });
+    this.cutPassBinds = this.passBuffers.map((b, i) => bind(`shadow pass ${i}, cut`, b));
+    this.cutOcclusionBind = bind('occlusion depth pass, cut', this.occlusionPassBuffer);
+  }
+
   /** Starts the builds the look's antialiasing needs, each once; every other time, nothing. */
   private askAntialias() {
     const asked = Math.max(0, ANTIALIAS.indexOf(this.look.antialias ?? 'none'));
@@ -1529,8 +1679,8 @@ export class GameRenderer {
   private async compileMsaa() {
     const { device } = this.ctx;
     // the flowing builds too, if a group has asked for them: their modules are made as soon as it does
-    const variants = [...SCENE_VARIANTS, ...(this.flowBuild ? FLOW_VARIANTS : []), ...(this.textureBuild ? TEXTURED_VARIANTS : [])];
-    const waits: Promise<unknown>[] = variants.map((v) =>
+    const variants = [...SCENE_VARIANTS, ...(this.flowBuild ? FLOW_VARIANTS : []), ...(this.textureBuild ? TEXTURED_VARIANTS : []), ...(this.cardBuild ? CARDED_VARIANTS : [])];
+    const waits: Promise<unknown>[] = variants.map((v) => v.carded ? this.cardMsaa(v) :
       device.createRenderPipelineAsync(this.sceneDescriptor(v, this.sceneModules.get(GameRenderer.key(v))!, SAMPLES))
         .then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
     waits.push(device.createRenderPipelineAsync(this.effectDescriptor(SAMPLES)).then((p) => { this.effectMsaa = p; }));
@@ -1707,6 +1857,64 @@ export class GameRenderer {
     old?.destroy();
   }
 
+  /**
+   * Sets the card images: one image a layer, up to eight, all square, all the same size, a power of two and at most
+   * 1024 across, or else refused by name. Each layer's mips are made here (`cardMips`), and the scene's bind group
+   * is made again to hold them, so a group with a `card` that names one of them (`GameGroup.card`, layers counted from
+   * one) is cut from the next frame. Nothing is compiled here: the carded builds are the groups', made when the first
+   * is handed in. `null` takes the images away, and the scene binds a white texel, which cuts nothing.
+   *
+   * Only the alpha is read, as a mask. Make each bitmap with
+   * `createImageBitmap(source, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })` so that the alpha is as it
+   * was drawn and not folded into the colour. The sampler repeats, so a uv past one tiles the mask. The mips keep a
+   * leaf's coverage at the default cut (`CARD_CUT`), so a tree does not go bald at a distance.
+   */
+  setCardImages(layers: ImageBitmap[] | null) {
+    const { device } = this.ctx;
+    const old = this.cardTexture;
+    if (layers === null) {
+      this.cardTexture = null;
+    } else {
+      const side = checkCards(layers);
+      const levels = mipLevels(side);
+      const texture = device.createTexture({
+        label: 'card images', size: [side, side, layers.length], mipLevelCount: levels, format: GROUND_FORMAT,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      this.cardMips(texture, layers, side, levels);
+      this.cardTexture = texture;
+    }
+    this.bindScene();
+    this.bindCut();
+    // a kept frame holds the cards as they were cut
+    this.keptStale = true;
+    this.keptStaleMsaa = true;
+    old?.destroy();
+  }
+
+  /**
+   * Writes every level of every card image. Done on the CPU, for the chain keeps a leaf's coverage and that wants the
+   * alpha in hand (`cardLevels`): the bitmap is drawn to a canvas and read, the levels are made, and each is written
+   * with `writeTexture`. The canvas holds the colour premultiplied, so a texel of low alpha loses colour bits; alpha,
+   * which is all the cut reads, comes back exact. The images are at most eight of 1024 across, and the game's are 256.
+   */
+  private cardMips(texture: GPUTexture, layers: ImageBitmap[], side: number, levels: number) {
+    const { device } = this.ctx;
+    const canvas = new OffscreenCanvas(side, side);
+    const g = canvas.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+    if (!g) throw new Error('setCardImages: no 2d canvas to read the images with');
+    layers.forEach((source, layer) => {
+      g.clearRect(0, 0, side, side);
+      g.drawImage(source, 0, 0);
+      const read = g.getImageData(0, 0, side, side).data;
+      const top = new Uint8Array(read.buffer as ArrayBuffer, read.byteOffset, read.length);
+      cardLevels(top, side, CARD_CUT).slice(0, levels).forEach((data, level) => {
+        const s = Math.max(1, side >> level);
+        device.queue.writeTexture({ texture, mipLevel: level, origin: [0, 0, layer] }, data, { bytesPerRow: s * 4 }, [s, s, 1]);
+      });
+    });
+  }
+
   /** The scene's bind group: made with the environment, and again whenever the occlusion's texture is. */
   private bindScene() {
     if (!this.environment) return;
@@ -1727,6 +1935,8 @@ export class GameRenderer {
         { binding: 9, resource: this.occlusion.view ?? this.noOcclusion.createView() },
         { binding: 10, resource: (this.groundTexture ?? this.noTexture).createView({ dimension: '2d-array' }) },
         { binding: 11, resource: this.groundSampler },
+        { binding: 12, resource: (this.cardTexture ?? this.noCards).createView({ dimension: '2d-array' }) },
+        { binding: 13, resource: this.cardSampler },
       ],
     });
   }
@@ -1737,6 +1947,14 @@ export class GameRenderer {
       const capacity = g.matrices.length / 16;
       const textured = usesTexture(g.texture);
       if (textured && usesFlow(g.patterns, PATTERN_STRIDE)) throw new Error('a group cannot have both a texture and a flow kind: a surface that flows is not ground that is textured');
+      const carded = !!g.card;
+      if (g.card) {
+        if (carded && textured) throw new Error('a group cannot have both a card and a ground texture: a card is not ground that is textured');
+        if (usesFlow(g.patterns, PATTERN_STRIDE)) throw new Error('a group cannot have both a card and a flow kind: a card is not a surface that flows');
+        if (g.mesh.uvs.length !== (g.mesh.positions.length / 3) * 2) throw new Error(`a card group needs two uvs a vertex in its mesh, and its mesh has ${g.mesh.uvs.length} floats of uv for ${g.mesh.positions.length / 3} vertices`);
+        if (!Number.isInteger(g.card.layer) || g.card.layer < 1) throw new Error(`a card's layer counts from one, and its layer is ${g.card.layer}`);
+        if (g.card.cut !== undefined && !(g.card.cut >= 0 && g.card.cut <= 1.5)) throw new Error(`a card's cut is a number from nought to one, and its cut is ${g.card.cut}`);
+      }
       const instance = device.createBuffer({
         label: 'instances', size: Math.max(64, capacity * 64),
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -1778,6 +1996,20 @@ export class GameRenderer {
         device.queue.writeBuffer(texture, 0, out);
         this.askTexture();
       }
+      let uv: GPUBuffer | null = null,
+        card: GPUBuffer | null = null;
+      if (g.card) {
+        uv = bufferFrom(device, g.mesh.uvs, GPUBufferUsage.VERTEX, 'uvs');
+        card = device.createBuffer({
+          label: 'cards', size: Math.max(CARD_STRIDE * 4, capacity * CARD_STRIDE * 4),
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        // a group wears one image, so every placement carries the same pair; written for each so that no build need read a stride of nought
+        const out = new Float32Array(Math.max(CARD_STRIDE, capacity * CARD_STRIDE));
+        for (let i = 0; i < out.length; i += CARD_STRIDE) { out[i] = g.card.layer; out[i + 1] = g.card.cut ?? CARD_CUT; }
+        device.queue.writeBuffer(card, 0, out);
+        this.askCards();
+      }
       return {
         position: bufferFrom(device, g.mesh.positions, GPUBufferUsage.VERTEX, 'positions'),
         normal: bufferFrom(device, g.mesh.normals, GPUBufferUsage.VERTEX, 'normals'),
@@ -1789,6 +2021,9 @@ export class GameRenderer {
         flowing,
         texture,
         textured,
+        uv,
+        card,
+        carded,
         clear,
         indexCount: g.mesh.indices.length,
         capacity,
@@ -1814,7 +2049,7 @@ export class GameRenderer {
   private static release(groups: Uploaded[]) {
     for (const g of groups) {
       g.position.destroy(); g.normal.destroy(); g.index.destroy();
-      g.instance.destroy(); g.material.destroy(); g.pattern.destroy(); g.texture?.destroy();
+      g.instance.destroy(); g.material.destroy(); g.pattern.destroy(); g.texture?.destroy(); g.uv?.destroy(); g.card?.destroy();
     }
   }
 
@@ -1958,14 +2193,26 @@ export class GameRenderer {
       colorAttachments: [],
       depthStencilAttachment: { view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
-    rp.setPipeline(this.depthPipeline);
-    rp.setBindGroup(0, this.passBinds[pass]);
+    const cut = this.cutDepthPipeline && this.cutPassBinds[pass];
+    // the pipeline and its bind group set only where they change; a card group is drawn square until its cut build is in
+    let on: GPURenderPipeline | null = null;
     for (const groups of [this.staticGroups, this.dynamicGroups]) {
       for (const g of groups) {
         // clear water casts no shadow: the bed under it is lit through it
         if (!g.count || g.clear) continue;
+        const carded = g.carded && !!cut;
+        const want = carded ? this.cutDepthPipeline! : this.depthPipeline;
+        if (want !== on) {
+          rp.setPipeline(want);
+          rp.setBindGroup(0, carded ? this.cutPassBinds[pass] : this.passBinds[pass]);
+          on = want;
+        }
         rp.setVertexBuffer(0, g.position);
         rp.setVertexBuffer(1, g.instance);
+        if (carded) {
+          rp.setVertexBuffer(2, g.uv!);
+          rp.setVertexBuffer(3, g.card!);
+        }
         rp.setIndexBuffer(g.index, 'uint32');
         rp.drawIndexed(g.indexCount, g.count);
       }
@@ -2170,8 +2417,8 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private scenePipeline(patterned: boolean, samples: number, flowing = false, textured = false) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, textured, toon: this.look.shading === 'toon' }, samples));
+  private scenePipeline(patterned: boolean, samples: number, flowing = false, textured = false, carded = false) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, textured, carded, toon: this.look.shading === 'toon' }, samples));
   }
 
   /**
@@ -2186,6 +2433,7 @@ export class GameRenderer {
     if (!plain || !patterned || !this.sceneBind) return;
     const flowing = this.scenePipeline(true, samples, true) ?? patterned;
     const textured = this.scenePipeline(true, samples, false, true);
+    const carded = this.scenePipeline(true, samples, false, false, true);
     pass.setBindGroup(0, this.sceneBind);
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
     let on: GPURenderPipeline | null = null;
@@ -2193,7 +2441,8 @@ export class GameRenderer {
       if (!g.count || g.clear) continue;
       if (only && g.flowing !== (only === 'flowing')) continue;
       // a textured group is drawn plain, or as its speckle, until its build is in
-      const want = g.flowing ? flowing : g.textured && textured ? textured : g.patterned ? patterned : plain;
+      // and a card group is drawn as a square, uncut, until its build is in
+      const want = g.flowing ? flowing : g.textured && textured ? textured : g.carded && carded ? carded : g.patterned ? patterned : plain;
       if (want !== on) {
         pass.setPipeline(want);
         on = want;
@@ -2204,6 +2453,10 @@ export class GameRenderer {
       pass.setVertexBuffer(3, g.material);
       pass.setVertexBuffer(4, g.pattern);
       if (want === textured) pass.setVertexBuffer(5, g.texture!);
+      else if (want === carded) {
+        pass.setVertexBuffer(5, g.uv!);
+        pass.setVertexBuffer(6, g.card!);
+      }
       pass.setIndexBuffer(g.index, 'uint32');
       pass.drawIndexed(g.indexCount, g.count);
     }
@@ -2278,13 +2531,23 @@ export class GameRenderer {
         colorAttachments: [],
         depthStencilAttachment: { view: this.occlusion.depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
       });
-      prepass.setPipeline(this.occlusionDepthPipeline);
-      prepass.setBindGroup(0, this.occlusionPassBind);
+      let on: GPURenderPipeline | null = null;
       for (const g of [...this.staticGroups, ...this.dynamicGroups]) {
         // clear water darkens no corner of what is under it
         if (!g.count || g.clear) continue;
+        const carded = g.carded && !!this.cutOcclusionPipeline && !!this.cutOcclusionBind;
+        const want = carded ? this.cutOcclusionPipeline! : this.occlusionDepthPipeline;
+        if (want !== on) {
+          prepass.setPipeline(want);
+          prepass.setBindGroup(0, carded ? this.cutOcclusionBind! : this.occlusionPassBind);
+          on = want;
+        }
         prepass.setVertexBuffer(0, g.position);
         prepass.setVertexBuffer(1, g.instance);
+        if (carded) {
+          prepass.setVertexBuffer(2, g.uv!);
+          prepass.setVertexBuffer(3, g.card!);
+        }
         prepass.setIndexBuffer(g.index, 'uint32');
         prepass.drawIndexed(g.indexCount, g.count);
       }
@@ -2577,6 +2840,8 @@ export class GameRenderer {
     this.noOcclusion.destroy();
     this.noTexture.destroy();
     this.groundTexture?.destroy();
+    this.noCards.destroy();
+    this.cardTexture?.destroy();
     this.occlusionPassBuffer.destroy();
     this.skyBuffer?.destroy();
     this.clearBuffer?.destroy();

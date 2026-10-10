@@ -274,6 +274,47 @@ What the measurements settled, so nobody has to re-argue it:
   the mips', and nothing else: a game that never sets one, or sets one and
   puts it on no group, compiles the same 46 as before. Until a texture is set
   the scene binds one neutral grey texel, which modulates nothing.
+- **Cards are flat meshes cut out by an image, in builds of their own.** A card
+  is a leaf, a flower or a blade of weed: a flat piece of mesh whose
+  fragments are thrown away where a mask is clear, so a tree is a few
+  hundred squares and not a few hundred thousand triangles.
+  `setCardImages(layers)` takes up to eight `ImageBitmap`s, all square, all the
+  same size, a power of two and at most 1024 across (anything else, and an
+  empty list, is refused by name, and the images it had are kept); `null` takes
+  them away, and the scene then binds one opaque white texel, which cuts
+  nothing. Only the alpha is read, so make each with `createImageBitmap(source,
+  { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })`. A group opts in
+  with `card: { layer, cut }`: the layer counted from one, the cut 0 to 1 and
+  0.5 if left out. The mesh needs two uvs a vertex (a group with a card and
+  none is refused), and the sampler repeats, so a uv past one tiles the mask.
+  The colour is the group's own, in colour and not in the image, so the
+  palette stays the game's; the back of a card is lit as its front is. A card
+  may have patterns, but no flow kind and no ground `texture`. Its shadow from
+  the sun and from a spot, and the contact occlusion it casts, are of what is
+  left after the cut, through two depth builds made with the carded ones, so a
+  leaf casts a leaf and not a square, and the economy's rungs for shadows and
+  occlusion switch them as they do any group's. The mips are made on the CPU
+  (`cardLevels` in `cards.ts`), each level's alpha scaled so that the share of
+  texels over the cut is the full-size mask's share: a plain average of a
+  sparse leaf drops under the cut and the tree goes bald at a distance. At four
+  samples a pixel the carded builds turn the cut into alpha to coverage, the
+  alpha sharpened about the cut by its screen derivative, and read the one
+  nearest mip level, so an edge is partial coverage and not a step. What that
+  holds, measured against the share at full size and not promised beyond: at one
+  sample, a sparse leaflet mask holds to 10% down to 0.434 of its size across
+  and the kit's five masks to 0.317; at four, the worst is 5.7% down to 0.317.
+  Smaller than that the leaves thin. The builds (sixteen, and sixteen more at four
+  samples, with the two depth builds) are compiled the first time a card group
+  is handed in, `prepare()` says when they are in, and until then the group is
+  drawn as an uncut square, and a kept static half is baked again when they
+  land. A game that asks for no cards compiles the same 46 pipelines and draws
+  exactly what v0.30.0 did, plain, at four samples and kept, held to its pixel
+  hashes (`cards-golden.json`, written on the old code). The cost, in
+  `perf:gpu`: four hundred bushes of four thousand triangles each over the
+  standard scene (1.6 million triangles, a leaf mask on every one) are
+  5.24 ms a frame (`standard cards`) and 6.12 ms at four samples (`standard
+  cards msaa`) against 0.60 for the scene alone, so a card is paid for by its
+  triangles and its overdraw like any mesh, and a tree is worth making of few.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
   group through a permutation that lights a surface at its own colour, in
   one smooth ramp from a shade to the full sun, and tints the sky's light by

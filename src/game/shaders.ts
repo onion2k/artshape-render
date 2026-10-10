@@ -24,6 +24,7 @@
 import { FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
 import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
 import { TEXTURE_SPLICES } from './texture';
+import { CARD_COVERAGE_SPLICES, CARD_SPLICES, DEPTH_CUT_SPLICES } from './cards';
 import { CLEAR_FRAGMENT, CLEAR_STRUCT_SPLICE, CLEAR_VERTEX_SPLICES } from './clear';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
 
@@ -90,6 +91,17 @@ export interface SceneVariant {
    * stage and is not also a flowing build.
    */
   textured?: boolean;
+  /**
+   * Whether the build is for a card: a flat piece of mesh whose uvs pick a texel of the card array, thrown away where
+   * its alpha is under the cut, its back lit as its front is (see `cards.ts`). Not also a flowing or a textured build,
+   * and the only one with any of it; compiled when a card group is first handed in, not up front.
+   */
+  carded?: boolean;
+  /**
+   * With `carded`, the build for four samples a pixel: no discard, and the sharpened alpha out for alpha to coverage
+   * (`CARD_COVERAGE_SPLICES`). The one-sample build, and every build that is not a card, are the text they were.
+   */
+  coverage?: boolean;
 }
 
 /** How many spotlights may carry a shadow map at once. */
@@ -694,7 +706,7 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false, carded = false, coverage = false }: SceneVariant = {}): string {
   let head = SCENE_HEAD, stage = vertex, material = SCENE_MATERIAL, fragment = SCENE_FRAGMENT;
   let flow = '';
   if (flowing) {
@@ -717,6 +729,21 @@ export function sceneWith(vertex: string, { cullLights = true, points = true, sh
     stage = spliced(spliced(stage, t.input.from, t.input.to, 'textured'), t.vertex.from, t.vertex.to, 'textured');
     fragment = spliced(spliced(fragment, t.albedo.from, t.albedo.to, 'textured'), t.shade.from, t.shade.to, 'textured');
     flow = 'const TEXTURED: bool = true;\n';
+  }
+  if (coverage && !carded) throw new Error('the coverage build is a carded build: nothing else has an alpha to turn into coverage');
+  if (carded) {
+    // the carded build puts in the card array, the uv and the cut: the sample comes first in the fragment stage, then the discard
+    if (flowing) throw new Error('the carded build cannot also be the flowing build: a card is not a surface that flows');
+    if (textured) throw new Error('the carded build cannot also be the textured build: a card is not ground that is textured');
+    if (!vertex.includes(CARD_SPLICES.input.from)) throw new Error('the carded build needs the group\'s own vertex stage, which has the placement to give the card to');
+    const c = CARD_SPLICES;
+    head = spliced(spliced(head, c.bindings.from, c.bindings.to, 'carded'), c.struct.from, c.struct.to, 'carded');
+    stage = spliced(spliced(stage, c.input.from, c.input.to, 'carded'), c.vertex.from, c.vertex.to, 'carded');
+    if (coverage) {
+      const k = CARD_COVERAGE_SPLICES;
+      fragment = spliced(spliced(fragment, k.fragment.from, k.fragment.to, 'carded coverage'), k.result.from, k.result.to, 'carded coverage');
+    } else fragment = spliced(fragment, c.fragment.from, c.fragment.to, 'carded');
+    flow = 'const CARDED: bool = true;\n';
   }
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
@@ -759,6 +786,12 @@ export const DEPTH_WGSL = `
   return viewProj * (model * vec4f(position, 1.0));
 }
 `;
+
+/**
+ * The depth pass for a card group: `DEPTH_WGSL` with the card's uv, layer and cut, and a fragment stage that throws
+ * away what the carded colour build does (`DEPTH_CUT_SPLICES`, in `cards.ts`).
+ */
+export const DEPTH_CUT_WGSL = Object.values(DEPTH_CUT_SPLICES).reduce((text, s) => spliced(text, s.from, s.to, 'card depth'), DEPTH_WGSL);
 
 /**
  * Effects: explosions, muzzle flashes, the bright things a game draws over

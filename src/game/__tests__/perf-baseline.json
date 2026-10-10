@@ -14,6 +14,8 @@
     "standard clear msaa": 0.74,
     "standard clear sheet": 0.74,
     "standard clear waves": 0.71,
-    "standard clear finish": 0.73
+    "standard clear finish": 0.73,
+    "standard cards": 5.24,
+    "standard cards msaa": 6.12
   }
 }
