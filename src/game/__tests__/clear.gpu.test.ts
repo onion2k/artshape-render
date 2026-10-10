@@ -7,71 +7,18 @@
 /// <reference types="vite/client" />
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDevice, type Gpu } from '../../gpu/context';
-import { MeshBuilder, type Mesh } from '../../mesh/types';
+import { MeshBuilder } from '../../mesh/types';
 import { bakeEnvironment } from '../../render/env';
 import { DEFAULT_POST, FULL_ECONOMY, GameRenderer, PATTERN_STRIDE, type Antialias, type GameGroup } from '../renderer';
 import { LightPool } from '../lights';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, packFlow } from '../flow';
 import { meanIn, readPixels, saveFrame, type Pixels } from './frame';
+import { HALF, bed, box, one, quad, water } from './clearscene';
 
 const W = 192, H = 192;
 /** Far off and long in the lens, as the flow tests' camera, so the picture is close to a plan of the water. */
 const DISTANCE = 301.5, FOV = 3;
 const PX_PER_UNIT = H / (2 * DISTANCE * Math.tan((FOV / 2) * (Math.PI / 180)));
-const SHALLOW: [number, number, number] = [0.3, 0.75, 0.75];
-const DEEP: [number, number, number] = [0.02, 0.12, 0.28];
-const MUD: [number, number, number] = [0.45, 0.35, 0.2];
-const WHITE: [number, number, number] = [0.9, 0.9, 0.9];
-/** The bed: a ramp from just under the surface at the west edge to six units down at the east. */
-const BED_WEST = -0.2, BED_EAST = -6, HALF = 7;
-const bedAt = (x: number) => BED_WEST + ((x + HALF) / (2 * HALF)) * (BED_EAST - BED_WEST);
-
-/** A flat quad, given its four corners, facing up. */
-function quad(corners: [number, number, number][]): Mesh {
-  const b = new MeshBuilder();
-  for (const [x, y, z] of corners) b.vertex(x, y, z, 0, 0, 1, 0, 0);
-  b.quad(0, 1, 2, 3);
-  return b.build();
-}
-
-/** A box one unit each way, standing on z = 0, centred in x and y. */
-function box(): Mesh {
-  const b = new MeshBuilder();
-  const f = (p: [number, number, number][], n: [number, number, number]) => {
-    const a = b.vertexCount;
-    for (const [x, y, z] of p) b.vertex(x, y, z, n[0], n[1], n[2], 0, 0);
-    b.quad(a, a + 1, a + 2, a + 3);
-  };
-  const h = 0.5;
-  f([[-h, -h, 1], [h, -h, 1], [h, h, 1], [-h, h, 1]], [0, 0, 1]);
-  f([[-h, -h, 0], [h, -h, 0], [h, -h, 1], [-h, -h, 1]], [0, -1, 0]);
-  f([[h, h, 0], [-h, h, 0], [-h, h, 1], [h, h, 1]], [0, 1, 0]);
-  f([[h, -h, 0], [h, h, 0], [h, h, 1], [h, -h, 1]], [1, 0, 0]);
-  f([[-h, h, 0], [-h, -h, 0], [-h, -h, 1], [-h, h, 1]], [-1, 0, 0]);
-  return b.build();
-}
-
-const one = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-const boxAt = (x: number, y: number) => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.9, 0, x, y, bedAt(x), 1]);
-
-/** The ramp of mud, and a white box on it in the shallows and another in the deep. */
-function bed(): GameGroup[] {
-  const ramp = quad([[-HALF, -HALF, BED_WEST], [HALF, -HALF, BED_EAST], [HALF, HALF, BED_EAST], [-HALF, HALF, BED_WEST]]);
-  const boxes = new Float32Array(32);
-  boxes.set(boxAt(-4.5, 2), 0);
-  boxes.set(boxAt(4.5, 2), 16);
-  return [
-    { mesh: ramp, matrices: one, albedo: MUD, roughness: 0.9 },
-    { mesh: box(), matrices: boxes, albedo: WHITE, roughness: 0.9 },
-  ];
-}
-
-/** The water over it all, flat, at nought. */
-function water(kind = FLOW_CLEAR, steepness = 0): GameGroup {
-  const patterns = packFlow(new Float32Array(PATTERN_STRIDE), 0, { kind, scale: 0.4, speed: 0.5, glow: steepness, second: DEEP });
-  return { mesh: quad([[-HALF, -HALF, 0], [HALF, -HALF, 0], [HALF, HALF, 0], [-HALF, HALF, 0]]), matrices: one, albedo: SHALLOW, roughness: 0.1, patterns };
-}
-
 /** Where a point of the world's x and y falls in the frame, near enough for a camera this far off. */
 const px = (x: number, y: number) => [Math.round(W / 2 + x * PX_PER_UNIT), Math.round(H / 2 - y * PX_PER_UNIT)] as const;
 /** The mean colour of a few pixels round a point of the world. */
