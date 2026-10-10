@@ -11,6 +11,9 @@
     "standard water": 0.63,
     "standard water msaa": 0.66,
     "standard clear": 0.7,
-    "standard clear msaa": 0.74
+    "standard clear msaa": 0.74,
+    "standard clear sheet": 0.74,
+    "standard clear waves": 0.71,
+    "standard clear finish": 0.73
   }
 }

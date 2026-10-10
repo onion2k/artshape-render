@@ -86,6 +86,19 @@ function strip(w: number, h: number): Mesh {
   return b.build();
 }
 
+/** The same rectangle cut `nx` by `ny`, fine enough for the clear pass's swells to bend: ooerfish's pond is 24 by 128. */
+function sheet(w: number, h: number, nx: number, ny: number): Mesh {
+  const b = new MeshBuilder();
+  for (let j = 0; j <= ny; j++)
+    for (let i = 0; i <= nx; i++) b.vertex(-w / 2 + (w * i) / nx, -h / 2 + (h * j) / ny, 0, 0, 0, 1, i / nx, j / ny);
+  for (let j = 0; j < ny; j++)
+    for (let i = 0; i < nx; i++) {
+      const a = j * (nx + 1) + i;
+      b.quad(a, a + 1, a + nx + 2, a + nx + 1);
+    }
+  return b.build();
+}
+
 /** A unit box standing on its base, each face its own four corners. */
 function box(): Mesh {
   const b = new MeshBuilder();
@@ -300,6 +313,54 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.look = { ...plain, antialias: 'msaa' };
     await r.prepare();
     measured['standard clear msaa'] = await time();
+    r.look = plain;
+    // the same water cut 128 by 24, still and then swelling by four waves, so the swells' price is read against the same mesh
+    r.setStatic([...standardScene(), { ...lone(FLOW_CLEAR, 0.4, 0.3), mesh: sheet(30, 8, 128, 24) }]);
+    await r.prepare();
+    measured['standard clear sheet'] = await time();
+    r.look = {
+      ...plain,
+      clear: {
+        waves: [
+          { direction: 0.3, wavelength: 9, amplitude: 0.08, steepness: 0.3 },
+          { direction: 1.9, wavelength: 5.5, amplitude: 0.05, steepness: 0.25 },
+          { direction: -1.1, wavelength: 3.2, amplitude: 0.03, steepness: 0.2 },
+          { direction: 2.7, wavelength: 13, amplitude: 0.1, steepness: 0.15 },
+        ],
+      },
+    };
+    await r.prepare();
+    measured['standard clear waves'] = await time();
+    // and everything the finish has, together: the swells, the near colour, the crests, the sparkles and the foam
+    // lines round the strip's edges from a shore field, as ooerfish's see-through water asks for them
+    const size = 128, distances = new Float32Array(size * size);
+    for (let j = 0; j < size; j++)
+      for (let i = 0; i < size; i++) {
+        const x = -15 + ((i + 0.5) / size) * 30, y = -4 + ((j + 0.5) / size) * 8;
+        distances[j * size + i] = Math.min(15 - Math.abs(x), 4 - Math.abs(y));
+      }
+    r.setShoreField({ size, distances, min: [-15, -4], max: [15, 4] });
+    r.look = {
+      ...r.look,
+      clear: {
+        ...r.look.clear,
+        glitter: 0,
+        near: [0.15, 0.55, 0.9],
+        nearDistance: 18,
+        crest: [0.8, 0.97, 1],
+        crestAmount: 0.4,
+        sparkles: 1,
+        sparkleCut: 0.4,
+        sparkleBright: 8,
+        sparkleSize: 4,
+        foamWidth: 0.35,
+        foamGap: 0.4,
+        foamWidth2: 0.2,
+      },
+    };
+    await r.prepare();
+    measured['standard clear finish'] = await time();
+    r.setShoreField(null);
     r.look = plain;
     // v0.28.0's settings together over the same water: the sky, the sun's map fitted to the view and softened over nine
     // taps, and the water darkened in its shadow

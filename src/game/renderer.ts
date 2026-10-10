@@ -41,6 +41,8 @@ import { GrassPass } from './grass-pass';
 import { MAX_GLOSS, MAX_SHEEN } from './toon';
 import { FLOW_CLEAR, usesClear, usesFlow } from './flow';
 import { CLEAR_FRAME_FLOATS, clearDepthSource, packClearFrame, resolveClear, type ClearWater } from './clear';
+import { GRAVITY_MM } from './waves';
+import { checkShoreField, packShoreField, type ShoreField } from './shore';
 import { invertInto } from '../geom/transform';
 import { TEXTURE_STRIDE, checkLayers, mipLevels, usesTexture } from './texture';
 import { GROUND_FORMAT, MipBlitter } from './mips';
@@ -803,6 +805,11 @@ export class GameRenderer {
   private clearLayout: GPUBindGroupLayout | null = null;
   private clearBuffer: GPUBuffer | null = null;
   private clearBind: GPUBindGroup | null = null;
+  /** The shore field a game handed over, its texture, and the texel of nought bound in its place while there is none. */
+  private shoreField: ShoreField | null = null;
+  private shoreTexture: GPUTexture | null = null;
+  private noShore: GPUTexture | null = null;
+  private shoreSampler: GPUSampler | null = null;
   private opaque: GPUTexture | null = null;
   private opaqueDepth: GPUTexture | null = null;
   /** The clear pass's uniform and the camera's inverse it is packed from, made once and written each frame. */
@@ -1229,7 +1236,10 @@ export class GameRenderer {
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        // the vertex stage reads the waves from it
+        { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
     this.clearBuffer = device.createBuffer({ label: 'game clear', size: CLEAR_FRAME_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1269,20 +1279,49 @@ export class GameRenderer {
     this.opaqueDepth?.destroy();
     this.opaque = device.createTexture({ label: 'game opaque', size: [this.width, this.height], format: HDR, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     this.opaqueDepth = device.createTexture({ label: 'game opaque depth', size: [this.width, this.height], format: 'r32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-    this.clearBind = device.createBindGroup({
-      label: 'game clear', layout: this.clearLayout,
-      entries: [
-        { binding: 0, resource: this.opaque.createView() },
-        { binding: 1, resource: this.opaqueDepth.createView() },
-        { binding: 2, resource: { buffer: this.clearBuffer } },
-      ],
-    });
+    this.makeClearBind();
     this.clearDepthBinds.clear();
     const one = this.clearDepthLayouts.get(1);
     if (one) this.clearDepthBinds.set(1, device.createBindGroup({ label: 'game clear depth', layout: one, entries: [{ binding: 0, resource: this.depth.createView() }] }));
     const four = this.clearDepthLayouts.get(SAMPLES);
     if (four && this.msaaDepth)
       this.clearDepthBinds.set(SAMPLES, device.createBindGroup({ label: 'game clear depth x4', layout: four, entries: [{ binding: 0, resource: this.msaaDepth.createView() }] }));
+  }
+
+  /** Clear water's bind group: the opaque frame and its depth, the uniform, and the shore field or the texel in its place. */
+  private makeClearBind() {
+    if (!this.clearLayout || !this.clearBuffer || !this.opaque || !this.opaqueDepth) return;
+    const { device } = this.ctx;
+    this.noShore ??= device.createTexture({ label: 'game no shore', size: [1, 1], format: 'r16float', usage: GPUTextureUsage.TEXTURE_BINDING });
+    this.shoreSampler ??= device.createSampler({ label: 'game shore', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+    this.clearBind = device.createBindGroup({
+      label: 'game clear', layout: this.clearLayout,
+      entries: [
+        { binding: 0, resource: this.opaque.createView() },
+        { binding: 1, resource: this.opaqueDepth.createView() },
+        { binding: 2, resource: { buffer: this.clearBuffer } },
+        { binding: 3, resource: (this.shoreTexture ?? this.noShore).createView() },
+        { binding: 4, resource: this.shoreSampler },
+      ],
+    });
+  }
+
+  /**
+   * How far each point of the water is from the shore, for clear water's foam lines (`shore.ts`): checked, and made a
+   * texture once, replacing any before it. Null takes it away, and the foam is cut by the depth again. A game makes
+   * one when its lake is built and hands it over again only when its shores change.
+   */
+  setShoreField(field: ShoreField | null): void {
+    if (field) checkShoreField(field);
+    this.shoreTexture?.destroy();
+    this.shoreTexture = null;
+    this.shoreField = field && { size: field.size, distances: field.distances, min: [...field.min], max: [...field.max] };
+    if (field) {
+      const { device } = this.ctx;
+      this.shoreTexture = device.createTexture({ label: 'game shore field', size: [field.size, field.size], format: 'r16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture: this.shoreTexture }, packShoreField(field), { bytesPerRow: field.size * 2 }, [field.size, field.size]);
+    }
+    this.makeClearBind();
   }
 
   /** Whether there is clear water to draw this frame, and everything it is drawn with is in. */
@@ -1314,7 +1353,7 @@ export class GameRenderer {
     read.end();
     encoder.copyTextureToTexture({ texture: this.colour! }, { texture: this.opaque! }, [this.width, this.height]);
     if (invertInto(this.clearInverse, this.camera.viewProjection)) {
-      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, resolveClear(this.look.clear, this.mmPerUnit));
+      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, resolveClear(this.look.clear, this.mmPerUnit), GRAVITY_MM / this.mmPerUnit, this.shoreField);
       this.ctx.device.queue.writeBuffer(this.clearBuffer!, 0, this.clearFrame);
     }
     const pass = encoder.beginRenderPass({
@@ -2543,5 +2582,7 @@ export class GameRenderer {
     this.clearBuffer?.destroy();
     this.opaque?.destroy();
     this.opaqueDepth?.destroy();
+    this.shoreTexture?.destroy();
+    this.noShore?.destroy();
   }
 }

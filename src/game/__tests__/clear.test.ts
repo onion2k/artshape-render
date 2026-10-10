@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_STRIDE, clearUniform, resolveClear } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, packClearFrame, resolveClear } from '../clear';
+import { WAVE_FLOATS } from '../waves';
+import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
 import { PATTERN_STRIDE } from '../renderer';
 
@@ -61,6 +63,29 @@ describe("clear water's settings", () => {
       foam: [1, 0.5, 0.25], caustics: 0.5, foamEdge: [0.125, 0.25, 0.5], causticScale: 4,
     });
     expect([...out]).toEqual([2, 0.5, 0.25, 0.75, 1, 0.5, 0.25, 0.5, 0.125, 0.25, 0.5, 4]);
+  });
+});
+
+describe("clear water's finish", () => {
+  it('is none of it where a look asks for none: no near colour, no crests, no sparkles, all packed as noughts', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.near, w.crest, w.sparkles]).toEqual([null, null, 0]);
+    expect([...finishUniform(new Float32Array(CLEAR_FINISH_FLOATS), w)]).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, w.sparkleCut, w.sparkleBright, w.sparkleSize]);
+    // the near distance a millimetre figure, in the world's own units
+    expect(w.nearDistance).toBeCloseTo(CLEAR_DEFAULTS_MM.nearDistance / 100, 10);
+  });
+
+  it('packs a near colour with its distance and a crest with its amount, and holds shares to one', () => {
+    const w = resolveClear({ near: [0.5, 0.75, 1], nearDistance: 8, crest: [1, 1, 0.5], crestAmount: 3, sparkles: 2, sparkleCut: 0.25, sparkleBright: 6, sparkleSize: 4 }, 100);
+    expect([...finishUniform(new Float32Array(CLEAR_FINISH_FLOATS), w)]).toEqual([0.5, 0.75, 1, 8, 1, 1, 0.5, 1, 1, 0.25, 6, 4]);
+  });
+
+  it('comes after the waves in the frame and before the shore field, which is every part packed and no more', () => {
+    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, resolveClear({ near: [0.25, 0.5, 0.75], nearDistance: 3 }, 100), 98.1);
+    expect([...out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS, 24 + CLEAR_STRIDE + WAVE_FLOATS)]).toEqual([0.25, 0.5, 0.75, 3]);
+    expect(out.includes(-1), 'every float written').toBe(false);
   });
 });
 

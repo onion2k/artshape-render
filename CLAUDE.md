@@ -203,6 +203,16 @@ What to copy the shape of:
   guard, the glitter, the caustics and their shadow, the glow, the order of the particles and the fog, every mode and
   rung, and resize and dispose, with a sheet for choosing by when `VITE_FRAME_DIR` is set; `perf:gpu` has `standard
   clear` and `standard clear msaa`.
+- **Clear water's finish (0.30.0), all of it off unless asked:** the swells (`waves.ts`, their sums in TypeScript and
+  WGSL from one packing, spliced into the clear pass's vertex stage by `CLEAR_VERTEX_SPLICES` only as an override, so a
+  water with none compiles its position as before), the near colour, crests and sparkles (`finishUniform`), and the
+  foam lines from a shore field (`shore.ts`, `setShoreField`, bound at 3 and 4 of the clear group with a texel of
+  nought while there is none). `cleargolden.gpu.test.ts` holds a water that asks for none of it to v0.29.0's pixel
+  hashes (`clear-golden.json`, by adapter, written on the old code with `VITE_GOLDEN=1`); `waves.gpu.test.ts` holds
+  the drawn surface to `heightAt` within a pixel; `clearfinish.gpu.test.ts` the near colour, the crests and the
+  sparkles' roundness and brightness; `foamlines.gpu.test.ts` the lines' width at two slopes, the gap, the second line
+  and a field smaller than the water. `perf:gpu` has `standard clear sheet`, `standard clear waves` and `standard
+  clear finish`.
 
 ## The test API
 
@@ -277,8 +287,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,168 tests in 75 files at v0.29.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water; 293 tests in 34 files at v0.29.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,180 tests in 77 files at v0.30.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water and its finish; 306 tests in 38 files at v0.30.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

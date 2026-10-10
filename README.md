@@ -212,6 +212,34 @@ What the measurements settled, so nobody has to re-argue it:
   out `second` times `glow` over its own lit colour, everywhere on it and
   still, through the flowing build. A fish that glows under clear water is
   one, seen through the water and tinted by it.
+- **Clear water's finish, from 0.30.0, is asked for in `look.clear`,** and a
+  water that asks for none of it draws as 0.29.0's did, to the pixel:
+  - `waves`, up to four Gerstner swells (`waves.ts`: a direction, a length, an
+    amplitude and a steepness, going at the speed deep water gives their
+    length), move the surface itself and turn its normal. `heightAt(waves, x,
+    y, t, gravity)` gives the height the surface is drawn at, so what a game
+    floats rides the very water drawn; gravity is `GRAVITY_MM / mmPerUnit`.
+  - `near` and `nearDistance`: a colour the water lightens toward by the
+    camera, with the sky's reflection eased off there. `crest` and
+    `crestAmount`: a colour the swells' tops lighten toward.
+  - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
+    stars where the fine waves catch the glint ahead of the camera, as the
+    glitter does, brighter than one so the bloom haloes them, a radius in
+    pixels on the screen, and fewer into the distance. A game asking for
+    them will want `glitter` at nought.
+  - `setShoreField({ size, distances, min, max })` hands over how far each
+    point of the water is from the nearest shore or anything standing in it
+    (`shore.ts`), made once by the game. With it the foam is a line
+    `foamWidth` wide round every shore whatever its slope, a rim of
+    `foamEdge`, and a second line `foamWidth2` wide `foamGap` beyond, broken by
+    a drifting noise; the foam the depth gives is kept, thin, for what the
+    field does not know. Without one, or outside it, the foam is the depth's
+    band as before. A field is checked as anything from outside is, and
+    replaced or taken away (`null`) whenever the game likes.
+  - All of it together costs nothing measurable over the same water without
+    it: 0.73 ms on the standard scene against 0.74 (`standard clear finish`
+    against `standard clear sheet`, three quiet runs alike), and the four
+    swells alone 0.71.
 - **Ground can wear an image, in a build of its own.** `setGroundTexture(layers)`
   takes up to eight `ImageBitmap`s, all square, all the same size, a power of
   two and at most 1024 across (anything else is refused by name, and the
