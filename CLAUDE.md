@@ -69,7 +69,7 @@ each pins today:
 | Consumer | Pin | Path used |
 | --- | --- | --- |
 | bearing | v0.22.1 | game |
-| ooergolf | v0.22.2 | game |
+| ooergolf, ooerfish | v0.28.0 | game |
 | chopdrop | v0.24.0 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
@@ -192,6 +192,18 @@ What to copy the shape of:
   hash in `shaders.test.ts` was written again for it: the sun's softening and fade are in every build behind uniforms
   that are nought unless asked.
 
+- **A pass of its own after the scene, reading what it drew:** clear water (`clear.ts`, `FLOW_CLEAR` and
+  `FLOW_GLOW` in `flow.ts`, `clearSource` in `shaders.ts`, `askClear`/`drawClear` in `renderer.ts`). A group of
+  `FLOW_CLEAR` placements is kept out of every opaque draw, the shadow maps, the occlusion and the kept bake, and drawn
+  at one sample after the scene pass: the depth made readable (`clearDepthSource`, the nearest of four written into the
+  one-sample depth at four), the frame copied to `opaque`, then the pass, its settings `look.clear` resolved over
+  `CLEAR_DEFAULTS_MM` by `resolveClear` and packed by `packClearFrame`. With one in the frame the particles and effect
+  layers draw after it and the fog marches at one sample. `clear.test.ts` holds the packing, the kinds and that its
+  words are in no scene build; `clear.gpu.test.ts` holds what is under it shown and lost, the foam, the bend and its
+  guard, the glitter, the caustics and their shadow, the glow, the order of the particles and the fog, every mode and
+  rung, and resize and dispose, with a sheet for choosing by when `VITE_FRAME_DIR` is set; `perf:gpu` has `standard
+  clear` and `standard clear msaa`.
+
 ## The test API
 
 A library's test API is its own constructors, run headless:
@@ -244,7 +256,9 @@ For anything new on the game path, say what it does:
 - **frame modes:** `redraw` and `keep`. A kept static half must not freeze
   something that moves.
 - **the passes it reaches:** the sun's shadow map, a spot's, the occlusion
-  depth prepass, the scene, the fog march (which reads depth), bloom, and
+  depth prepass, the scene, the clear pass (which reads the scene's colour and
+  depth, and after which the particles, effects and fog are drawn when there
+  is clear water), the fog march (which reads depth), bloom, and
   the half-float frame (held by `finite`; see `overflow.gpu.test.ts`)
 - **capacity:** at nothing, at capacity and past it. What is kept is fixed
   at construction, and past capacity it is dropped, never grown.
@@ -263,8 +277,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,161 tests in 74 files at v0.28.0 | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance; 279 tests in 34 files at v0.28.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,168 tests in 75 files at v0.29.0 | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water; 293 tests in 34 files at v0.29.0, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

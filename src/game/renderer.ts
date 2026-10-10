@@ -31,7 +31,7 @@ import { sunShadowFitted, sunShadowMatrix, spotShadowMatrix, type Box, type SunF
 import { Particles, type Emit } from './particles';
 import { WASH_EPSILON_MM, type Wash } from './wash';
 import {
-  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, depthResolveSource, sceneSource,
+  BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, SPOT_SHADOWS, clearSource, depthResolveSource, sceneSource,
   type SceneVariant,
 } from './shaders';
 import { CONE_FLOATS, FOG_FLOATS, NO_FOG, fogUniform, noFog, type Fog } from './fog';
@@ -39,7 +39,9 @@ import { ContactOcclusion } from '../render/ao';
 import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from './grass';
 import { GrassPass } from './grass-pass';
 import { MAX_GLOSS, MAX_SHEEN } from './toon';
-import { usesFlow } from './flow';
+import { FLOW_CLEAR, usesClear, usesFlow } from './flow';
+import { CLEAR_FRAME_FLOATS, clearDepthSource, packClearFrame, resolveClear, type ClearWater } from './clear';
+import { invertInto } from '../geom/transform';
 import { TEXTURE_STRIDE, checkLayers, mipLevels, usesTexture } from './texture';
 import { GROUND_FORMAT, MipBlitter } from './mips';
 
@@ -216,6 +218,12 @@ export interface Look {
    * as it was.
    */
   waterShadow?: boolean;
+  /**
+   * Clear water's settings (`clear.ts`): how far into it a game can see, how its waves bend what is under it, its foam,
+   * its glitter and its caustics, for every clear group in the frame. Left out, the defaults, which a game with no clear
+   * group never reads.
+   */
+  clear?: Partial<ClearWater>;
   /**
    * Screen-space ambient occlusion: how dark a crease, a corner or the
    * ground under a thing goes. 1 is the still-life renderer's contact
@@ -661,6 +669,8 @@ interface Uploaded {
   texture: GPUBuffer | null;
   /** Whether the group draws through the textured build. */
   textured: boolean;
+  /** Whether the group is clear water, drawn in the clear pass and in no opaque pass, shadow map or occlusion. */
+  clear: boolean;
   indexCount: number;
   capacity: number;
   count: number;
@@ -779,6 +789,25 @@ export class GameRenderer {
   particleFog: ParticleFog = 'behind';
   /** The fogged particles' own builds, asked for once, and the depth resolve at four samples that goes with them. */
   private ownBuild: Promise<void> | null = null;
+  /**
+   * Clear water's pass, built the first time a clear group is handed in (`askClear`): its pipelines, with and without
+   * the sun's shadow, the pass before it that makes the opaque depth readable at one sample and four, the copy of the
+   * opaque frame it reads what is under the water from, and its uniform. None of it is made for a game with no clear
+   * water.
+   */
+  private clearBuild: Promise<void> | null = null;
+  private clearPipelines = new Map<boolean, GPURenderPipeline>();
+  private clearDepthPipelines = new Map<number, GPURenderPipeline>();
+  private clearDepthLayouts = new Map<number, GPUBindGroupLayout>();
+  private clearDepthBinds = new Map<number, GPUBindGroup>();
+  private clearLayout: GPUBindGroupLayout | null = null;
+  private clearBuffer: GPUBuffer | null = null;
+  private clearBind: GPUBindGroup | null = null;
+  private opaque: GPUTexture | null = null;
+  private opaqueDepth: GPUTexture | null = null;
+  /** The clear pass's uniform and the camera's inverse it is packed from, made once and written each frame. */
+  private readonly clearFrame = new Float32Array(CLEAR_FRAME_FLOATS);
+  private readonly clearInverse = new Float32Array(16);
   private resolveLayout: GPUBindGroupLayout | null = null;
   private resolvePipeline: GPURenderPipeline | null = null;
   private resolveBind: GPUBindGroup | null = null;
@@ -1184,6 +1213,129 @@ export class GameRenderer {
     await this.ownBuild;
     this.askSky();
     await this.skyBuild;
+    await this.clearBuild;
+  }
+
+  /**
+   * Starts clear water's builds, once, the first time a clear group is handed in: the clear pass with the sun's shadow
+   * and without, and the pass that makes the opaque depth readable, at one sample a pixel and at four. Its targets are
+   * made once they are in, and again on every resize.
+   */
+  private askClear() {
+    if (this.clearBuild) return;
+    const { device } = this.ctx;
+    this.clearLayout = device.createBindGroupLayout({
+      label: 'game clear',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    this.clearBuffer = device.createBuffer({ label: 'game clear', size: CLEAR_FRAME_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout, this.clearLayout] });
+    const surface = (shadowed: boolean) => {
+      const module = shader(device, clearSource(shadowed), shadowed ? 'game clear' : 'game clear unshadowed');
+      const d = this.sceneDescriptor({ patterned: true }, module, 1);
+      return device.createRenderPipelineAsync({ ...d, label: shadowed ? 'game clear' : 'game clear unshadowed', layout })
+        .then((p) => { this.clearPipelines.set(shadowed, p); });
+    };
+    const reader = (samples: number) => {
+      const many = samples > 1;
+      const l = device.createBindGroupLayout({
+        label: `game clear depth x${samples}`,
+        entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', multisampled: many } }],
+      });
+      this.clearDepthLayouts.set(samples, l);
+      const module = shader(device, clearDepthSource(samples), `game clear depth x${samples}`);
+      return device.createRenderPipelineAsync({
+        label: `game clear depth x${samples}`,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [l] }),
+        vertex: { module, entryPoint: 'vsMain' },
+        fragment: { module, entryPoint: 'fsMain', targets: [{ format: 'r32float' }] },
+        primitive: { topology: 'triangle-list' },
+        // at four samples it writes the nearest of them into the one-sample depth the clear pass tests against
+        ...(many ? { depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'always' as const } } : {}),
+      }).then((p) => { this.clearDepthPipelines.set(samples, p); });
+    };
+    this.clearBuild = Promise.all([surface(true), surface(false), reader(1), reader(SAMPLES)]).then(() => { this.makeClearTargets(); });
+  }
+
+  /** Clear water's copy of the opaque frame, its readable depth and their bind groups, at the frame's size: once its builds are in, and on every resize. */
+  private makeClearTargets() {
+    if (!this.clearLayout || !this.clearBuffer || !this.colour || !this.depth || !this.clearDepthPipelines.size) return;
+    const { device } = this.ctx;
+    this.opaque?.destroy();
+    this.opaqueDepth?.destroy();
+    this.opaque = device.createTexture({ label: 'game opaque', size: [this.width, this.height], format: HDR, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    this.opaqueDepth = device.createTexture({ label: 'game opaque depth', size: [this.width, this.height], format: 'r32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    this.clearBind = device.createBindGroup({
+      label: 'game clear', layout: this.clearLayout,
+      entries: [
+        { binding: 0, resource: this.opaque.createView() },
+        { binding: 1, resource: this.opaqueDepth.createView() },
+        { binding: 2, resource: { buffer: this.clearBuffer } },
+      ],
+    });
+    this.clearDepthBinds.clear();
+    const one = this.clearDepthLayouts.get(1);
+    if (one) this.clearDepthBinds.set(1, device.createBindGroup({ label: 'game clear depth', layout: one, entries: [{ binding: 0, resource: this.depth.createView() }] }));
+    const four = this.clearDepthLayouts.get(SAMPLES);
+    if (four && this.msaaDepth)
+      this.clearDepthBinds.set(SAMPLES, device.createBindGroup({ label: 'game clear depth x4', layout: four, entries: [{ binding: 0, resource: this.msaaDepth.createView() }] }));
+  }
+
+  /** Whether there is clear water to draw this frame, and everything it is drawn with is in. */
+  private get clearOn(): boolean {
+    if (!this.clearBind || !this.opaque) return false;
+    for (const g of this.staticGroups) if (g.clear && g.count) return true;
+    for (const g of this.dynamicGroups) if (g.clear && g.count) return true;
+    return false;
+  }
+
+  /**
+   * Clear water, over the opaque frame the scene pass has just drawn: its depth made readable (and, at four samples,
+   * the nearest of them written into the frame's one-sample depth), the frame copied, and the clear groups drawn at
+   * one sample into the frame, tested against that depth and writing their own into it.
+   */
+  private drawClear(encoder: GPUCommandEncoder, samples: number) {
+    const depthPipeline = this.clearDepthPipelines.get(samples);
+    const depthBind = this.clearDepthBinds.get(samples);
+    const surface = this.clearPipelines.get(this.economy.shadows !== false);
+    if (!depthPipeline || !depthBind || !surface || !this.sceneBind || !this.clearBind) return;
+    const read = encoder.beginRenderPass({
+      label: 'game clear depth',
+      colorAttachments: [{ view: this.opaqueDepth!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 1, g: 0, b: 0, a: 0 } }],
+      ...(samples > 1 ? { depthStencilAttachment: { view: this.depth!.createView(), depthClearValue: 1, depthLoadOp: 'clear' as const, depthStoreOp: 'store' as const } } : {}),
+    });
+    read.setPipeline(depthPipeline);
+    read.setBindGroup(0, depthBind);
+    read.draw(3);
+    read.end();
+    encoder.copyTextureToTexture({ texture: this.colour! }, { texture: this.opaque! }, [this.width, this.height]);
+    if (invertInto(this.clearInverse, this.camera.viewProjection)) {
+      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, resolveClear(this.look.clear, this.mmPerUnit));
+      this.ctx.device.queue.writeBuffer(this.clearBuffer!, 0, this.clearFrame);
+    }
+    const pass = encoder.beginRenderPass({
+      label: 'game clear',
+      colorAttachments: [{ view: this.colour!.createView(), loadOp: 'load', storeOp: 'store' }],
+      depthStencilAttachment: { view: this.depth!.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+    });
+    pass.setPipeline(surface);
+    pass.setBindGroup(0, this.sceneBind);
+    pass.setBindGroup(1, this.clearBind);
+    for (const g of [...this.staticGroups, ...this.dynamicGroups]) {
+      if (!g.clear || !g.count) continue;
+      pass.setVertexBuffer(0, g.position);
+      pass.setVertexBuffer(1, g.normal);
+      pass.setVertexBuffer(2, g.instance);
+      pass.setVertexBuffer(3, g.material);
+      pass.setVertexBuffer(4, g.pattern);
+      pass.setIndexBuffer(g.index, 'uint32');
+      pass.drawIndexed(g.indexCount, g.count);
+    }
+    pass.end();
   }
 
   /**
@@ -1430,6 +1582,7 @@ export class GameRenderer {
     });
     this.makeResolveBind();
     this.keptStaleMsaa = true;
+    this.makeClearTargets();
   }
 
   /** The kept static half at four samples a pixel: made the first time `keep` is drawn with them, since a game that never keeps never needs it. */
@@ -1559,14 +1712,22 @@ export class GameRenderer {
         label: 'patterns', size: Math.max(PATTERN_STRIDE * 4, capacity * PATTERN_STRIDE * 4),
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
-      let flowing = false;
+      let flowing = false,
+        clear = false;
       if (g.patterns) {
         const out = new Float32Array(Math.max(PATTERN_STRIDE, capacity * PATTERN_STRIDE));
         out.set(g.patterns.subarray(0, out.length));
+        clear = usesClear(out, PATTERN_STRIDE);
+        // a clear group is drawn by a pass of its own, which has nothing to say of any other kind
+        if (clear)
+          for (let i = 0; i < capacity; i++)
+            if (Math.abs(out[i * PATTERN_STRIDE] - FLOW_CLEAR) >= 0.5)
+              throw new Error('a group with clear water in it is all clear water: its other placements would be drawn by nothing');
         device.queue.writeBuffer(pattern, 0, out);
-        flowing = usesFlow(out, PATTERN_STRIDE);
+        flowing = !clear && usesFlow(out, PATTERN_STRIDE);
       }
       if (flowing) this.askFlow();
+      if (clear) this.askClear();
       let texture: GPUBuffer | null = null;
       if (textured) {
         texture = device.createBuffer({
@@ -1589,6 +1750,7 @@ export class GameRenderer {
         flowing,
         texture,
         textured,
+        clear,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -1761,7 +1923,8 @@ export class GameRenderer {
     rp.setBindGroup(0, this.passBinds[pass]);
     for (const groups of [this.staticGroups, this.dynamicGroups]) {
       for (const g of groups) {
-        if (!g.count) continue;
+        // clear water casts no shadow: the bed under it is lit through it
+        if (!g.count || g.clear) continue;
         rp.setVertexBuffer(0, g.position);
         rp.setVertexBuffer(1, g.instance);
         rp.setIndexBuffer(g.index, 'uint32');
@@ -1937,6 +2100,7 @@ export class GameRenderer {
     // and the antialiasing's own, if it has been asked for
     this.makeMsaaTargets();
     this.makeFxaaTargets();
+    this.makeClearTargets();
   }
 
   private writeFrame() {
@@ -1987,7 +2151,7 @@ export class GameRenderer {
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
     let on: GPURenderPipeline | null = null;
     for (const g of groups) {
-      if (!g.count) continue;
+      if (!g.count || g.clear) continue;
       if (only && g.flowing !== (only === 'flowing')) continue;
       // a textured group is drawn plain, or as its speckle, until its build is in
       const want = g.flowing ? flowing : g.textured && textured ? textured : g.patterned ? patterned : plain;
@@ -2078,7 +2242,8 @@ export class GameRenderer {
       prepass.setPipeline(this.occlusionDepthPipeline);
       prepass.setBindGroup(0, this.occlusionPassBind);
       for (const g of [...this.staticGroups, ...this.dynamicGroups]) {
-        if (!g.count) continue;
+        // clear water darkens no corner of what is under it
+        if (!g.count || g.clear) continue;
         prepass.setVertexBuffer(0, g.position);
         prepass.setVertexBuffer(1, g.instance);
         prepass.setIndexBuffer(g.index, 'uint32');
@@ -2114,6 +2279,10 @@ export class GameRenderer {
     // they are drawn in the scene pass as ever.
     const fogOn = this.economy.fog !== false && this.fog.density > 0 && !!this.fogPipeline && !!this.fogBlendPipeline && !!this.fogMap;
     const afterFog = particles && fogOn && this.particleFog === 'own' && this.particles.ownReady && (!multisampled || (!!this.resolveBind && !!this.resolvePipeline));
+    // Clear water is drawn after the scene pass, over what it drew; so the particles and the effect layers, which write
+    // no depth, are drawn after it too, against the depth with the water in it, or a splash above the water would be
+    // drawn under it. And the fog marches over that depth, at one sample, so the air's haze stops at the water.
+    const clear = this.clearOn;
 
     const pass = encoder.beginRenderPass({
       label: 'game scene',
@@ -2144,14 +2313,34 @@ export class GameRenderer {
     this.draw(pass, this.dynamicGroups, samples);
     // the grass moves every frame, so it is drawn with the movers and never kept with the static half
     if (this.grassGrown) this.grass!.draw(pass, this.sceneBind, { ...this.economy, toon: this.look.shading === 'toon' }, samples);
-    if (particles && !afterFog) this.particles.draw(pass, samples);
+    if (particles && !afterFog && !clear) this.particles.draw(pass, samples);
     const layers = Math.round(this.effectQuads * Math.max(0, Math.min(1, this.economy.effects)));
-    if (layers && this.effectBind) {
+    if (layers && this.effectBind && !clear) {
       pass.setPipeline(multisampled ? this.effectMsaa! : this.effect);
       pass.setBindGroup(0, this.effectBind);
       pass.draw(6, layers);
     }
     pass.end();
+
+    // clear water, over what the scene pass drew, before the fog and the post chain see the frame; then what writes no depth
+    if (clear) {
+      this.drawClear(encoder, samples);
+      const loose = particles && !afterFog;
+      if (loose || (layers && this.effectBind)) {
+        const over = encoder.beginRenderPass({
+          label: 'game over clear',
+          colorAttachments: [{ view: this.colour!.createView(), loadOp: 'load', storeOp: 'store' }],
+          depthStencilAttachment: { view: this.depth!.createView(), depthLoadOp: 'load', depthStoreOp: 'store' },
+        });
+        if (loose) this.particles.draw(over, 1);
+        if (layers && this.effectBind) {
+          over.setPipeline(this.effect);
+          over.setBindGroup(0, this.effectBind);
+          over.draw(6, layers);
+        }
+        over.end();
+      }
+    }
 
     // The fog, over the frame, before any of the post chain sees it. It
     // needs the sun's map, which the shadow block above has just drawn, and
@@ -2183,8 +2372,10 @@ export class GameRenderer {
         label: 'game fog',
         colorAttachments: [{ view: this.fogMap!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       });
-      march.setPipeline(multisampled ? this.fogMsaaPipeline! : this.fogPipeline);
-      march.setBindGroup(0, multisampled ? this.fogMsaaBind! : this.fogBind!);
+      // with clear water the frame's one-sample depth is the whole scene's, the water's surface in it, whatever the antialiasing
+      const marchMsaa = multisampled && !clear;
+      march.setPipeline(marchMsaa ? this.fogMsaaPipeline! : this.fogPipeline);
+      march.setBindGroup(0, marchMsaa ? this.fogMsaaBind! : this.fogBind!);
       march.draw(3);
       march.end();
 
@@ -2204,7 +2395,8 @@ export class GameRenderer {
     // four samples one made from the four, since the scene pass has resolved
     // its colour and thrown the samples away.
     if (afterFog) {
-      if (multisampled) {
+      // with clear water the one-sample depth is already the whole scene's, and resolving it again would lose the water
+      if (multisampled && !clear) {
         const resolve = encoder.beginRenderPass({
           label: 'game depth resolve',
           colorAttachments: [],
@@ -2348,5 +2540,8 @@ export class GameRenderer {
     this.groundTexture?.destroy();
     this.occlusionPassBuffer.destroy();
     this.skyBuffer?.destroy();
+    this.clearBuffer?.destroy();
+    this.opaque?.destroy();
+    this.opaqueDepth?.destroy();
   }
 }

@@ -24,6 +24,7 @@
 import { FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
 import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
 import { TEXTURE_SPLICES } from './texture';
+import { CLEAR_FRAGMENT } from './clear';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
 
 /** What a permutation of the scene shader may leave out. */
@@ -720,6 +721,19 @@ export function sceneWith(vertex: string, { cullLights = true, points = true, sh
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
     + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\n` + flow + head + stage + material + fragment;
+}
+
+/**
+ * The clear pass's shader: the scene shader's head and a group's own vertex stage, with the flowing build's tangents
+ * in both, the flow's WGSL for the waves, and clear water's fragment stage (`clear.ts`), which reads what is under the
+ * water from bindings of its own in a second group. Its own text, so no build of the scene shader changes by a byte.
+ */
+export function clearSource(shadows = true): string {
+  const head = spliced(SCENE_HEAD, FLOW_SPLICES.struct.from, FLOW_SPLICES.struct.to, 'clear');
+  const stage = spliced(SCENE_VERTEX, FLOW_SPLICES.vertex.from, FLOW_SPLICES.vertex.to, 'clear');
+  return `const CULL_BY_RADIUS: bool = true;\nconst POINT_LIGHTS: bool = false;\n`
+    + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = true;\nconst TOON: bool = true;\nconst MATTE_ONLY: bool = false;\n`
+    + `const SPOT_SLOTS: u32 = ${SPOT_SHADOWS}u;\nconst CLEAR: bool = true;\n` + head + stage + FLOW_WGSL + CLEAR_FRAGMENT;
 }
 
 /**

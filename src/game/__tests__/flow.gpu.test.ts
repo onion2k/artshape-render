@@ -448,9 +448,10 @@ describe('the flow material on the game renderer', () => {
     r.setStatic([ballsWith(flowOf({ kind: FLOW_RIPPLE, scale: 1, speed: 1, glow: 1 }), 0)]);
     await r.prepare();
     const none = part(await at_(2));
-    r.setStatic([ballsWith(flowOf({ kind: FLOW_RIPPLE, scale: 1, speed: 1, glow: 1 }), 9)]);
+    // eleven, past every kind there is: nine is clear water and ten a glow since v0.29.0, each drawn by a build of its own
+    r.setStatic([ballsWith(flowOf({ kind: FLOW_RIPPLE, scale: 1, speed: 1, glow: 1 }), 11)]);
     await r.prepare();
-    expect(differing(none, part(await at_(2))), 'a kind of nine, among flowing ones').toBe(0);
+    expect(differing(none, part(await at_(2))), 'a kind of eleven, among flowing ones').toBe(0);
   });
 
   it('has its build in when `prepare` says so, with nothing waited on but that', async () => {

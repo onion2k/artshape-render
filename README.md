@@ -179,6 +179,39 @@ What the measurements settled, so nobody has to re-argue it:
   did. A kept static half (`'keep'`) redraws a flowing static group each frame
   and keeps the rest, so it costs what that group costs and no more. Edges,
   foam and banks are the game's to draw as geometry of its own.
+- **Clear water, from 0.29.0, is seen through.** A placement of kind 9
+  (`FLOW_CLEAR`) is open water's twelve waves on a surface drawn in a pass of
+  its own after the opaque scene, at one sample a pixel: the scene's depth is
+  made readable (at four samples, the nearest of them, into the frame's own
+  depth), the frame is copied, and the water reads what is under it from the
+  copy. What is below is lost to the deep colour (`second`) with the depth of
+  water the eye looks through, a channel at a time, so the shallows turn teal
+  of themselves and the deep is the deep colour at its richest; it is bent by
+  the waves the more the deeper it lies, but never where the bend would land
+  on something out of the water; there is foam where the water stands thin,
+  a crisp white line with an edge of `foamEdge`, broken by a drifting noise;
+  sun glitter in sharp dashes; soft caustics on what is under the shallows,
+  where the sun's map says the sun reaches; and the sky mirrored only where
+  the surface is seen edge-on. How much of each is `look.clear` (`clear.ts`),
+  one record for the frame, packed into a uniform, so a game changes it each
+  frame for nothing: a lake that clears as it is cured is that record and
+  not its groups handed over again. Its lengths are the world's own, and its
+  defaults, in millimetres, are the sheet chosen from on 10 October 2026: half
+  the light gone by 160 mm, a bend of up to 100 mm, foam where it is 30 mm deep
+  or less, caustic cells 150 mm across. A clear group is all clear water (one
+  with any other kind in it is refused); it casts no shadow, darkens no
+  corner by occlusion, and is not in the kept half. With one in the frame the
+  particles and the effect layers are drawn after it, against the depth with
+  the water in it, and the fog marches over that depth at one sample whatever
+  the antialiasing, so a splash above the water is over it and the haze stops
+  at its surface. Its builds are compiled the first time a clear group is
+  handed in, and `prepare()` waits; a game with none compiles and draws
+  nothing new. It costs 0.70 ms on the standard scene against open water's
+  0.64, and 0.74 against 0.66 at four samples (`standard clear`).
+- **A glow, from 0.29.0,** is kind 10 (`FLOW_GLOW`): a placement that gives
+  out `second` times `glow` over its own lit colour, everywhere on it and
+  still, through the flowing build. A fish that glows under clear water is
+  one, seen through the water and tinted by it.
 - **Ground can wear an image, in a build of its own.** `setGroundTexture(layers)`
   takes up to eight `ImageBitmap`s, all square, all the same size, a power of
   two and at most 1024 across (anything else is refused by name, and the

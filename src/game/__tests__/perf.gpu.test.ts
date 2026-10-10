@@ -23,7 +23,7 @@ import { FULL_ECONOMY, GameRenderer, type GameGroup, type Look } from '../render
 import { noFog } from '../fog';
 import { LightPool } from '../lights';
 import { grassGround, type GrassField, type GrassKind } from '../grass';
-import { FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, packFlow } from '../flow';
+import { FLOW_CLEAR, FLOW_CRUST, FLOW_DRIFT, FLOW_RIPPLE, FLOW_WATER, packFlow } from '../flow';
 import { packTexture } from '../texture';
 import { judge, median, recorded } from './perf';
 import type { Emit } from '../particles';
@@ -288,6 +288,19 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.setStatic([...standardScene(), lone(FLOW_WATER, 0.4, 0.3)]);
     await r.prepare();
     measured['standard water'] = await time();
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['standard water msaa'] = await time();
+    r.look = plain;
+    // the same strip as clear water, seen through to the ground and its boxes: the depth made readable, the frame copied,
+    // and the clear pass over it, at one sample a pixel and at four
+    r.setStatic([...standardScene(), lone(FLOW_CLEAR, 0.4, 0.3)]);
+    await r.prepare();
+    measured['standard clear'] = await time();
+    r.look = { ...plain, antialias: 'msaa' };
+    await r.prepare();
+    measured['standard clear msaa'] = await time();
+    r.look = plain;
     // v0.28.0's settings together over the same water: the sky, the sun's map fitted to the view and softened over nine
     // taps, and the water darkened in its shadow
     r.look = { ...plain, sky: { zenith: [0.03, 0.33, 0.9], horizon: [0.6, 0.85, 1] }, shadowSoftness: 2, waterShadow: true };

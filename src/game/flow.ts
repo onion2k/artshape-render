@@ -36,7 +36,22 @@ export const FLOW_DRIFT = 7;
  */
 export const FLOW_WATER = 8;
 
-/** Whether a pattern kind is one of the flow kinds: five and up, which is every kind there is (ripple, crust, drift and water). The old kinds are one to four, and none is nought. */
+/**
+ * Clear water: open water's twelve waves on a surface that is seen through, drawn in a pass of its own after the opaque
+ * scene, which reads what is under it. What is below shows through it, bent by the waves and lost to the deep colour
+ * with the water's depth, with foam where it is thin and caustics on what is under the shallows (`clear.ts` holds how
+ * much of each, in `look.clear`). A placement's `scale`, `speed` and `glow` are open water's, the first colour is the
+ * shallows' and `second` is the deep colour. A group with any placement of it is a clear group: every placement of it
+ * is clear water, and it is drawn in no opaque pass, no shadow map and no occlusion.
+ */
+export const FLOW_CLEAR = 9;
+/**
+ * A glow: a placement that gives out light of its own, `second` times `glow`, over its own lit colour, everywhere on it
+ * and still, whatever light falls on it. A glowing fish under clear water. It is drawn through the flowing build.
+ */
+export const FLOW_GLOW = 10;
+
+/** Whether a pattern kind is one of the flow kinds: five and up, which is every kind there is (ripple, crust, drift, water, clear water and glow). The old kinds are one to four, and none is nought. */
 export function isFlowKind(kind: number): boolean {
   return kind >= 4.5;
 }
@@ -86,6 +101,13 @@ export function packFlow(out: Float32Array, offset: number, p: FlowPlacement): F
 export function usesFlow(patterns: Float32Array | undefined, stride: number): boolean {
   if (!patterns) return false;
   for (let i = 0; i + 3 < patterns.length; i += stride) if (isFlowKind(patterns[i])) return true;
+  return false;
+}
+
+/** Whether any placement of a group's patterns is clear water: what makes a group a clear group, drawn in the clear pass. */
+export function usesClear(patterns: Float32Array | undefined, stride: number): boolean {
+  if (!patterns) return false;
+  for (let i = 0; i + 3 < patterns.length; i += stride) if (Math.abs(patterns[i] - FLOW_CLEAR) < 0.5) return true;
   return false;
 }
 
@@ -295,6 +317,11 @@ fn flowSurface(in: VsOut) -> FlowSurface {
     // open water: the waves turn the normal in the world, so a pool of any shape is one water
     let slope = waterSlope(in.world.xy * in.pattern.y, frame.spare0 * in.pattern.z, pixel);
     s.normal = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w);
+    return s;
+  }
+  if (kind > 9.5 && kind < 10.5) {
+    // a glow: its light everywhere on it, still, and nothing else changed
+    s.glow = in.second * in.pattern.w;
     return s;
   }
   if (kind < 4.5 || kind > 7.5) { return s; }
