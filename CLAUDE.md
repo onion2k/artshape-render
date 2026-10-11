@@ -42,8 +42,9 @@ Until there are:
   environments in `env.ts`). The game path borrows two things from it:
   `bakeEnvironment` from `env.ts`, and `ContactOcclusion` from `ao.ts`.
 - **What both share, and what has no picture:** `gpu/` (device, buffers,
-  camera), `geom/`, `mesh/` (the generators, and `rounded.ts`: a rounded
-  box and rounded profile corners, for a toy's moulded edges), `parts/`,
+  camera), `geom/`, `mesh/` (the generators, `rounded.ts`: a rounded
+  box and rounded profile corners, for a toy's moulded edges, and `lowpoly.ts`: flat-faced
+  solids for faceted scenery, with `parts/lowpoly.ts` the trees made of them), `parts/`,
   `pattern/`, `assembly/` and `dsl/`. All of it is pure and runs under node.
 - **The thing without its picture.** A renderer's arithmetic lives in pure
   functions beside it and is tested under node. Examples are `fogUniform`
@@ -84,6 +85,11 @@ here with a GPU test.
 ## Model features
 
 What to copy the shape of:
+
+- **Scenery with no colour:** the faceted trees (`parts/lowpoly.ts`, helpers in `mesh/lowpoly.ts`). A generator
+  returns `{ name, parts: { name, mesh }[] }` and the game colours by part name; chance is a `seed`
+  through `seeded`, and `height` scales every dimension evenly so one mesh instances at any height.
+  `lowpoly.test.ts` beside each holds the exact triangle counts, the seed, the ground and the height.
 
 - **Something a game sees:** the particles. `particles.ts` is a class that
   takes the device and its capacities in its constructor, compiles its

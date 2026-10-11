@@ -28,6 +28,13 @@ would cost them something for nothing.
   profile along a curve, a revolve of a silhouette, and a parametric
   sheet thickened into a shell. New shapes are mostly new outlines and
   functions, not new mesh code.
+- **A toy's faceted scenery, for a game to colour** — `broadleaf`,
+  `conifer`, `farTree`, `bush`, `fern` and `boulder` in `parts/lowpoly.ts`,
+  cut with flat faces from the helpers in `mesh/lowpoly.ts` (`at`, `face`,
+  `tri`, `frustum`, `lump`). Cheap (a broadleaf is 204 triangles, a far tree
+  10 or 16), seeded, standing on the ground at the origin with a tree's top
+  at its height, and made of named meshes with no colour: the game colours
+  `trunk`, `leaves` and `crown` itself.
 - **Every mesh carries surface coordinates in millimetres** beside its
   0..1 uv, so a groove is the same width on a plate, a wire and a bead,
   and engraving and lettering are cut in real sizes.
