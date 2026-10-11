@@ -239,6 +239,16 @@ What the measurements settled, so nobody has to re-argue it:
     lightens (three tenths by default), so only the crests' sides catch it.
     A full slope is 0.6 of the fine waves' own, whatever the steepness. A
     water that asks for none draws as 0.32.0's did, to the pixel.
+  - `foamSoft` and `foamEverywhere` (from 0.34.0), for a bold ink-line of foam round
+    everything that stands in the water: `foamSoft` is how soft the line's edge
+    is as a share of its width (six hundredths by default, lower is crisper,
+    never under three quarters of a pixel), and `foamEverywhere` draws the
+    depth band at its full width inside the shore field too, so a bobber, a
+    boat or a rock near the surface has a ring where the water is thin over
+    it, as the shore has, and the field's own lines are left as they were. A
+    thing wholly under the water but nearer the surface than `foamWidth` rings
+    too, so a game sets that small. A water that asks for neither draws as
+    0.33.0's did, to the pixel.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in

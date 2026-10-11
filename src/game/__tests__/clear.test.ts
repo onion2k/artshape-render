@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, packClearFrame, resolveClear, rippleUniform } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform } from '../clear';
 import { WAVE_FLOATS } from '../waves';
 import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
@@ -81,7 +81,7 @@ describe("clear water's finish", () => {
   });
 
   it('comes after the waves in the frame and before the shore field, which is every part packed and no more', () => {
-    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS);
+    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, resolveClear({ near: [0.25, 0.5, 0.75], nearDistance: 3 }, 100), 98.1);
     expect([...out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS, 24 + CLEAR_STRIDE + WAVE_FLOATS)]).toEqual([0.25, 0.5, 0.75, 3]);
@@ -103,7 +103,7 @@ describe("clear water's mirror", () => {
     // and in the frame, after the shore field, which keeps the place it had
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -129,7 +129,7 @@ describe("clear water's ripples", () => {
     expect(CLEAR_RIPPLE_FLOATS).toBe(8);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 0, 0]);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -139,6 +139,31 @@ describe("clear water's ripples", () => {
     expect(resolveClear({ rippleCut: 3 }, 100).rippleCut).toBe(1);
     expect(resolveClear({ rippleCut: -1 }, 100).rippleCut).toBe(0);
     expect(resolveClear({ rippleAmount: NaN, rippleCut: Infinity }, 100)).toMatchObject({ rippleAmount: 0.5, rippleCut: 0.3 });
+  });
+});
+
+describe("clear water's foam", () => {
+  it('is as it was by default: an edge of six hundredths of the width, and only the shore fields lines inside the field', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.foamSoft, w.foamEverywhere]).toEqual([0.06, false]);
+    expect([...foamUniform(new Float32Array(CLEAR_FOAM_FLOATS).fill(-1), w)]).toEqual([Math.fround(0.06), 0, 0, 0]);
+  });
+
+  it('take a softness and a flag, and pack them last in the frame, after the ripples, where the shader reads them', () => {
+    const w = resolveClear({ foamSoft: 0.01, foamEverywhere: true }, 100);
+    expect([w.foamSoft, w.foamEverywhere]).toEqual([0.01, true]);
+    expect(CLEAR_FOAM_FLOATS).toBe(4);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([Math.fround(0.01), 1, 0, 0]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('hold the softness to nought or more, and keep the default for what is not a number', () => {
+    expect(resolveClear({ foamSoft: -1 }, 100).foamSoft).toBe(0);
+    expect(resolveClear({ foamSoft: 0 }, 100).foamSoft).toBe(0);
+    expect(resolveClear({ foamSoft: NaN }, 100).foamSoft).toBe(0.06);
+    expect(resolveClear({ foamSoft: Infinity }, 100).foamSoft).toBe(0.06);
   });
 });
 

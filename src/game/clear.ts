@@ -92,6 +92,22 @@ export interface ClearWater {
    * crests' sides catch it: nought lightens by every slope, one by none.
    */
   rippleCut: number;
+  /**
+   * How soft the foam line's edge is, as a share of its width, from nought up; the default is as the lines were drawn
+   * before this option. Lower is crisper, a bold ink-line. It softens the edges of the shore field's lines and of the
+   * depth band that stands in for them, and never below three quarters of a pixel, so a line is not aliased whatever
+   * this is. It does not reach the plain band drawn where there is no shore field.
+   */
+  foamSoft: number;
+  /**
+   * Whether inside the shore field the depth band is drawn at its full width too, so that a thing standing in the water
+   * (a bobber, a boat, a crate, a rock near the surface) has a ring of foam where the water is thin over it, as the
+   * shore has. False draws only the field's lines there, and a thin band where the field rings nothing, as before.
+   * The band is the water over whatever is under it being thinner than `foamWidth`, so a thing wholly under the
+   * surface but nearer it than that rings too (a fish at that depth, say): a game that wants that sets `foamWidth` small. Where
+   * the field's own lines are, the band is left out, so a shore is not doubled and its line keeps its even width.
+   */
+  foamEverywhere: boolean;
 }
 
 /**
@@ -125,6 +141,8 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   ripple: null,
   rippleAmount: 0.5,
   rippleCut: 0.3,
+  foamSoft: 0.06,
+  foamEverywhere: false,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -172,11 +190,13 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     ripple: n.ripple ?? d.ripple,
     rippleAmount: Math.min(taken(n.rippleAmount, d.rippleAmount), 1),
     rippleCut: Math.min(taken(n.rippleCut, d.rippleCut), 1),
+    foamSoft: taken(n.foamSoft, d.foamSoft),
+    foamEverywhere: n.foamEverywhere ?? d.foamEverywhere,
   };
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | keyof ClearRipple>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | keyof ClearRipple | keyof ClearFoam>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -228,11 +248,23 @@ export function rippleUniform(out: Float32Array, w: ClearRipple): Float32Array {
   return out;
 }
 
+/** The settings of the foam's edge and reach, packed after the ripples. */
+type ClearFoam = Pick<ClearWater, 'foamSoft' | 'foamEverywhere'>;
+
+/** How many floats the foam's options are packed into: one vec4. */
+export const CLEAR_FOAM_FLOATS = 4;
+
+/** Writes the foam's edge softness and a one where the depth band is drawn everywhere into `out`, and returns it. */
+export function foamUniform(out: Float32Array, w: ClearFoam): Float32Array {
+  out.set([w.foamSoft, w.foamEverywhere ? 1 : 0, 0, 0]);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; and the ripples.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; and the foam's options.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
@@ -253,9 +285,10 @@ export function packClearFrame(
   clearUniform(out.subarray(20, 20 + CLEAR_STRIDE), w);
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
-  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
-  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS), w);
-  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS), w);
+  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
+  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS), w);
+  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
+  foamUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
   return out;
 }
 
@@ -317,6 +350,8 @@ struct ClearFrame {
   // the ripples' colour and a one where there is one; then the amount and the cut
   ripple: vec4f,
   ripples: vec4f,
+  // the foam line's edge softness as a share of its width, and a one where the depth band is drawn in the field too
+  foamOpt: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -548,13 +583,13 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let width = cw.water.z;
   if (width > 0.0 && inField) {
     // with a shore field, lines of even width round every shore whatever its slope: the line, its rim, a gap and a
-    // second line, broken by the same noise; and the band the depth gives, thin, only out where the field rings nothing
+    // second line, broken by the same noise; and the band the depth gives, thin (or, asked for, full width), only out where the field rings nothing
     let q = in.world.xy / (width * FOAM_LINE_CELL) + vec2f(frame.spare0 * FOAM_DRIFT, 0.0);
     let noise = flowNoise(q) * (1.0 - FOAM_LINE_FINE) + flowNoise(q * 2.7 + 5.3) * FOAM_LINE_FINE;
     let wobble = (noise - 0.5) * width * FOAM_BREAK;
     let d = shore + wobble;
     // eased over a pixel at the least, so a line is crisp and not jagged
-    let soft = max(width * FOAM_SOFT, perPixel * 0.75);
+    let soft = max(width * cw.foamOpt.x, perPixel * 0.75);
     let line = 1.0 - smoothstep(width - soft, width + soft, d);
     let rimTo = width * (1.0 + FOAM_RIM);
     let rim = 1.0 - smoothstep(rimTo - soft, rimTo + soft, d);
@@ -563,9 +598,14 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     let second = select(0.0, smoothstep(from2 - soft, from2 + soft, d) * (1.0 - smoothstep(to2 - soft, to2 + soft, d)), cw.lines.y > 0.0);
     let thinW = width * FOAM_THIN;
     let thin = (1.0 - smoothstep(thinW - soft, thinW + soft, stand + wobble * FOAM_THIN)) * step(to2 + width, shore);
+    // asked for, the band is drawn at its full width out where the field rings nothing, with its rim, so a thing in the
+    // water has a ring as the shore has
+    let band = (1.0 - smoothstep(width - soft, width + soft, stand + wobble)) * step(to2 + width, shore);
+    let bandRim = (1.0 - smoothstep(rimTo - soft, rimTo + soft, stand + wobble)) * step(to2 + width, shore);
+    let ringed = select(thin, band, cw.foamOpt.y > 0.5);
     let lit = lightOn * frame.exposure;
-    colour = mix(colour, cw.edge.rgb * lit, rim);
-    colour = mix(colour, cw.foam.rgb * lit, max(max(line, second), thin));
+    colour = mix(colour, cw.edge.rgb * lit, select(rim, max(rim, bandRim), cw.foamOpt.y > 0.5));
+    colour = mix(colour, cw.foam.rgb * lit, max(max(line, second), ringed));
   } else if (width > 0.0) {
     let noise = flowNoise(in.world.xy / (width * FOAM_CELL * 10.0) + vec2f(frame.spare0 * FOAM_DRIFT, 0.0));
     let reach = stand + (noise - 0.5) * width * FOAM_BREAK;

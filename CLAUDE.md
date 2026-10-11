@@ -227,6 +227,14 @@ What to copy the shape of:
   vec4s of the clear frame (`CLEAR_RIPPLE_FLOATS`, after the mirror's, so no earlier offset moved). `clear.test.ts` holds the
   defaults, clamps and packing; `clearripple.gpu.test.ts` the lightening, the texture, the cut, and that no colour and an
   amount of nought are the default's pixels exactly; `cleargolden.gpu.test.ts` is unchanged.
+- **Clear water's foam, two more options, off by default to the pixel:** `foamSoft` (the line's edge as a share of its width,
+  0.06, at least 0, with the three-quarters-of-a-pixel floor kept, so a line is never aliased; the field's lines and the depth
+  band only, not the plain band without a field) and `foamEverywhere` (false; true draws the depth band at full width inside
+  the field too, with its rim, where the field rings nothing, so a boat, bobber or rock near the surface is ringed; a thing
+  wholly under but nearer than `foamWidth` rings too), packed by `foamUniform` into one vec4 after the ripples
+  (`CLEAR_FOAM_FLOATS`, so no earlier offset moved). `clear.test.ts` holds the defaults, clamp and packing;
+  `clearfoam.gpu.test.ts` the edge's crispness, the ring round a mound through the surface and the shore's lines left as
+  they were; `cleargolden.gpu.test.ts` is unchanged.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -320,8 +328,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,218 tests in 78 files with the cards | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror and its ripples, cards; 344 tests in 43 files with the cards, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,221 tests in 78 files with the cards | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples and its foam, cards; 346 tests in 44 files with the cards, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**
