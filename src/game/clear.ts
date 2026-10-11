@@ -62,6 +62,19 @@ export interface ClearWater {
   sparkleCut: number;
   sparkleBright: number;
   sparkleSize: number;
+  /**
+   * A colour the reflected sky is multiplied by, so a painted lake's highlights are a colour of its own and not the
+   * sky's pale blue. Null for none, and the sky is mirrored as it is.
+   */
+  mirrorTint: Rgb | null;
+  /**
+   * The share of the mirror the camera keeps where there is a near colour, from nought to one: nought eases it to
+   * nothing by the camera, so the water at the feet is seen into, and one keeps all of it, so the ripples there still
+   * catch the sky.
+   */
+  mirrorNear: number;
+  /** How strong the mirror is, as a multiple of what it was before this option: one for the same, nought for none. */
+  mirror: number;
 }
 
 /**
@@ -89,6 +102,9 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   sparkleCut: 0.5,
   sparkleBright: 4,
   sparkleSize: 2.5,
+  mirrorTint: null,
+  mirrorNear: 0,
+  mirror: 1,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -130,11 +146,14 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     sparkleCut: Math.min(taken(n.sparkleCut, d.sparkleCut), 1),
     sparkleBright: taken(n.sparkleBright, d.sparkleBright),
     sparkleSize: taken(n.sparkleSize, d.sparkleSize, 0.5),
+    mirrorTint: n.mirrorTint ?? d.mirrorTint,
+    mirrorNear: Math.min(taken(n.mirrorNear, d.mirrorNear), 1),
+    mirror: taken(n.mirror, d.mirror),
   };
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -156,11 +175,26 @@ export function finishUniform(out: Float32Array, w: ClearFinish): Float32Array {
   return out;
 }
 
+/** The settings of the sky's reflection in the water, packed last in the frame. */
+type ClearMirror = Pick<ClearWater, 'mirrorTint' | 'mirrorNear' | 'mirror'>;
+
+/** How many floats the mirror is packed into: two vec4s. */
+export const CLEAR_MIRROR_FLOATS = 8;
+
+/**
+ * Writes the mirror into `out` as the tint with a one where there is one (a tint of nought and a flag of nought are
+ * none, so the sky is not multiplied at all), then the strength and the share the camera keeps. Returns `out`.
+ */
+export function mirrorUniform(out: Float32Array, w: ClearMirror): Float32Array {
+  out.set([...(w.mirrorTint ?? [0, 0, 0]), w.mirrorTint ? 1 : 0, w.mirror, w.mirrorNear, 0, 0]);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; and where the shore field lies.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; and the mirror.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
@@ -181,7 +215,8 @@ export function packClearFrame(
   clearUniform(out.subarray(20, 20 + CLEAR_STRIDE), w);
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
-  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS), field, w);
+  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
+  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_MIRROR_FLOATS), w);
   return out;
 }
 
@@ -237,6 +272,9 @@ struct ClearFrame {
   field: vec4f,
   // the gap to the second line of foam and its width, and one where there is a shore field
   lines: vec4f,
+  // the sky's tint and a one where there is one; then the mirror's strength and the share of it the camera keeps
+  tint: vec4f,
+  mirror: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -392,11 +430,13 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   // the sky in the water, by how edge-on the surface is seen: folded up, since water does not mirror the ground
   let rd = reflect(-v, n);
   let folded = vec3f(rd.xy, abs(rd.z));
-  let sky = textureSampleLevel(envSpecular, samp, folded, frame.maxLod * CLEAR_SHARP).rgb * frame.exposure;
+  var sky = textureSampleLevel(envSpecular, samp, folded, frame.maxLod * CLEAR_SHARP).rgb * frame.exposure;
+  if (cw.tint.w > 0.0) { sky = sky * cw.tint.rgb; }
   let reflectance = CLEAR_RF0 + (1.0 - CLEAR_RF0) * pow(1.0 - ndv, 5.0);
   // eased off by the camera, where there is a near colour, so the water at the feet is seen into and not mirrored
-  let mirror = select(1.0, 1.0 - nearness, cw.near.w > 0.0);
-  colour = mix(colour, sky, reflectance * CLEAR_MIRROR * mirror);
+  // by as much as a game asks, up to all of it kept
+  let mirror = select(1.0, 1.0 - nearness * (1.0 - cw.mirror.y), cw.near.w > 0.0);
+  colour = mix(colour, sky, reflectance * CLEAR_MIRROR * cw.mirror.x * mirror);
 
   // the crests, lightened by how high the swells lift the surface, as a share of how high they can
   if (cw.crest.w > 0.0) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, packClearFrame, resolveClear } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, packClearFrame, resolveClear } from '../clear';
 import { WAVE_FLOATS } from '../waves';
 import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
@@ -81,11 +81,38 @@ describe("clear water's finish", () => {
   });
 
   it('comes after the waves in the frame and before the shore field, which is every part packed and no more', () => {
-    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS);
+    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, resolveClear({ near: [0.25, 0.5, 0.75], nearDistance: 3 }, 100), 98.1);
     expect([...out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS, 24 + CLEAR_STRIDE + WAVE_FLOATS)]).toEqual([0.25, 0.5, 0.75, 3]);
     expect(out.includes(-1), 'every float written').toBe(false);
+  });
+});
+
+describe("clear water's mirror", () => {
+  it('asks for nothing by default: no tint, the whole easing to nothing by the camera, today\'s strength', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.mirrorTint, w.mirrorNear, w.mirror]).toEqual([null, 0, 1]);
+    expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), w)]).toEqual([0, 0, 0, 0, 1, 0, 0, 0]);
+  });
+
+  it('takes a tint, a share kept by the camera and a strength, and packs them where the shader reads them', () => {
+    const w = resolveClear({ mirrorTint: [0, 0.5, 1], mirrorNear: 0.25, mirror: 0.5 }, 100);
+    expect([w.mirrorTint, w.mirrorNear, w.mirror]).toEqual([[0, 0.5, 1], 0.25, 0.5]);
+    expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), w)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
+    // and in the frame, after the shore field, which keeps the place it had
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_MIRROR_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('holds the share to nought and one and the strength to at least nought, and keeps the default for what is not a number', () => {
+    expect(resolveClear({ mirrorNear: 3 }, 100).mirrorNear).toBe(1);
+    expect(resolveClear({ mirrorNear: -1 }, 100).mirrorNear).toBe(0);
+    expect(resolveClear({ mirror: -2 }, 100).mirror).toBe(0);
+    expect(resolveClear({ mirror: 2.5 }, 100).mirror).toBe(2.5);
+    expect(resolveClear({ mirrorNear: NaN, mirror: Infinity }, 100)).toMatchObject({ mirrorNear: 0, mirror: 1 });
   });
 });
 

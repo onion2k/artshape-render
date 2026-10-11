@@ -214,6 +214,12 @@ What to copy the shape of:
   sparkles' roundness and brightness; `foamlines.gpu.test.ts` the lines' width at two slopes, the gap, the second line
   and a field smaller than the water. `perf:gpu` has `standard clear sheet`, `standard clear waves` and `standard
   clear finish`.
+- **Clear water's mirror, three more options, each off by default to the pixel:** `mirrorTint` (the reflected sky multiplied by a
+  colour, a flag in the uniform so none does no multiplication), `mirrorNear` (the share the camera keeps where there is a
+  near colour, `1 - nearness * (1 - mirrorNear)`) and `mirror` (a multiple of `CLEAR_MIRROR`), packed by `mirrorUniform`
+  into the last two vec4s of the clear frame (`CLEAR_MIRROR_FLOATS`, after the shore field, so no earlier offset moved).
+  `clear.test.ts` holds the defaults, clamps and packing; `clearmirror.gpu.test.ts` the tint, the kept share and the
+  strength, and that nought, one and white are the default's pixels exactly; `cleargolden.gpu.test.ts` is unchanged.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -307,8 +313,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,212 tests in 78 files with the cards | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water and its finish, cards; 339 tests in 41 files with the cards, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,215 tests in 78 files with the cards | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish and its mirror, cards; 342 tests in 42 files with the cards, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

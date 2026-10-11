@@ -222,6 +222,15 @@ What the measurements settled, so nobody has to re-argue it:
   - `near` and `nearDistance`: a colour the water lightens toward by the
     camera, with the sky's reflection eased off there. `crest` and
     `crestAmount`: a colour the swells' tops lighten toward.
+  - `mirrorTint`, `mirrorNear` and `mirror` (from 0.32.0), for the sky in
+    the water: the reflected sky is multiplied by a colour of its own, so a
+    painted lake's highlights are not the sky's pale blue (null for none);
+    the camera keeps that share of the mirror, from nought to one, where a
+    near colour would ease it away, so the ripples at a player's feet still
+    catch the sky (nought, the default, eases it to nothing as before); and
+    the mirror's strength is multiplied by `mirror`, nought for none and one
+    for as before. A water that asks for none of them draws as 0.31.0's did,
+    to the pixel.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in
