@@ -424,6 +424,11 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.look = { ...plain, antialias: 'msaa' };
     await r.prepare();
     measured['standard cards msaa'] = await time();
+    // the same bushes as a wood's far band: drawn in colour only, in neither the shadow maps nor the occlusion's depth
+    r.look = plain;
+    r.setStatic([...standardScene(), { mesh: bush, matrices: bushes, albedo: [0.1, 0.5, 0.1], roughness: 0.8, card: { layer: 1 }, shadow: false, occlusion: false }]);
+    await r.prepare();
+    measured['standard cards far'] = await time();
     r.look = plain;
     r.setCardImages(null);
     r.setStatic(standardScene());

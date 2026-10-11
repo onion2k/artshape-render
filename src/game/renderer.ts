@@ -154,6 +154,21 @@ export interface GameGroup {
    * left after the cut, through two depth builds made with the others.
    */
   card?: { layer: number; cut?: number };
+  /**
+   * Whether the group is drawn into the sun's and the spots' shadow maps. True, the default, is as it has always been.
+   * False leaves it out of every map, so it casts no shadow, and costs nothing there: it is for scenery too far from
+   * the camera for its shadow on the ground to be seen, such as the outer band of a wood, where each hundred trees of
+   * cards would otherwise be drawn into the sun's map and every spot's as well as the frame. It still receives
+   * shadow, and is drawn in colour as ever.
+   */
+  shadow?: boolean;
+  /**
+   * Whether the group is drawn into the contact occlusion's depth prepass. True, the default, is as it has always
+   * been. False leaves it out, so it darkens no crease or corner and is not seen by the occlusion at all, which
+   * saves a whole extra draw of it; it is for distant scenery whose contact shade is too small to see. It is still
+   * drawn in colour, and the clear water still sees it through its depth, since that is the scene pass's own.
+   */
+  occlusion?: boolean;
 }
 
 /** Where the frame uniform's clock is: the toon light's first spare, after `toonUniform`'s 32 and the finish's 21. */
@@ -714,6 +729,10 @@ interface Uploaded {
   carded: boolean;
   /** Whether the group is clear water, drawn in the clear pass and in no opaque pass, shadow map or occlusion. */
   clear: boolean;
+  /** Whether the group is drawn into the shadow maps; false is the game's opting it out. */
+  casts: boolean;
+  /** Whether the group is drawn into the occlusion depth prepass; false is the game's opting it out. */
+  occludes: boolean;
   indexCount: number;
   capacity: number;
   count: number;
@@ -2025,6 +2044,8 @@ export class GameRenderer {
         card,
         carded,
         clear,
+        casts: g.shadow !== false,
+        occludes: g.occlusion !== false,
         indexCount: g.mesh.indices.length,
         capacity,
         count: Math.min(g.count ?? capacity, capacity),
@@ -2199,7 +2220,8 @@ export class GameRenderer {
     for (const groups of [this.staticGroups, this.dynamicGroups]) {
       for (const g of groups) {
         // clear water casts no shadow: the bed under it is lit through it
-        if (!g.count || g.clear) continue;
+        // and a group the game has opted out casts none, as distant scenery has no shadow to be seen
+        if (!g.count || g.clear || !g.casts) continue;
         const carded = g.carded && !!cut;
         const want = carded ? this.cutDepthPipeline! : this.depthPipeline;
         if (want !== on) {
@@ -2534,7 +2556,8 @@ export class GameRenderer {
       let on: GPURenderPipeline | null = null;
       for (const g of [...this.staticGroups, ...this.dynamicGroups]) {
         // clear water darkens no corner of what is under it
-        if (!g.count || g.clear) continue;
+        // nor does a group the game has opted out, whose contact shade is too small to be seen
+        if (!g.count || g.clear || !g.occludes) continue;
         const carded = g.carded && !!this.cutOcclusionPipeline && !!this.cutOcclusionBind;
         const want = carded ? this.cutOcclusionPipeline! : this.occlusionDepthPipeline;
         if (want !== on) {

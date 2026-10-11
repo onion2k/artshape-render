@@ -342,6 +342,20 @@ What the measurements settled, so nobody has to re-argue it:
   5.24 ms a frame (`standard cards`) and 6.12 ms at four samples (`standard
   cards msaa`) against 0.60 for the scene alone, so a card is paid for by its
   triangles and its overdraw like any mesh, and a tree is worth making of few.
+- **A group can leave the shadow maps and the occlusion out.** Every group is
+  drawn up to three times a frame: into the sun's shadow map and each spot's
+  (`shadow`), into the occlusion's depth prepass (`occlusion`), and in
+  colour. Both flags default to true, the old draw to the pixel. `shadow:
+  false` leaves the group out of every map, so it casts none and costs nothing
+  there; `occlusion: false` leaves it out of the prepass, so it darkens no
+  crease and is not seen by the occlusion. Use them for scenery too far from
+  the camera for either to be seen, such as the outer band of a wood, where
+  each hundred trees of cards is a large share of the frame. The group is
+  still drawn in colour (kept or redrawn), receives shadow and occlusion as
+  ever, and is still in the depth that clear water reads, so the water is
+  seen through to it. The saving, in `perf:gpu`: the four hundred bushes of
+  `standard cards` with both off (`standard cards far`) are 3.95 ms a frame
+  against 5.4, a quarter of the frame for nothing the camera could see.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
   group through a permutation that lights a surface at its own colour, in
   one smooth ramp from a shade to the full sun, and tints the sky's light by

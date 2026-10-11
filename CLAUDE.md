@@ -69,7 +69,7 @@ each pins today:
 | Consumer | Pin | Path used |
 | --- | --- | --- |
 | bearing | v0.22.1 | game |
-| ooerfish | v0.30.0 | game |
+| ooerfish | v0.34.0 | game |
 | ooergolf | v0.28.0 | game |
 | chopdrop | v0.24.0 | game |
 | pushminer | v0.16.1 | game |
@@ -251,6 +251,12 @@ What to copy the shape of:
   `__tests__/fixtures/` are the kit's alpha masks, base64. `perf:gpu` has `standard cards` and `standard cards msaa`
   (400 bushes of 2,000 cards, 4,000 triangles each).
 
+- **A per-group opt-out of a pass:** `GameGroup.shadow` and `.occlusion` (`passoptout.gpu.test.ts`). Both default to
+  true, and a group that says false is skipped in `renderShadow` (the sun and every spot) or in the occlusion prepass
+  in `frame()` by a test of the flag on `Uploaded` (`casts`, `occludes`) and in no other pass: the scene pass, the kept
+  bake and the clear pass's depth still have it. A new pass that draws group geometry for depth decides which flag it
+  honours, and a test says so. `perf:gpu` has `standard cards far`.
+
 ## The test API
 
 A library's test API is its own constructors, run headless:
@@ -329,7 +335,7 @@ For anything new on the game path, say what it does:
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
 | node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,221 tests in 78 files with the cards | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples and its foam, cards; 346 tests in 44 files with the cards, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples and its foam, cards; 352 tests in 45 files with the opt-out, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

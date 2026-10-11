@@ -16,6 +16,7 @@
     "standard clear waves": 0.71,
     "standard clear finish": 0.73,
     "standard cards": 5.24,
-    "standard cards msaa": 6.12
+    "standard cards msaa": 6.12,
+    "standard cards far": 3.95
   }
 }
