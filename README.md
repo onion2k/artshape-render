@@ -231,6 +231,14 @@ What the measurements settled, so nobody has to re-argue it:
     the mirror's strength is multiplied by `mirror`, nought for none and one
     for as before. A water that asks for none of them draws as 0.31.0's did,
     to the pixel.
+  - `ripple`, `rippleAmount` and `rippleCut` (from 0.33.0), for a painted
+    lake's ripples in a colour of their own, whatever the sky: the body
+    lightens toward `ripple` on the fine waves' slopes (null for none), by
+    `rippleAmount` at a full slope (nought to one, half by default) and
+    only above `rippleCut`, the share of a full slope below which nothing
+    lightens (three tenths by default), so only the crests' sides catch it.
+    A full slope is 0.6 of the fine waves' own, whatever the steepness. A
+    water that asks for none draws as 0.32.0's did, to the pixel.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in

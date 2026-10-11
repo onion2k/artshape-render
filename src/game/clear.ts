@@ -75,6 +75,23 @@ export interface ClearWater {
   mirrorNear: number;
   /** How strong the mirror is, as a multiple of what it was before this option: one for the same, nought for none. */
   mirror: number;
+  /**
+   * A colour the body lightens toward on the fine waves' slopes, so a painted lake's streaks of lighter blue are
+   * painted into the water and are not the sky's, which a dark `mirrorTint` takes away. Null for none, and nothing is
+   * added. The slope is the fine waves' own, `length(slope) / 0.6` held to one: at that, or past it, the wave is on a
+   * full slope (the sum of the twelve waves is 0.31 rms, 1.38 at the very most, so a full slope is a steep crest's
+   * side and most of the water is under half). It does not depend on the water's steepness, which only tilts the
+   * normal: `rippleCut` means the same share of a full slope whatever a game turns that to. Distance quiets the
+   * ripples as it does the glitter, so the far water is not streaked.
+   */
+  ripple: Rgb | null;
+  /** How far the body lightens toward `ripple` at a full slope, from nought to one. Moot while `ripple` is null. */
+  rippleAmount: number;
+  /**
+   * The share of a full slope below which nothing lightens, from nought to one, eased in over the rest, so only the
+   * crests' sides catch it: nought lightens by every slope, one by none.
+   */
+  rippleCut: number;
 }
 
 /**
@@ -105,6 +122,9 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   mirrorTint: null,
   mirrorNear: 0,
   mirror: 1,
+  ripple: null,
+  rippleAmount: 0.5,
+  rippleCut: 0.3,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -149,11 +169,14 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     mirrorTint: n.mirrorTint ?? d.mirrorTint,
     mirrorNear: Math.min(taken(n.mirrorNear, d.mirrorNear), 1),
     mirror: taken(n.mirror, d.mirror),
+    ripple: n.ripple ?? d.ripple,
+    rippleAmount: Math.min(taken(n.rippleAmount, d.rippleAmount), 1),
+    rippleCut: Math.min(taken(n.rippleCut, d.rippleCut), 1),
   };
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | keyof ClearRipple>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -190,11 +213,26 @@ export function mirrorUniform(out: Float32Array, w: ClearMirror): Float32Array {
   return out;
 }
 
+/** The settings of the ripples' lightening, packed last in the frame. */
+type ClearRipple = Pick<ClearWater, 'ripple' | 'rippleAmount' | 'rippleCut'>;
+
+/** How many floats the ripples are packed into: two vec4s. */
+export const CLEAR_RIPPLE_FLOATS = 8;
+
+/**
+ * Writes the ripples into `out` as the colour with a one where there is one (a flag of nought is none, so nothing is
+ * mixed at all), then the amount and the cut. Returns `out`.
+ */
+export function rippleUniform(out: Float32Array, w: ClearRipple): Float32Array {
+  out.set([...(w.ripple ?? [0, 0, 0]), w.ripple ? 1 : 0, w.rippleAmount, w.rippleCut, 0, 0]);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; and the mirror.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; and the ripples.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
@@ -215,8 +253,9 @@ export function packClearFrame(
   clearUniform(out.subarray(20, 20 + CLEAR_STRIDE), w);
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
-  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
-  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_MIRROR_FLOATS), w);
+  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
+  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS), w);
+  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_RIPPLE_FLOATS), w);
   return out;
 }
 
@@ -275,6 +314,9 @@ struct ClearFrame {
   // the sky's tint and a one where there is one; then the mirror's strength and the share of it the camera keeps
   tint: vec4f,
   mirror: vec4f,
+  // the ripples' colour and a one where there is one; then the amount and the cut
+  ripple: vec4f,
+  ripples: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -294,6 +336,8 @@ const CLEAR_AMBIENT: f32 = 0.75;
 const CLEAR_RF0: f32 = 0.02;
 const CLEAR_SHARP: f32 = 0.15;
 const CLEAR_MIRROR: f32 = 0.8;
+// The fine waves' slope that is a full one, for lightening the body on the ripples (see ClearWater.ripple).
+const RIPPLE_FULL: f32 = 0.6;
 // The foam: how much of its width is its white core (the rest is its edge's colour), how wide its edges are eased,
 // as a share of the width, and how far a slow noise breaks it, and how fast that noise drifts, in its cells a second.
 const FOAM_CORE: f32 = 0.35;
@@ -426,6 +470,13 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let lasts = cw.water.x * mix(vec3f(CLEAR_LEAST), vec3f(CLEAR_MOST), share);
   let kept = exp2(-through / lasts);
   var colour = below * kept + deep * (1.0 - kept);
+
+  // the ripples, painted into the body: lightened toward a colour of their own by the fine waves' slope, over a cut
+  if (cw.ripple.w > 0.0) {
+    let steep = min(length(slope) / RIPPLE_FULL, 1.0);
+    let lift = smoothstep(0.0, 1.0, clamp((steep - cw.ripples.y) / max(1.0 - cw.ripples.y, 1.0e-3), 0.0, 1.0));
+    colour = mix(colour, cw.ripple.rgb * lightOn * frame.exposure, lift * cw.ripples.x);
+  }
 
   // the sky in the water, by how edge-on the surface is seen: folded up, since water does not mirror the ground
   let rd = reflect(-v, n);
