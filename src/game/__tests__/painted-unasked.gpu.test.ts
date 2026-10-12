@@ -20,7 +20,7 @@ import { LightPool } from '../lights';
 import { NO_FOG, noFog } from '../fog';
 import { readPixels, saveFrame } from './frame';
 import { GROUND, fnv, golfLook } from './golfscene';
-import { standardScene } from './perf.gpu.test';
+import { standardScene } from './scenes';
 
 const SIZE = 160;
 const GOLDEN = 'src/game/__tests__/painted-golden.json';
