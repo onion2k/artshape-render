@@ -328,11 +328,191 @@ describe("painted, in general", () => {
     expect((BLOCK as { paint?: unknown }).paint).toBeUndefined();
   });
 
-  it("says plainly that the choices it does not yet make are not yet made", () => {
-    expect(() => painted(split(BLOCK), { choice: "agree" })).toThrow(/not yet/);
+  it("refuses a choice it does not know, and a ridge choice with no budget", () => {
     expect(() =>
-      painted(split(BLOCK), { choice: "ridge", ridge: { budget: 1 } }),
-    ).toThrow(/not yet/);
+      painted(split(BLOCK), { choice: "wander" as unknown as "gate" }),
+    ).toThrow(/choice/);
+    expect(() => painted(split(BLOCK), { choice: "ridge" })).toThrow(/budget/);
+    expect(() =>
+      painted(split(BLOCK), {
+        choice: "ridge",
+        ridge: {} as unknown as { budget: number },
+      }),
+    ).toThrow(/budget/);
     expect(() => painted(split(BLOCK), { choice: "gate" })).not.toThrow();
+  });
+});
+
+/** The edges a painted mesh chose, each as the sorted pair of its end positions, with the bits counted by triangle edge. */
+function chosenEdges(m: Mesh & { paint: Float32Array }) {
+  const edges = new Map<
+    string,
+    { ends: number[][]; bits: number; along: Map<string, number> }
+  >();
+  let bits = 0;
+  const at = (q: number[]) => q.map((x) => x.toFixed(4)).join(",");
+  for (let t = 0; t < m.indices.length / 3; t++) {
+    const { f, corner } = triangle(m, t);
+    for (let i = 0; i < 3; i++) {
+      if (!(f(0, 15) & (1 << i))) continue;
+      bits++;
+      const ends = [corner[(i + 1) % 3], corner[(i + 2) % 3]];
+      const key = ends.map(at).sort().join("|");
+      const e = edges.get(key) ?? { ends, bits: 0, along: new Map() };
+      e.bits++;
+      for (const c of [(i + 1) % 3, (i + 2) % 3])
+        e.along.set(at(corner[c]), f(0, 16 + c));
+      edges.set(key, e);
+    }
+  }
+  return { edges, bits };
+}
+
+describe("painted, choosing by agreement", () => {
+  const m = painted(split(BLOCK), { choice: "agree" });
+
+  it("chooses one top edge of a block, and no other, with nothing along it", () => {
+    // Each side face's best edge is its top one, the only one with up-share over nought. The top face scores its four
+    // edges alike, so it picks the first it finds, and only that edge is agreed on; the other three top edges are
+    // picked by their side alone. Each edge is two triangle edges, one in each face.
+    const { edges, bits } = chosenEdges(m);
+    expect(bits).toBe(2);
+    expect(edges.size).toBe(1);
+    const [only] = [...edges.values()];
+    expect(only.bits).toBe(2);
+    for (const q of only.ends) expect(q[2]).toBe(2);
+    for (let v = 0; v < m.positions.length / 3; v++)
+      expect(
+        [16, 17, 18, 19].map((k) => m.paint[v * PAINT_STRIDE + k]),
+      ).toEqual([0, 0, 0, 0]);
+  });
+
+  it("writes the same bits in the two triangles of a face, and in both faces of an edge", () => {
+    for (let t = 0; t < 12; t++) {
+      const { f } = triangle(m, t);
+      for (let v = 1; v < 3; v++) expect(f(v, 15)).toBe(f(0, 15));
+    }
+  });
+
+  it("chooses on a boulder only edges both of whose faces picked them, fewer than a face's own picks", () => {
+    const rock = boulder(1, { seed: 3 }).parts[0].mesh;
+    const { edges, bits } = chosenEdges(
+      painted(split(rock), { choice: "agree" }),
+    );
+    expect(bits).toBe(2 * edges.size);
+    expect(edges.size).toBe(2);
+    for (const e of edges.values()) expect(e.bits).toBe(2);
+  });
+});
+
+describe("painted, choosing ridgelines", () => {
+  const radius = Math.sqrt(3);
+  const block = (ridge: { budget: number; spacing?: number }) =>
+    painted(split(BLOCK), { choice: "ridge", ridge });
+
+  it("chains a block's right angles no further than the turn it allows, so a line is one edge, of its top", () => {
+    // Every corner of a block turns ninety degrees, over the fifty a line may bend, so each of its twelve convex edges
+    // is a line alone, and budget 1 takes the best, a top edge (up-share a half, where a side's is nought).
+    const m = block({ budget: 1 });
+    expect(m.paintStats.ridges).toEqual({ found: 12, chosen: 1 });
+    const { edges, bits } = chosenEdges(m);
+    expect(bits).toBe(2);
+    const [only] = [...edges.values()];
+    for (const q of only.ends) expect(q[2]).toBe(2);
+    // the corners on it run 0 to 1, a level edge starting at its first end, and the corner off it is nought
+    expect([...only.along.values()].sort()).toEqual([0, 1]);
+    for (let t = 0; t < 12; t++) {
+      const { f } = triangle(m, t);
+      const bit = f(0, 15);
+      for (let i = 0; i < 3; i++)
+        if (bit === 1 << i) expect(f(0, 16 + i)).toBe(0);
+    }
+  });
+
+  it("lets no line bend at a turn of nought: every convex edge over the floor is a line alone", () => {
+    const rock = boulder(1, { seed: 3 }).parts[0].mesh;
+    const m = painted(split(rock), {
+      choice: "ridge",
+      ridge: { budget: 3, maxTurn: 0, spacing: 0 },
+    });
+    expect(m.paintStats.ridges!.found).toBeGreaterThan(23);
+    expect(m.paintStats.ridges!.chosen).toBe(3);
+    expect(chosenEdges(m).edges.size).toBe(3);
+  });
+
+  it("keeps lines spacing apart: opposite top edges at 0.4 of the radius, only one at twice the radius", () => {
+    // The four top edges are the only lines with a score. The two on opposite sides are 2 apart, over 0.4 * sqrt(3),
+    // and the neighbours of either touch it, so budget 4 takes two; at a spacing of 2 radii none is far enough.
+    const near = block({ budget: 4 });
+    expect(near.paintStats.ridges).toEqual({ found: 12, chosen: 2 });
+    expect(chosenEdges(near).edges.size).toBe(2);
+    const far = block({ budget: 4, spacing: 2 });
+    expect(far.paintStats.ridges).toEqual({ found: 12, chosen: 1 });
+    expect(chosenEdges(far).edges.size).toBe(1);
+    expect(radius).toBeGreaterThan(1.7);
+  });
+
+  it("still leaves one at budget 1 and twice the radius of spacing", () => {
+    const m = block({ budget: 1, spacing: 2 });
+    expect(m.paintStats.ridges).toEqual({ found: 12, chosen: 1 });
+  });
+
+  describe("on a boulder", () => {
+    const rock = boulder(1, { seed: 3 }).parts[0].mesh;
+    const m = painted(split(rock), { choice: "ridge", ridge: { budget: 3 } });
+    const { edges, bits } = chosenEdges(m);
+
+    it("finds twenty-three lines, takes three and chooses four edges", () => {
+      // E21 saw 22 lines found; the production chaining goes on over the same convex edges but an edge exactly at the
+      // floor is left out here, and a tie between two turns is settled by the first found, so a line more is found. E21's eight edges were counted by triangle edge, which is four edges.
+      expect(m.paintStats.ridges).toEqual({ found: 23, chosen: 3 });
+      expect(edges.size).toBe(4);
+    });
+
+    it("puts no edge in two lines: each is chosen from both its triangles, and the lines' edges add up to the bits", () => {
+      for (const e of edges.values()) expect(e.bits).toBe(2);
+      // join the chosen edges at their positions into lines
+      const parent = new Map<string, string>();
+      const root = (a: string): string => {
+        while ((parent.get(a) ?? a) !== a) a = parent.get(a)!;
+        return a;
+      };
+      const at = (q: number[]) => q.map((x) => x.toFixed(4)).join(",");
+      for (const e of edges.values()) {
+        const [a, b] = e.ends.map(at);
+        parent.set(root(a), root(b));
+        if (!parent.has(root(b))) parent.set(root(b), root(b));
+      }
+      const lines = new Map<
+        string,
+        typeof edges extends Map<string, infer V> ? V[] : never
+      >();
+      for (const e of edges.values()) {
+        const r = root(at(e.ends[0]));
+        lines.set(r, [...(lines.get(r) ?? []), e]);
+      }
+      expect(lines.size).toBe(3);
+      let total = 0;
+      for (const line of lines.values()) {
+        total += line.length;
+        // a position's place along its line is the same from every edge that has it, and runs from 0 to 1
+        const place = new Map<string, number>();
+        for (const e of line)
+          for (const [k, v] of e.along) {
+            expect(place.get(k) ?? v).toBeCloseTo(v, 6);
+            place.set(k, v);
+          }
+        const values = [...place.values()];
+        expect(Math.min(...values)).toBe(0);
+        expect(Math.max(...values)).toBeCloseTo(1, 6);
+        // the higher end is the head: nought sits at a z no lower than the one at 1
+        const zOf = (value: number) => {
+          const k = [...place].find(([, v]) => Math.abs(v - value) < 1e-6)![0];
+          return Number(k.split(",")[2]);
+        };
+        expect(zOf(0)).toBeGreaterThanOrEqual(zOf(1));
+      }
+      expect(total).toBe(bits / 2);
+    });
   });
 });
