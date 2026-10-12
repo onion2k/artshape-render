@@ -1,0 +1,28 @@
+{
+  "apple/metal-3": {
+    "standard toon 1 redrawn": "0b5f1e37",
+    "standard toon 1 kept": "0b5f1e37",
+    "standard toon 4 redrawn": "96e0fe9a",
+    "standard toon 4 kept": "96e0fe9a",
+    "standard pbr 1 redrawn": "9f9954e7",
+    "standard pbr 1 kept": "9f9954e7",
+    "standard pbr 4 redrawn": "bc409e4e",
+    "standard pbr 4 kept": "bc409e4e",
+    "golf toon 1 redrawn": "511d794f",
+    "golf toon 1 kept": "511d794f",
+    "golf toon 4 redrawn": "ab5877dd",
+    "golf toon 4 kept": "ab5877dd",
+    "golf pbr 1 redrawn": "370a444b",
+    "golf pbr 1 kept": "370a444b",
+    "golf pbr 4 redrawn": "b7a30efd",
+    "golf pbr 4 kept": "b7a30efd",
+    "ball toon 1 redrawn": "fc7429f1",
+    "ball toon 1 kept": "fc7429f1",
+    "ball toon 4 redrawn": "bbc6465f",
+    "ball toon 4 kept": "bbc6465f",
+    "ball pbr 1 redrawn": "95bb6c33",
+    "ball pbr 1 kept": "95bb6c33",
+    "ball pbr 4 redrawn": "158b2470",
+    "ball pbr 4 kept": "158b2470"
+  }
+}
