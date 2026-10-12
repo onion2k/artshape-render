@@ -36,6 +36,10 @@ would cost them something for nothing.
   10 or 16), seeded, standing on the ground at the origin with a tree's top
   at its height, and made of named meshes with no colour: the game colours
   `trunk`, `leaves` and `crown` itself.
+- **A painted edge for that scenery, from 0.38.0** — a few chosen ridges of a
+  faceted rock or wall carry a crisp stroke of pale paint, loaded at its head
+  and dry at its tail, from `painted` in `mesh/paint.ts` and `Look.paint`; a
+  game that asks for none of it draws what it did.
 - **Every mesh carries surface coordinates in millimetres** beside its
   0..1 uv, so a groove is the same width on a plate, a wire and a bead,
   and engraving and lettering are cut in real sizes.
@@ -364,6 +368,66 @@ What the measurements settled, so nobody has to re-argue it:
   seen through to it. The saving, in `perf:gpu`: the four hundred bushes of
   `standard cards` with both off (`standard cards far`) are 3.95 ms a frame
   against 5.4, a quarter of the frame for nothing the camera could see.
+- **A painted edge, from 0.38.0, is carried by the mesh and drawn in a build of its own.**
+  A few chosen ridges of a faceted thing (a boulder, a cliff's slabs, a wall)
+  carry a crisp stroke of a pale paint colour, with a loaded head and a dry
+  tail, as a hand would lay it with a flat brush. Its width is a share of the
+  facet, so a boulder's stroke is bolder than a pebble's, it is kept off the
+  undersides, it fades where ridges crowd a vertex and as the thing shrinks on
+  screen, and the colour is mixed into the albedo before the light, so the
+  toon ramp cuts it and it never reads as gloss. It is toon only: a physically
+  based look draws a painted group plain.
+
+      import { painted, split } from 'artshape-render/mesh/paint';
+      const rock = boulder(1, { seed, rings: 5, segments: 8 }).parts[0].mesh;
+      const mesh = painted(split(rock), { choice: 'ridge', ridge: { budget: 3, spacing: 0.4 } });
+      renderer.setStatic([{ mesh, matrices, albedo: [0.13, 0.12, 0.11], roughness: 0.9 }]);
+      renderer.look = { ...renderer.look, paint: [{ lightColour: [0.62, 0.55, 0.42] }] };
+
+  The mesh has to be `split` first (every triangle its own three vertices, so
+  nothing is welded and the lighting normal stays the facet's), and `painted`
+  throws on one that shares an index. `choice` says which ridges carry the
+  stroke: `'gate'` every edge that folds past the gate, `'agree'` an edge both
+  its faces pick as their best (a few long bold strokes), `'ridge'` chains of
+  edges scored and the best `budget` of them taken, a share `spacing` of the
+  mesh's radius apart. The budget is a count and the game sizes it, a pebble
+  one and a boulder three; a pile is painted as separate lumps, each its own
+  budget. `quiet: true` leaves a mesh unpainted by the same build (a ground
+  beside the rocks), and `set` (0 to 3) says which of the look's sets it
+  reads. What the mesh carries is `PAINT_STRIDE` (20) floats a vertex, in
+  five `float32x4` of their own, bound only for a group that has them: the
+  three edges' signed folds, the heights to them, the face's id and height
+  range, each edge's share of up and each corner's crowd, the chosen bits and
+  the place along the chosen ridgeline. The file's header holds the table, and
+  a test holds the table to `PAINT_LAYOUT`. A group with paint may not have a
+  texture, a card or a flow kind, which use the same attribute locations and
+  varyings.
+
+  `look.paint` is up to four `PaintSet`s, each knob optional and a knob left
+  out `PAINT_DEFAULT`'s (the settled recipe for rock), packed into a uniform
+  of its own at group 1 when it changes, so a game may tune it each frame and
+  nothing recompiles. `src/game/paint.ts` lists every knob with what it does.
+  The ones a game touches first are `lightColour` (the stroke's colour, an
+  absolute pale tone of the rock's own hue), `light` (its strength), `widthFacet`
+  (the width as a share of the facet, with `width` its floor), `gate` (the fold
+  an edge must pass), `ridgeUp` (how far up an edge must face to carry
+  paint) and, in the mesh pass, the budget. The sums (the band, the strength,
+  the fades, the mark) are written once in TypeScript and once as WGSL from the
+  same constants, and a GPU test holds the shader to them within two levels.
+
+  The cost, in `perf:gpu` on an M4 Pro: the standard scene's four hundred
+  boxes painted by the gate's choice are 0.73 ms against 0.62 (`standard
+  painted`, +0.11 ms); two hundred boulders on the ridge choice are 0.91 ms
+  against 0.67 unpainted (`shore` and `shore painted`, +0.24 ms). Bundled and
+  minified, the renderer grows by 4.1 kB gzipped (63,004 to 67,116 bytes) and
+  `mesh/paint.ts` is 3.3 kB of that, which a game that never imports it does
+  not ship. The sixteen builds (toon, patterned and not, every rung) are
+  compiled only when `setStatic` or `setDynamic` is first handed a group that
+  has paint, and again at four samples if asked for, `prepare()` says when
+  they are in, until then the group is drawn plain, and a kept static half is
+  baked again when they land. A game that asks for none of it compiles nothing
+  more, makes no buffer or layout, and draws the frames of v0.37.0 to the bit,
+  held by `painted-unasked.gpu.test.ts` against hashes written on the old code.
 - **Toon is a look, and a tone.** `look.shading = 'toon'` draws every
   group through a permutation that lights a surface at its own colour, in
   one smooth ramp from a shade to the full sun, and tints the sky's light by

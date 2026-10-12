@@ -263,6 +263,22 @@ What to copy the shape of:
   bake and the clear pass's depth still have it. A new pass that draws group geometry for depth decides which flag it
   honours, and a test says so. `perf:gpu` has `standard cards far`.
 
+- **Scenery with a painted edge, built when first handed one:** `mesh/paint.ts` is the mesh pass (`split`, then
+  `painted`: twenty floats a vertex, `PAINT_LAYOUT`, the choices `gate`, `agree` and `ridge`) and is pure, run under
+  node; `game/paint.ts` holds the knobs (`PaintSet`, `PAINT_DEFAULT`, `packPaint`) and the sums in TypeScript and as
+  WGSL from the same constants. The scene shader gets it through splices (`PAINT_SPLICES` in `shaders.ts`) into the
+  `painted` variant, so every other build is the text it was to the byte; sixteen builds (`PAINTED_VARIANTS`) are
+  compiled when `setStatic` or `setDynamic` is first handed a group whose mesh has `paint` (`askPaint`, `prepare()`
+  waits), its knobs a uniform of their own at bind group 1 and its measures a vertex buffer at locations 3 and 12 to 15.
+  Rules it follows: meshes are split, never welded; the sums are said once in each language and a test holds them equal;
+  nothing is built for a game that does not ask; toon only, and a physically based look draws a painted group plain.
+  `paint.test.ts` (under `mesh/__tests__` for the pass, under `game/__tests__` for the knobs and sums),
+  `painted.gpu.test.ts` (each knob, the quiet mesh, the physically based look, the shader against the sums),
+  `painted-sheet.gpu.test.ts` (pictures under `VITE_FRAME_DIR`) and `painted-unasked.gpu.test.ts` (a game asking for
+  none to v0.37.0's hashes in `painted-golden.json`, written on the old code with `VITE_GOLDEN=1`) hold it; the scenes
+  the perf gate and the golden share are in `__tests__/scenes.ts`, and `perf:gpu` has `standard painted`, `shore` and
+  `shore painted`.
+
 ## The test API
 
 A library's test API is its own constructors, run headless:
@@ -340,7 +356,7 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,221 tests in 78 files with the cards | none | exact |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,309 tests in 82 files with the cards | none | exact |
 | GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples and its foam, cards; 352 tests in 45 files with the opt-out, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
