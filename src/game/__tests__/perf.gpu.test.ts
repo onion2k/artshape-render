@@ -18,6 +18,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { server } from '@vitest/browser/context';
 import { createDevice, type Gpu } from '../../gpu/context';
 import { MeshBuilder, type Mesh } from '../../mesh/types';
+import { painted, split } from '../../mesh/paint';
+import { boulder } from '../../parts/lowpoly';
 import { bakeEnvironment } from '../../render/env';
 import { FULL_ECONOMY, GameRenderer, type GameGroup, type Look } from '../renderer';
 import { noFog } from '../fog';
@@ -136,6 +138,35 @@ export function standardScene(): GameGroup[] {
     { mesh: plane(600), matrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), albedo: [0.1, 0.42, 0.08], roughness: 0.85 },
     { mesh: box(), matrices: boxes, albedo: [0.58, 0.3, 0.13], roughness: 0.55 },
   ];
+}
+
+/**
+ * The shore: two hundred boulders (`boulder(1, { seed, rings: 5, segments: 8 })` at seeds one to two hundred, scaled two
+ * to six by seed) scattered over the standard ground in a square sixty units across by a hash of their seed, each its own
+ * group, with the standard ground under them and nothing else. Painted, each carries the ridge choice at a budget of
+ * three; plain, each is the same mesh cut apart and unpainted, so the paint's own cost is the pair's difference.
+ */
+export function shoreScene(paint: boolean): GameGroup[] {
+  const hash = (n: number) => { let h = Math.imul(n + 1, 374761393); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  const groups: GameGroup[] = [standardScene()[0]];
+  for (let seed = 1; seed <= 200; seed++) {
+    const scale = 2 + (4 * (seed - 1)) / 199;
+    const x = (hash(seed * 4 + 1) - 0.5) * 60, y = (hash(seed * 4 + 2) - 0.5) * 60, turn = hash(seed * 4 + 3) * Math.PI * 2;
+    const [c, n] = [Math.cos(turn) * scale, Math.sin(turn) * scale];
+    const mesh = split(boulder(1, { seed, rings: 5, segments: 8 }).parts[0].mesh);
+    groups.push({
+      mesh: paint ? painted(mesh, { choice: 'ridge', ridge: { budget: 3, spacing: 0.4 } }) : mesh,
+      matrices: new Float32Array([c, n, 0, 0, -n, c, 0, 0, 0, 0, scale, 0, x, y, 0, 1]),
+      albedo: [0.13, 0.12, 0.11], roughness: 0.9,
+    });
+  }
+  return groups;
+}
+
+/** The standard scene with its boxes' meshes cut apart and painted by the gate's choice, the default set, and the ground plain. */
+export function paintedStandard(): GameGroup[] {
+  const [ground, boxes] = standardScene();
+  return [ground, { ...boxes, mesh: painted(split(boxes.mesh), { choice: 'gate' }) }];
 }
 
 /**
@@ -431,6 +462,20 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     measured['standard cards far'] = await time();
     r.look = plain;
     r.setCardImages(null);
+    r.setStatic(standardScene());
+    // the painted edge: the standard scene's boxes painted by the gate (the ground plain), then two hundred boulders on the
+    // plain ground painted by the ridge choice and as the same boulders plain, so the paint's cost is the pair's difference
+    r.look = plain;
+    r.setStatic(paintedStandard());
+    await r.prepare();
+    measured['standard painted'] = await time();
+    r.setStatic(shoreScene(false));
+    await r.prepare();
+    measured.shore = await time();
+    r.setStatic(shoreScene(true));
+    await r.prepare();
+    measured['shore painted'] = await time();
+    console.log(`the paint's cost over 200 boulders: ${(measured['shore painted'] - measured.shore).toFixed(3)} ms`);
     r.setStatic(standardScene());
     // the fire over the standard scene: four seconds of it let fill the pool first, then timed as it burns, with a wash, and with a wash that blows too gently to move anything
     for (let i = 0; i < 300; i++) { for (const e of FIRE) r.emit(e); r.frame(view, 'redraw', 1 / 60); }

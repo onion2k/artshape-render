@@ -17,6 +17,9 @@
     "standard clear finish": 0.73,
     "standard cards": 5.24,
     "standard cards msaa": 6.12,
-    "standard cards far": 3.95
+    "standard cards far": 3.95,
+    "standard painted": 0.733,
+    "shore": 0.67,
+    "shore painted": 0.907
   }
 }
