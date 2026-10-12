@@ -47,6 +47,8 @@ import { invertInto } from '../geom/transform';
 import { TEXTURE_STRIDE, checkLayers, mipLevels, usesTexture } from './texture';
 import { GROUND_FORMAT, MipBlitter } from './mips';
 import { CARD_CUT, CARD_STRIDE, cardLevels, checkCards } from './cards';
+import { PAINT_STRIDE } from '../mesh/paint';
+import { PAINT_SETS, PAINT_SET_FLOATS, packPaint, type PaintSet } from './paint';
 
 /** A blade the GPU grew this frame: where its root is, and its id. */
 export interface DrawnBlade { x: number; y: number; z: number; id: number }
@@ -92,7 +94,11 @@ const EARTH_MM = 9810;
 
 /** One mesh and the placements of it, as the still-life path also takes them. */
 export interface GameGroup {
-  mesh: PartMesh;
+  /**
+   * The mesh. One with `paint` (`painted` in `mesh/paint.ts`, `PAINT_STRIDE` floats a vertex) draws a painted edge in a
+   * toon look, through a build compiled the first time one is handed in, and plain in any other.
+   */
+  mesh: PartMesh & { paint?: Float32Array };
   /** Column-major 4×4 per placement. Its length fixes the pool; `count` moves within it. */
   matrices: Float32Array;
   /** How many placements are live, from the first. Left out, all of them. */
@@ -443,6 +449,13 @@ export interface Look {
    * without both. Left out, 1; nought, grey.
    */
   occlusionTint?: number;
+  /**
+   * Toon only: the knobs of the painted edge, up to `PAINT_SETS` sets, each chosen per mesh by `PaintOptions.set`. A
+   * knob a set leaves out, and a set not given, is `PAINT_DEFAULT`'s, so a look that names none paints the settled
+   * recipe. Packed into a uniform of its own when it changes, so a game may tune it each frame and nothing
+   * recompiles. Read only by a group whose mesh carries `paint`; left out, nothing is made for it.
+   */
+  paint?: PaintSet[];
 }
 
 /**
@@ -662,6 +675,22 @@ for (const toon of [false, true])
   for (const shadows of [true, false])
     for (const points of [true, false])
       for (const cullLights of [true, false]) TEXTURED_VARIANTS.push({ cullLights, points, shadows, patterned: true, textured: true, toon });
+// The painted edge's measures, five vec4s a vertex, ride in a vertex buffer of their own made only for a mesh that has
+// them and read only by the painted build, at locations the scene's other layouts leave free (3, and 12 to 15).
+const PAINT_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: PAINT_STRIDE * 4, stepMode: 'vertex',
+  attributes: [3, 12, 13, 14, 15].map((shaderLocation, i) => ({ shaderLocation, offset: i * 16, format: 'float32x4' as GPUVertexFormat })),
+};
+/**
+ * The builds of the scene shader that carry the painted edge: every rung of the ladder, toon only, with and without
+ * patterns (a group that has none takes the plain one). Not made up front: a game that has no painted group never
+ * compiles one.
+ */
+const PAINTED_VARIANTS: SceneVariant[] = [];
+for (const patterned of [false, true])
+  for (const shadows of [true, false])
+    for (const points of [true, false])
+      for (const cullLights of [true, false]) PAINTED_VARIANTS.push({ cullLights, points, shadows, patterned, painted: true, toon: true });
 // A card's uv rides in a vertex buffer of its own and its layer and cut in an instance buffer of theirs, one pair a
 // placement, made only for a card group and read only by the carded build, so every other vertex layout is what it was.
 const UV_LAYOUT: GPUVertexBufferLayout = {
@@ -721,6 +750,8 @@ interface Uploaded {
   texture: GPUBuffer | null;
   /** Whether the group draws through the textured build. */
   textured: boolean;
+  /** A painted mesh's measures, `PAINT_STRIDE` floats a vertex; none for a mesh that is not painted. */
+  paint: GPUBuffer | null;
   /** A card group's uvs, two floats a vertex; none for a group that is not a card. */
   uv: GPUBuffer | null;
   /** A card group's layer and cut, two floats for each placement; none for a group that is not a card. */
@@ -774,6 +805,16 @@ export class GameRenderer {
   private textureBuild: Promise<void> | null = null;
   /** The carded builds, made the first time a card group is handed in and never before. */
   private cardBuild: Promise<void> | null = null;
+  /** The painted builds, made the first time a group whose mesh carries paint is handed in and never before. */
+  private paintBuild: Promise<void> | null = null;
+  /** The painted builds' second bind group: the knobs, and what holds them. All made with the first painted group. */
+  private paintLayout: GPUBindGroupLayout | null = null;
+  private paintPipelineLayout: GPUPipelineLayout | null = null;
+  private paintBuffer: GPUBuffer | null = null;
+  private paintBind: GPUBindGroup | null = null;
+  /** The knobs as last written, and the scratch the look's are packed into to be compared with them: no allocation a frame. */
+  private readonly paintWritten = new Float32Array(PAINT_SETS * PAINT_SET_FLOATS);
+  private readonly paintScratch = new Float32Array(PAINT_SETS * PAINT_SET_FLOATS);
   private fxaaBuild: Promise<void> | null = null;
   private msaaCompiled = false;
   private fxaaCompiled = false;
@@ -1248,14 +1289,14 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant, samples = 1) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.carded ? '-carded' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.carded ? '-carded' : ''}${v.painted ? '-painted' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
   }
 
   /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
   private sceneDescriptor(v: SceneVariant, module: GPUShaderModule, samples: number): GPURenderPipelineDescriptor {
     return {
       label: `game scene ${GameRenderer.key(v, samples)}`,
-      layout: this.sceneLayoutPipeline,
+      layout: v.painted ? this.paintPipelineLayout! : this.sceneLayoutPipeline,
       vertex: {
         module, entryPoint: 'vsMain',
         buffers: [
@@ -1266,6 +1307,7 @@ export class GameRenderer {
           PATTERN_LAYOUT,
           ...(v.textured ? [TEXTURE_LAYOUT] : []),
           ...(v.carded ? [UV_LAYOUT, CARD_LAYOUT] : []),
+          ...(v.painted ? [PAINT_LAYOUT] : []),
         ],
       },
       fragment: { module, entryPoint: 'fsMain', targets: [{ format: HDR }] },
@@ -1325,6 +1367,7 @@ export class GameRenderer {
     await this.flowBuild;
     await this.textureBuild;
     await this.cardBuild;
+    await this.paintBuild;
     this.askOwnFog();
     await this.ownBuild;
     this.askSky();
@@ -1610,6 +1653,54 @@ export class GameRenderer {
     return Promise.all(waits).then(() => { this.keptStale = true; this.keptStaleMsaa = true; });
   }
 
+  /**
+   * Starts the painted builds, once, the first time a group whose mesh carries paint is handed in; as `askTexture` does
+   * the textured ones. The knobs are a uniform in a bind group of its own, at group 1, made here and not before, so a
+   * game that paints nothing has no buffer for them and its pipeline layouts are what they were.
+   */
+  private askPaint() {
+    if (this.paintBuild) return;
+    const { device } = this.ctx;
+    this.paintLayout = device.createBindGroupLayout({
+      label: 'game paint',
+      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+    });
+    this.paintPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout, this.paintLayout] });
+    this.paintBuffer = device.createBuffer({ label: 'game paint', size: this.paintWritten.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.paintBind = device.createBindGroup({ label: 'game paint', layout: this.paintLayout, entries: [{ binding: 0, resource: { buffer: this.paintBuffer } }] });
+    // written once here, so the first frame has knobs whatever the look says; `writePaint` keeps them after it
+    packPaint(this.paintWritten, this.look.paint ?? []);
+    device.queue.writeBuffer(this.paintBuffer, 0, this.paintWritten);
+    this.paintBuild = this.compilePaint();
+  }
+
+  private compilePaint(): Promise<void> {
+    const { device } = this.ctx;
+    const four = this.msaaBuild !== null;
+    const waits: Promise<unknown>[] = [];
+    for (const v of PAINTED_VARIANTS) {
+      const key = GameRenderer.key(v);
+      const module = shader(device, sceneSource(v), `game scene ${key}`);
+      this.sceneModules.set(key, module);
+      waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1)).then((p) => { this.scenePipelines.set(key, p); }));
+      if (four) waits.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, SAMPLES)).then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
+    }
+    // a kept frame baked before the builds were in drew the painted groups plain
+    return Promise.all(waits).then(() => { this.keptStale = true; this.keptStaleMsaa = true; });
+  }
+
+  /** The knobs of the look into the uniform, when they are not what was last written. Nothing is made: a scratch packed and compared. */
+  private writePaint() {
+    if (!this.paintBuffer) return;
+    packPaint(this.paintScratch, this.look.paint ?? []);
+    const a = this.paintScratch, b = this.paintWritten;
+    let same = true;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { same = false; break; }
+    if (same) return;
+    b.set(a);
+    this.ctx.device.queue.writeBuffer(this.paintBuffer, 0, b);
+  }
+
   /** Starts the carded builds, once, the first time a card group is handed in; as `askTexture` does the textured ones. */
   private askCards() {
     if (this.cardBuild) return;
@@ -1698,7 +1789,7 @@ export class GameRenderer {
   private async compileMsaa() {
     const { device } = this.ctx;
     // the flowing builds too, if a group has asked for them: their modules are made as soon as it does
-    const variants = [...SCENE_VARIANTS, ...(this.flowBuild ? FLOW_VARIANTS : []), ...(this.textureBuild ? TEXTURED_VARIANTS : []), ...(this.cardBuild ? CARDED_VARIANTS : [])];
+    const variants = [...SCENE_VARIANTS, ...(this.flowBuild ? FLOW_VARIANTS : []), ...(this.textureBuild ? TEXTURED_VARIANTS : []), ...(this.cardBuild ? CARDED_VARIANTS : []), ...(this.paintBuild ? PAINTED_VARIANTS : [])];
     const waits: Promise<unknown>[] = variants.map((v) => v.carded ? this.cardMsaa(v) :
       device.createRenderPipelineAsync(this.sceneDescriptor(v, this.sceneModules.get(GameRenderer.key(v))!, SAMPLES))
         .then((p) => { this.scenePipelines.set(GameRenderer.key(v, SAMPLES), p); }));
@@ -2015,6 +2106,14 @@ export class GameRenderer {
         device.queue.writeBuffer(texture, 0, out);
         this.askTexture();
       }
+      let paint: GPUBuffer | null = null;
+      if (g.mesh.paint) {
+        const vertices = g.mesh.positions.length / 3;
+        if (g.mesh.paint.length !== PAINT_STRIDE * vertices) throw new Error(`a painted mesh carries ${PAINT_STRIDE} floats of paint a vertex, and this one has ${g.mesh.paint.length} floats of paint for ${vertices} vertices`);
+        if (textured || carded || usesFlow(g.patterns, PATTERN_STRIDE)) throw new Error('a group cannot have both paint and a texture, a card or a flow kind: the painted build takes the vertex locations and varyings they use');
+        paint = bufferFrom(device, g.mesh.paint, GPUBufferUsage.VERTEX, 'paint');
+        this.askPaint();
+      }
       let uv: GPUBuffer | null = null,
         card: GPUBuffer | null = null;
       if (g.card) {
@@ -2040,6 +2139,7 @@ export class GameRenderer {
         flowing,
         texture,
         textured,
+        paint,
         uv,
         card,
         carded,
@@ -2070,7 +2170,7 @@ export class GameRenderer {
   private static release(groups: Uploaded[]) {
     for (const g of groups) {
       g.position.destroy(); g.normal.destroy(); g.index.destroy();
-      g.instance.destroy(); g.material.destroy(); g.pattern.destroy(); g.texture?.destroy(); g.uv?.destroy(); g.card?.destroy();
+      g.instance.destroy(); g.material.destroy(); g.pattern.destroy(); g.texture?.destroy(); g.paint?.destroy(); g.uv?.destroy(); g.card?.destroy();
     }
   }
 
@@ -2428,6 +2528,7 @@ export class GameRenderer {
     // the game's clock, in the slot the toon light leaves spare, which the flowing build alone reads
     f[CLOCK_AT] = this.time;
     this.ctx.device.queue.writeBuffer(this.frameBuffer, 0, f);
+    this.writePaint();
   }
 
   private get occlusionOn(): boolean {
@@ -2439,8 +2540,8 @@ export class GameRenderer {
     return { r, g, b, a: 1 };
   }
 
-  private scenePipeline(patterned: boolean, samples: number, flowing = false, textured = false, carded = false) {
-    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, textured, carded, toon: this.look.shading === 'toon' }, samples));
+  private scenePipeline(patterned: boolean, samples: number, flowing = false, textured = false, carded = false, painted = false) {
+    return this.scenePipelines.get(GameRenderer.key({ ...this.economy, patterned, flowing, textured, carded, painted, toon: this.look.shading === 'toon' }, samples));
   }
 
   /**
@@ -2456,6 +2557,9 @@ export class GameRenderer {
     const flowing = this.scenePipeline(true, samples, true) ?? patterned;
     const textured = this.scenePipeline(true, samples, false, true);
     const carded = this.scenePipeline(true, samples, false, false, true);
+    // painted builds are toon only, so in any other look these are not there and a painted group is drawn plain
+    const paintedPlain = this.paintBind ? this.scenePipeline(false, samples, false, false, false, true) : undefined;
+    const paintedPatterned = this.paintBind ? this.scenePipeline(true, samples, false, false, false, true) : undefined;
     pass.setBindGroup(0, this.sceneBind);
     // the pipeline set only where it changes, which for a game's groups, the patterned few among the plain, is rarely
     let on: GPURenderPipeline | null = null;
@@ -2464,9 +2568,11 @@ export class GameRenderer {
       if (only && g.flowing !== (only === 'flowing')) continue;
       // a textured group is drawn plain, or as its speckle, until its build is in
       // and a card group is drawn as a square, uncut, until its build is in
-      const want = g.flowing ? flowing : g.textured && textured ? textured : g.carded && carded ? carded : g.patterned ? patterned : plain;
+      const paintedWant = g.paint ? (g.patterned ? paintedPatterned : paintedPlain) : undefined;
+      const want = paintedWant ?? (g.flowing ? flowing : g.textured && textured ? textured : g.carded && carded ? carded : g.patterned ? patterned : plain);
       if (want !== on) {
         pass.setPipeline(want);
+        if (paintedWant) pass.setBindGroup(1, this.paintBind!);
         on = want;
       }
       pass.setVertexBuffer(0, g.position);
@@ -2474,7 +2580,8 @@ export class GameRenderer {
       pass.setVertexBuffer(2, g.instance);
       pass.setVertexBuffer(3, g.material);
       pass.setVertexBuffer(4, g.pattern);
-      if (want === textured) pass.setVertexBuffer(5, g.texture!);
+      if (paintedWant) pass.setVertexBuffer(5, g.paint!);
+      else if (want === textured) pass.setVertexBuffer(5, g.texture!);
       else if (want === carded) {
         pass.setVertexBuffer(5, g.uv!);
         pass.setVertexBuffer(6, g.card!);
@@ -2868,6 +2975,7 @@ export class GameRenderer {
     this.occlusionPassBuffer.destroy();
     this.skyBuffer?.destroy();
     this.clearBuffer?.destroy();
+    this.paintBuffer?.destroy();
     this.opaque?.destroy();
     this.opaqueDepth?.destroy();
     this.shoreTexture?.destroy();

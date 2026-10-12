@@ -181,6 +181,9 @@ export const PAINT_OFFSETS: Readonly<Record<keyof PaintSet, number>> = {
   darkFactor: 39,
 };
 
+/** Every knob, listed once, so a look packed each frame allocates nothing. */
+const PAINT_KEYS = Object.keys(PAINT_DEFAULT) as (keyof PaintSet)[];
+
 /**
  * Writes `PAINT_SETS` records into `out`, from the sets given: a set not
  * given, or a knob left out of one, takes the default, so a look that asks
@@ -188,7 +191,7 @@ export const PAINT_OFFSETS: Readonly<Record<keyof PaintSet, number>> = {
  * look is the same bytes.
  */
 export function packPaint(out: Float32Array, sets: readonly PaintSet[]): void {
-  const keys = Object.keys(PAINT_DEFAULT) as (keyof PaintSet)[];
+  const keys = PAINT_KEYS;
   for (let s = 0; s < PAINT_SETS; s++) {
     const base = s * PAINT_SET_FLOATS;
     out.fill(0, base, base + PAINT_SET_FLOATS);

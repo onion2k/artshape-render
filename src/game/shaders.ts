@@ -24,6 +24,7 @@
 import { FOG_PHASE_WGSL, FOG_STRUCT_WGSL } from './fog';
 import { FLOW_SPLICES, FLOW_WGSL, spliced } from './flow';
 import { TEXTURE_SPLICES } from './texture';
+import { PAINT_UNIFORM_WGSL, PAINT_WGSL } from './paint';
 import { CARD_COVERAGE_SPLICES, CARD_SPLICES, DEPTH_CUT_SPLICES } from './cards';
 import { CLEAR_FRAGMENT, CLEAR_STRUCT_SPLICE, CLEAR_VERTEX_SPLICES } from './clear';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
@@ -53,6 +54,13 @@ export interface SceneVariant {
    * field noise it costs is paid only where a pattern is.
    */
   patterned?: boolean;
+  /**
+   * Whether the painted edge is built in: the mesh's measures (`mesh/paint.ts`, five vec4s a vertex) turned into a
+   * stroke of pale paint along its chosen ridges, mixed into the albedo before the light, with the knobs read from a
+   * uniform in a bind group of its own (`paint.ts`). Toon only: the experiments were all toon, and it throws with
+   * `toon` off. A group with no paint draws through a build without it, so the stroke's cost is paid only where it is.
+   */
+  painted?: boolean;
   /**
    * Whether it is shaded as a cartoon is rather than as a real surface:
    * the sun in a few flat bands at the surface's own colour, the sky's light
@@ -697,6 +705,140 @@ const SCENE_FRAGMENT = `@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
 }
 `;
 
+/** The value noise the painted edge's swell, breaks and marks are cut by: a hash on a lattice, smoothed, stretched to reach both ends. */
+const PAINT_NOISE_WGSL = `fn paintHash(p: vec3f) -> f32 { return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453); }
+fn paintNoise(p: vec3f) -> f32 {
+  let i = floor(p);
+  let t = fract(p);
+  let u = t * t * (3.0 - 2.0 * t);
+  let a = mix(mix(paintHash(i), paintHash(i + vec3f(1.0, 0.0, 0.0)), u.x), mix(paintHash(i + vec3f(0.0, 1.0, 0.0)), paintHash(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y);
+  let b = mix(mix(paintHash(i + vec3f(0.0, 0.0, 1.0)), paintHash(i + vec3f(1.0, 0.0, 1.0)), u.x), mix(paintHash(i + vec3f(0.0, 1.0, 1.0)), paintHash(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y);
+  return smoothstep(0.25, 0.75, mix(a, b, u.z));
+}
+`;
+
+/**
+ * The scene shader's pieces, as the painted build changes them. The knobs are the uniform `paintU` at group 1,
+ * binding 0 (a bind group of its own, made when the first painted group is handed in, so a game that has none has
+ * no buffer and no layout for it); the mesh's five vec4s come in at vertex locations 3, 12, 13, 14 and 15; and six
+ * varyings go to the fragment stage at locations 7 to 12, the first interpolated (the corner's one-hot, so the
+ * barycentrics) and the rest flat. Locations 7 and 8 are the flowing build's and 7 the textured build's, and
+ * neither is painted. The normal stays `normalize(in.normal)`: a painted mesh is split, so it is flat already.
+ */
+export const PAINT_SPLICES = {
+  /** The knobs, in a group of their own. */
+  bindings: {
+    from: '@group(0) @binding(9) var occlusionMap: texture_2d<f32>;\n',
+    to: '@group(0) @binding(9) var occlusionMap: texture_2d<f32>;\n@group(1) @binding(0) var<uniform> paintU: PaintUniform;\n',
+  },
+  /** The barycentrics, each edge's fold, the heights to the edges, the face's id with the quiet flag, the set and the chosen bits, the crowd with the up-shares, and the place along the ridgeline. */
+  struct: {
+    from: '  @location(6) @interpolate(flat) second: vec3f,\n',
+    to: `  @location(6) @interpolate(flat) second: vec3f,
+  @location(7) bary: vec3f,
+  @location(8) @interpolate(flat) angles: vec3f,
+  @location(9) @interpolate(flat) heights: vec3f,
+  @location(10) @interpolate(flat) paintMeta: vec4f,
+  @location(11) @interpolate(flat) crowd: vec3f,
+  @location(12) @interpolate(flat) along: vec3f,
+`,
+  },
+  input: {
+    from: '  @location(9) pattern: vec4f, @location(10) second: vec4f,\n',
+    to: `  @location(9) pattern: vec4f, @location(10) second: vec4f,
+  // the mesh's measures, five vec4s a vertex (mesh/paint.ts has the layout): folds and the corner; heights and the face's low z; the face's high z, id, quiet and set; crowds and chosen bits; places along
+  @location(3) paint0: vec4f, @location(12) paint1: vec4f, @location(13) paint2: vec4f, @location(14) paint3: vec4f, @location(15) paint4: vec4f,
+`,
+  },
+  vertex: {
+    from: '  out.second = second.rgb;\n',
+    to: `  out.second = second.rgb;
+  let paintCorner = paint0.w;
+  out.bary = vec3f(select(0.0, 1.0, paintCorner < 0.5), select(0.0, 1.0, paintCorner > 0.5 && paintCorner < 1.5), select(0.0, 1.0, paintCorner > 1.5));
+  out.angles = paint0.xyz;
+  // the heights are the mesh's own units, so the placement's scale brings them to the world's
+  out.heights = paint1.xyz * length(m0.xyz);
+  // the face's id moved by where the placement stands, so two placements of one mesh differ in their facets
+  out.paintMeta = vec4f(fract(paint2.y * 0.6180339 + dot(m3.xyz, vec3f(0.1031, 0.1137, 0.0973))), paint2.z, paint2.w, paint3.w);
+  out.crowd = paint3.xyz;
+  out.along = paint4.xyz;
+`,
+  },
+  /**
+   * The measure, after the normal and before anything branches (the derivatives want uniform control flow): the
+   * band round each edge from the barycentrics and the heights, its width from the facet and the pixel's footprint,
+   * the gate and the up-share, the chosen bits, the breaks, the crowd fade, the place along the ridgeline and the
+   * mark, and the lip's amount. Everything a quiet mesh has is multiplied by `psLive`, nought for it.
+   */
+  measure: {
+    from: '  let n = normalize(in.normal);\n',
+    to: `  let n = normalize(in.normal);
+  let psSet = u32(in.paintMeta.z + 0.5);
+  let ps = paintU.sets[psSet];
+  let psLive = 1.0 - in.paintMeta.y;
+  let psD = in.bary * in.heights;
+  // a pixel's footprint in each distance, the same on a diagonal edge as on a straight one, as fwidth's is not
+  let psFoot = max(vec3f(length(vec2f(dpdx(psD.x), dpdy(psD.x))), length(vec2f(dpdx(psD.y), dpdy(psD.y))), length(vec2f(dpdx(psD.z), dpdy(psD.z)))), vec3f(1e-6));
+  let psFacet = min(min(in.heights.x, in.heights.y), in.heights.z);
+  let psFacetPx = min(min(in.heights.x / psFoot.x, in.heights.y / psFoot.y), in.heights.z / psFoot.z);
+  let psSwell = 1.0 + ps.swell * (paintNoise(in.world / max(ps.swellScale, 1e-4)) * 2.0 - 1.0);
+  let psWidth = vec3f(
+    paintWidth(ps.width * psSwell, ps.widthFacet * psSwell, ps.widthPx, ps.shareCap, psFacet, psFoot.x),
+    paintWidth(ps.width * psSwell, ps.widthFacet * psSwell, ps.widthPx, ps.shareCap, psFacet, psFoot.y),
+    paintWidth(ps.width * psSwell, ps.widthFacet * psSwell, ps.widthPx, ps.shareCap, psFacet, psFoot.z));
+  let psBand = vec3f(paintBand(psD.x, psWidth.x, psFoot.x, ps.edgeAa), paintBand(psD.y, psWidth.y, psFoot.y, ps.edgeAa), paintBand(psD.z, psWidth.z, psFoot.z, ps.edgeAa));
+  let psFeather = vec3f(1.0) - smoothstep(psWidth, psWidth * (1.0 + ps.featherWidth), psD);
+  let psBands = max(psBand, ps.feather * psFeather * psFeather);
+  // each edge's up-share rides in the fraction of its corner's crowd, as (share + 1) / 4
+  let psUpShare = fract(in.crowd) * 4.0 - vec3f(1.0);
+  let psStrength = vec3f(
+    paintStrength(in.angles.x, ps.gate, ps.ramp, psUpShare.x, ps.ridgeUp),
+    paintStrength(in.angles.y, ps.gate, ps.ramp, psUpShare.y, ps.ridgeUp),
+    paintStrength(in.angles.z, ps.gate, ps.ramp, psUpShare.z, ps.ridgeUp));
+  let psBits = u32(in.paintMeta.w + 0.5);
+  let psPicked = vec3f(f32(psBits & 1u), f32((psBits >> 1u) & 1u), f32((psBits >> 2u) & 1u));
+  // breaks only where asked: a chain under ridgelines is one stroke, and 'broken' at nought is that
+  let psBreakN = paintNoise(in.world / max(ps.brokenScale, 1e-4));
+  let psBreak = select(1.0, select(1.0 - ps.broken * psBreakN, smoothstep(ps.broken * (1.0 - ps.taper) - 1e-4, ps.broken + (1.0 - ps.broken) * ps.taper, psBreakN), ps.taper > 0.0), ps.broken > 0.0);
+  // the distance to corner i is the larger of the distances to the two edges that meet there: nought only at the corner
+  let psDV = vec3f(max(psD.y, psD.z), max(psD.x, psD.z), max(psD.x, psD.y));
+  let psCrowd = vec3f(
+    paintCrowdFade(in.crowd.x, psDV.x, ps.fadeReach, psFacet, ps.vertexFade),
+    paintCrowdFade(in.crowd.y, psDV.y, ps.fadeReach, psFacet, ps.vertexFade),
+    paintCrowdFade(in.crowd.z, psDV.z, ps.fadeReach, psFacet, ps.vertexFade));
+  let psCoverage = psBands * psStrength * psPicked;
+  let psConvex = max(max(psCoverage.x, psCoverage.y), psCoverage.z) * psBreak * min(min(psCrowd.x, psCrowd.y), psCrowd.z);
+  let psDown = smoothstep(vec3f(ps.gate), vec3f(ps.gate + max(ps.ramp, PAINT_TINY)), -in.angles);
+  let psConcave = max(max(psBand.x * psDown.x, psBand.y * psDown.y), psBand.z * psDown.z);
+  // the place along the nearest edge's ridgeline, from its two corners' places by the barycentrics
+  let psAlong3 = vec3f(
+    mix(in.along.y, in.along.z, in.bary.z / max(in.bary.y + in.bary.z, 1e-6)),
+    mix(in.along.z, in.along.x, in.bary.x / max(in.bary.z + in.bary.x, 1e-6)),
+    mix(in.along.x, in.along.y, in.bary.y / max(in.bary.x + in.bary.y, 1e-6)));
+  let psAlong = select(select(psAlong3.z, psAlong3.y, psD.y <= psD.z), psAlong3.x, psD.x <= min(psD.y, psD.z));
+  let psMarkN = paintNoise(in.world / max(ps.markScale, 1e-4) + vec3f(41.3, 7.9, 23.1));
+  let psMarkK = mix(psMarkN * 2.0 - 1.0, 1.0 - 2.0 * psAlong, ps.markAlong);
+  let psLit = paintLit(dot(n, normalize(frame.sunDir)), n.z, ps.sun, ps.up, ps.upPow, ps.litCut);
+  let psAmount = clamp(psConvex * paintFade(psFacetPx, ps.fadePx) * ps.light * psLive * psLit, 0.0, 1.0);
+`,
+  },
+  /**
+   * The albedo with the lip mixed in, before the light and before any pattern mixes its second colour in: the lip is
+   * its own absolute colour, leaning toward `markHueColour` at the stroke's head and the rock's own at its tail, its
+   * value by `paintMark`; the crease darkens the albedo; the facet's value moves it a step a face.
+   */
+  albedo: {
+    from: '  var f0 = in.albedo;\n',
+    to: `  let psFacetK = in.paintMeta.x;
+  let psBase = in.albedo * (1.0 + ps.facet * psLive * (2.0 * paintHash(vec3f(psFacetK * 17.3, 0.71, psFacetK * 3.1)) - 1.0));
+  var psLip = mix(ps.lightColour, ps.markHueColour, 0.5 * ps.markHue * max(psMarkK, 0.0));
+  psLip = mix(psLip, psBase, 0.5 * ps.markHue * max(-psMarkK, 0.0));
+  psLip = clamp(psLip * paintMark(psAlong, psMarkN, ps.markValue, ps.markEnd, ps.markAlong), vec3f(0.0), vec3f(1.0));
+  var f0 = mix(paintLip(psBase, psLip, psAmount), psBase * ps.darkFactor, clamp(psConcave * paintFade(psFacetPx, ps.fadePx) * ps.dark * psLive, 0.0, 1.0));
+`,
+  },
+};
+
 export function sceneSource(variant: SceneVariant = {}): string {
   return sceneWith(SCENE_VERTEX, variant);
 }
@@ -706,7 +848,7 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false, carded = false, coverage = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false, carded = false, coverage = false, painted = false }: SceneVariant = {}): string {
   let head = SCENE_HEAD, stage = vertex, material = SCENE_MATERIAL, fragment = SCENE_FRAGMENT;
   let flow = '';
   if (flowing) {
@@ -744,6 +886,18 @@ export function sceneWith(vertex: string, { cullLights = true, points = true, sh
       fragment = spliced(spliced(fragment, k.fragment.from, k.fragment.to, 'carded coverage'), k.result.from, k.result.to, 'carded coverage');
     } else fragment = spliced(fragment, c.fragment.from, c.fragment.to, 'carded');
     flow = 'const CARDED: bool = true;\n';
+  }
+  if (painted) {
+    // the painted build is the plain or patterned build with the paint's pieces put in, toon only
+    if (!toon) throw new Error('the painted build is a toon build: the paint was settled in a toon look, and a physically based look draws a painted group plain');
+    if (flowing || textured || carded) throw new Error('the painted build cannot also be the flowing, textured or carded build: it takes the vertex locations and varyings they use');
+    if (!vertex.includes(PAINT_SPLICES.input.from)) throw new Error('the painted build needs the group\'s own vertex stage, which has the placement to give the paint to');
+    const k = PAINT_SPLICES;
+    head = spliced(spliced(head, k.bindings.from, k.bindings.to, 'painted'), k.struct.from, k.struct.to, 'painted');
+    stage = spliced(spliced(stage, k.input.from, k.input.to, 'painted'), k.vertex.from, k.vertex.to, 'painted');
+    material += PAINT_UNIFORM_WGSL + PAINT_WGSL + PAINT_NOISE_WGSL;
+    fragment = spliced(spliced(fragment, k.measure.from, k.measure.to, 'painted'), k.albedo.from, k.albedo.to, 'painted');
+    flow = 'const PAINTED: bool = true;\n';
   }
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
