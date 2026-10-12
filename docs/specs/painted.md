@@ -58,7 +58,7 @@ the user's.
   and is tree-shaken out of a game that does not import it. Part 7's own
   `perf:gpu` run is in the commit that closes it.
 
-Written 13 October 2026, from the experiments E1 to E21 in the worktree
+Written 12 October 2026, from the experiments E1 to E21 in the worktree
 `~/projects/artshape-render-painted` (branch `painted-experiments`, never
 to be merged) and their report, `docs/specs/painted-experiments.md` there.
 The facts hold on artshape-render `bd26e65` (v0.37.0), which is `main`.

@@ -142,7 +142,7 @@ and is listed under *what the real version must do differently*.
   off; the perf gate's `standard` reads 0.64 against its 0.60 baseline,
   within tolerance, the same before and after E7's file existed.
 
-## E9: the examples (13 October 2026)
+## E9: the examples (12 October 2026)
 
 Two more tree types, a rock pile, a cliff, eight boulders and pebbles, a
 cabin and a jetty, each plain and painted, and a lakeside scene with all of
@@ -162,7 +162,7 @@ add to the findings above:
   modest, and the palette and the finish limit the picture more than the
   paint does.
 
-## E10: the second round, in the game's light (13 October 2026)
+## E10: the second round, in the game's light (12 October 2026)
 
 After the review of E9 (colours washed out; the round tree poor against
 the conifer; rocks good but wanting polys; the jetty great; the house too
@@ -183,7 +183,7 @@ finish, sky and soft tone (`frames/sheets/e10 *`). What that adds:
 - **Glass cannot glow:** a group has no emissive short of a flow kind,
   which the real version may want for windows and the lantern.
 
-## E11: the edge line alone (13 October 2026)
+## E11: the edge line alone (12 October 2026)
 
 After the review of E10 (the conifer best: flat facets with only the edge
 lighting; the rest reads as vertex shading), every face layer was turned
@@ -203,7 +203,7 @@ So the real version is the edge mechanism alone (E3b, 0.10 ms a frame with
 no layers), opted into by rock and wood groups, with a lip relative to the
 material, a gate on the fold, a pixel floor and a fade; and no face layers.
 
-## E12: the charm round (13 October 2026)
+## E12: the charm round (12 October 2026)
 
 After the review of E11 (the clean edge is nice but misses the charm of
 the references), the light and the palette were varied with the edge line
@@ -233,7 +233,7 @@ So the production work is in three places, not one: the edge line and the
 facet value in the renderer (both cheap), the look's shade, fill, sun and
 occlusion in the game's `look.ts`, and the palette.
 
-## E13 and E14: the edge as a stroke, and sized by the facet (13 October 2026)
+## E13 and E14: the edge as a stroke, and sized by the facet (12 October 2026)
 
 After the review that the edges were straight lines, E13 gave the band
 swell, a sided wander, tapered breaks, corner gathering, a feather and a
@@ -259,7 +259,7 @@ the light so it can be brighter than a lit face (`frames/sheets/e13 *`,
 - **Small facets on screen** need a cap on the band's share of the facet,
   or a stronger fade, or the small rocks whiten.
 
-## E15: the matte lip kept below the lit face (13 October 2026)
+## E15: the matte lip kept below the lit face (12 October 2026)
 
 With the lip mixed in before the light, nothing above 1, no core, a calm
 feather, and a fade where many lit edges meet at a vertex (counted by the
@@ -274,7 +274,7 @@ is made by the look and the palette (a darker, warmer rock under a less
 clipping sun), not by the edge. The vertex fade, the facet-relative width,
 the share cap and the per-thing sets all belong in the real version.
 
-## E16: the darker rock (13 October 2026)
+## E16: the darker rock (12 October 2026)
 
 With the rock's albedo halved, the matte lip of E15 shows on the lit
 ridges and stays well below white, measured: a lip of 2.2 times the
@@ -289,7 +289,7 @@ strokes need either a pale of its own hue or a lip allowed above the lit
 face, which the user ruled out. That is the taste decision the production
 version rests on.
 
-## E17: a pale paint of its own hue (13 October 2026)
+## E17: a pale paint of its own hue (12 October 2026)
 
 With the lip an absolute warm chalk (0.62, 0.55, 0.42) at 0.8, mixed in
 before the light on the halved rock, the stroke reads as cream paint laid
@@ -302,7 +302,7 @@ reference rocks, and it needs no code beyond what E15 built. What still
 differs is that the strokes follow every ridge over the gate and are
 soft-edged where the reference's are chosen and crisp.
 
-## E18: crispness and choice (13 October 2026)
+## E18: crispness and choice (12 October 2026)
 
 A hard band (feather 0), a gate of 0.45 over a steep ramp, the lip only
 on edges whose two faces' normals lean up (`ridgeOnly`, the up-share
@@ -327,7 +327,7 @@ albedo, under E12's light (shade (0.13, 0.19, 0.34), fill at 0.4 with a
 cool sky light, sun (2.9, 2.5, 1.9), occlusion 4 at radius 12). No face
 layers, no wrap, no bevel on boulders.
 
-## E19: the mark loaded and dry (13 October 2026)
+## E19: the mark loaded and dry (12 October 2026)
 
 A value noise along each mark at the break's scale, a dimming toward each
 dash's tips, and a small hue shift from a warm loaded head to the rock's
@@ -338,7 +338,7 @@ as three cheap knobs for close views, with the head's direction the one
 thing noise cannot choose. The settled recipe above gains: markValue 0.6
 at the break's scale, markEnd 0.8, markHue 1, the chalk at 1.3.
 
-## E20: one dominant ridge per face (13 October 2026)
+## E20: one dominant ridge per face (12 October 2026)
 
 Scoring each face's border edges by fold, up-share and length and picking
 the best chooses little on its own, because neighbouring faces seldom pick
@@ -351,7 +351,7 @@ cheap: seven bits a triangle from the mesh pass and one multiply in the
 fragment. The settled recipe gains the agree mode for boulders and piles,
 with the ridge filter kept and the gate at 0.3; the cliff stays as it was.
 
-## E21: ridgelines, a budget per rock, spacing (13 October 2026)
+## E21: ridgelines, a budget per rock, spacing (12 October 2026)
 
 Chaining a rock's convex edges into ridgelines in the mesh pass, scoring
 them, taking a budget of three for a boulder with an exclusion distance
