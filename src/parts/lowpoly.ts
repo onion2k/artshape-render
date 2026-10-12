@@ -182,17 +182,23 @@ export function fern(size: number, { seed = 1, blades = 9 } = {}): Scenery {
 /**
  * A boulder about `size` across each way from its middle: a faceted lump
  * pushed in further than a canopy is, sunk a little and flat underneath, so
- * it sits on the ground and does not perch on it. One part, `rock`.
+ * it sits on the ground and does not perch on it. One part, `rock`. `rings`
+ * and `segments` cut it finer for a boulder that is seen large (a painted
+ * edge wants facets to choose its ridges from); left out they are the chunky
+ * counts of `FACETS`, so every call made before they existed is the same mesh.
  */
-export function boulder(size: number, { seed = 1 } = {}): Scenery {
+export function boulder(
+  size: number,
+  { seed = 1, rings = FACETS.rockRings, segments = FACETS.rockSegments }: { seed?: number; rings?: number; segments?: number } = {},
+): Scenery {
   const random = seeded(seed * 7727 + 1);
   const mesh = built((b) =>
     lump(
       b,
       at(0, 0, -size * 0.15, random() * Math.PI * 2),
       random,
-      FACETS.rockRings,
-      FACETS.rockSegments,
+      rings,
+      segments,
       [size, size * 0.82, size * 0.72],
       { give: 0.3, floor: -size * 0.1 },
     ),

@@ -5,7 +5,7 @@
  * height, so a game can make one mesh and instance it.
  */
 import { describe, expect, it } from 'vitest';
-import { boulder, broadleaf, bush, conifer, farTree, fern, type Scenery } from '../lowpoly';
+import { FACETS, boulder, broadleaf, bush, conifer, farTree, fern, type Scenery } from '../lowpoly';
 import { boundsOf, expectWellFormed } from '../../mesh/__tests__/helpers';
 import type { Mesh } from '../../mesh/types';
 
@@ -49,6 +49,17 @@ describe('the faceted scenery', () => {
     expect(triangles(bush(1.8))).toBe(72);
     expect(triangles(fern(2.2))).toBe(27);
     expect(triangles(boulder(1.4))).toBe(20);
+  });
+
+  it('cuts a boulder at the rings and segments asked for, and as before when they are not', () => {
+    // a lump of r rings and s segments is a fan of s at each pole and two triangles a segment in each ring between: 2s + 2s(r - 2)
+    expect(triangles(boulder(1, { seed: 2, rings: 5, segments: 8 }))).toBe(64);
+    expect(triangles(boulder(1, { rings: 4, segments: 6 }))).toBe(36);
+    // the defaults are the old counts, and the same mesh to the bit
+    const old = part(boulder(1.4, { seed: 5 }), 'rock');
+    const same = part(boulder(1.4, { seed: 5, rings: FACETS.rockRings, segments: FACETS.rockSegments }), 'rock');
+    expect(Array.from(same.positions)).toEqual(Array.from(old.positions));
+    expect(Array.from(same.indices)).toEqual(Array.from(old.indices));
   });
 
   it('names its parts, which a game colours by name, and carries no colour of its own', () => {
