@@ -86,7 +86,7 @@ here with a GPU test.
 
 What to copy the shape of:
 
-- **Scenery with no colour:** the faceted trees (`parts/lowpoly.ts`, helpers in `mesh/lowpoly.ts`). A generator
+- **Scenery with no colour:** the faceted trees (`parts/lowpoly.ts`, helpers in `mesh/lowpoly.ts`: `at`, `frustum`, `lump`, and `prism`, `block`, `slab`, `rod`, `dome`, `disc`, `annulus`, `tubeIn` for a building, a jetty or a post). A generator
   returns `{ name, parts: { name, mesh }[] }` and the game colours by part name; chance is a `seed`
   through `seeded`, and `height` scales every dimension evenly so one mesh instances at any height.
   `lowpoly.test.ts` beside each holds the exact triangle counts, the seed, the ground and the height.

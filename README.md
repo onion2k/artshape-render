@@ -31,7 +31,8 @@ would cost them something for nothing.
 - **A toy's faceted scenery, for a game to colour** — `broadleaf`,
   `conifer`, `farTree`, `bush`, `fern` and `boulder` in `parts/lowpoly.ts`,
   cut with flat faces from the helpers in `mesh/lowpoly.ts` (`at`, `face`,
-  `tri`, `frustum`, `lump`). Cheap (a broadleaf is 204 triangles, a far tree
+  `tri`, `frustum`, `lump`, and the solids a building is cut from: `prism`, `block`,
+  `slab`, `rod`, `dome`, `disc`, `annulus` and `tubeIn`). Cheap (a broadleaf is 204 triangles, a far tree
   10 or 16), seeded, standing on the ground at the origin with a tree's top
   at its height, and made of named meshes with no colour: the game colours
   `trunk`, `leaves` and `crown` itself.
