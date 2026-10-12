@@ -36,6 +36,12 @@ export interface Mesh {
    * so lettering can wrap across the seam. Absent on an open surface.
    */
   engravePeriod?: number;
+  /**
+   * What a painted edge reads, `PAINT_STRIDE` floats a vertex, made by `painted` in `mesh/paint.ts`: each triangle's
+   * three folds and heights, its face and the choice of which edges carry paint. The game path's painted build binds
+   * it as attributes and draws a stroke along the chosen edges. Absent on everything else, which draws as it did.
+   */
+  paint?: Float32Array;
 }
 
 /**
