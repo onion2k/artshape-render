@@ -116,6 +116,49 @@ describe("clear water's mirror", () => {
   });
 });
 
+describe("clear water's scene in the mirror", () => {
+  it('asks for nothing by default: off, the plane at nought, and the words in the mirror uniform the old nought', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.mirrorScene, w.mirrorPlane, w.mirrorDistort]).toEqual([false, 0, 0.03]);
+    // off, the distortion is not packed either, so a water that does not ask is packed word for word as it was
+    expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), w)]).toEqual([0, 0, 0, 0, 1, 0, 0, 0]);
+    expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), resolveClear({ mirrorDistort: 0.5 }, 100))]).toEqual([0, 0, 0, 0, 1, 0, 0, 0]);
+  });
+
+  it('takes the plane and the distortion, and packs the distortion and a one for the scene where the shader reads them', () => {
+    const w = resolveClear({ mirrorScene: true, mirrorPlane: -0.25, mirrorDistort: 0.08, mirrorTint: [0, 0.5, 1], mirror: 0.5 }, 100);
+    expect([w.mirrorScene, w.mirrorPlane, w.mirrorDistort]).toEqual([true, -0.25, 0.08]);
+    expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), w)]).toEqual([0, 0.5, 1, 1, 0.5, 0, Math.fround(0.08), 1]);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
+    const at = CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS;
+    expect([...out.subarray(at, at + CLEAR_MIRROR_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0, Math.fround(0.08), 1]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('holds the distortion to at least nought, and keeps the default for what is not a number', () => {
+    expect(resolveClear({ mirrorDistort: -1 }, 100).mirrorDistort).toBe(0);
+    expect(resolveClear({ mirrorDistort: 2 }, 100).mirrorDistort).toBe(2);
+    expect(resolveClear({ mirrorDistort: NaN }, 100).mirrorDistort).toBe(0.03);
+    expect(resolveClear({ mirrorDistort: Infinity }, 100).mirrorDistort).toBe(0.03);
+    expect(resolveClear({ mirrorPlane: NaN }, 100).mirrorPlane).toBe(0);
+    expect(resolveClear({ mirrorPlane: -Infinity }, 100).mirrorPlane).toBe(0);
+    expect(resolveClear({ mirrorPlane: -3 }, 100).mirrorPlane).toBe(-3);
+    // only a true is on: a truthy word is not
+    expect(resolveClear({ mirrorScene: 1 as unknown as boolean }, 100).mirrorScene).toBe(false);
+  });
+
+  it('turns no default by the world\'s units: the plane is a height the game names and the distortion is a share of the screen', () => {
+    for (const mmPerUnit of [1, 100, 1000]) {
+      const w = resolveClear(undefined, mmPerUnit);
+      expect([w.mirrorPlane, w.mirrorDistort]).toEqual([0, 0.03]);
+    }
+    // a plane a game names is in its own units and is taken as it is
+    expect(resolveClear({ mirrorPlane: 2.5 }, 1).mirrorPlane).toBe(2.5);
+    expect(resolveClear({ mirrorPlane: 2.5 }, 1000).mirrorPlane).toBe(2.5);
+  });
+});
+
 describe("clear water's ripples", () => {
   it('add nothing by default: no colour, half at a full slope, nothing below three tenths', () => {
     const w = resolveClear(undefined, 100);

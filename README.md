@@ -261,6 +261,35 @@ What the measurements settled, so nobody has to re-argue it:
     thing wholly under the water but nearer the surface than `foamWidth` rings
     too, so a game sets that small. A water that asks for neither draws as
     0.33.0's did, to the pixel.
+  - `mirrorScene`, `mirrorPlane` and `mirrorDistort` (from 0.39.0), for the water
+    to mirror the scene itself and not only the sky: a bank, a rock, a jetty or
+    a cabin standing in it shows in the pixels beneath it. With `mirrorScene`
+    true the opaque groups are drawn once more before the scene pass, with the
+    view turned over in the plane at `mirrorPlane` (the height of the water's
+    surface, in world units, nought by default) and everything under that plane
+    clipped away, into a frame of half the size, in half floats, with a depth of
+    its own and an alpha of nought where nothing was drawn. The clear pass reads
+    that frame in place of the sky where something was drawn, the sky where
+    nothing was, and the two mixed by its alpha at an edge, which is a soft one,
+    since the frame is premultiplied and read filtered. `mirrorTint` and
+    `mirror` apply to both, so a sick lake's reflection is as green as its sky
+    is. `mirrorDistort`, a share of the screen for a normal tilted all the way
+    over (three hundredths by default), shifts where the frame is read by the
+    swells' own normal along the screen's axes, and not the fine waves', which
+    fade out with the distance at which the mirror shows things; it lies the
+    reflection still at nought, and does nothing with no `waves`. The shadow
+    maps, the grass, the particles, the sky and the water itself are not drawn
+    into it, and the camera's occlusion is not read by it; the sun's maps are
+    read as they stand. It is a build of the scene shader of its own (a
+    `MIRRORED` constant and a clip, in no other build), made for each kind of
+    group the frame has and each rung of shadows and points it is drawn on, when
+    first asked for, and `prepare()` waits. The frame and its depth are made
+    when the first frame needs them and again on a resize, and let go when the
+    option is turned off. `mirrorScene` false, the default, runs no pass and
+    makes no texture, and the water draws as 0.38.0's did, to the pixel
+    (`cleargolden.gpu.test.ts`). It costs about 0.03 ms over `standard clear`
+    on the standard scene (`standard clear mirror`); what it costs is the
+    scenery it draws again, so a lake with a wood round it costs more.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in

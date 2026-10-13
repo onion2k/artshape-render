@@ -36,6 +36,8 @@ const BASELINE = 'src/game/__tests__/perf-baseline.json';
 const UPDATE = !!import.meta.env.VITE_PERF_UPDATE;
 /** What the golf field may add to the standard scene's frame, on the reference adapter: the spec's budget. */
 const GRASS_BUDGET_MS = 2.0;
+/** What the water mirroring the scene may add to the standard clear water's frame, on the reference adapter: the plan's budget for it. */
+const MIRROR_BUDGET_MS = 0.3;
 const REFERENCE = 'apple/metal-3';
 /**
  * Frames drawn before the first scene is timed. A GPU that has sat idle
@@ -298,6 +300,11 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard clear msaa'] = await time();
     r.look = plain;
+    // the same water mirroring the scene: the four hundred boxes drawn once more at half the frame from under the strip's plane, clipped there, and read by the clear pass
+    r.look = { ...plain, clear: { mirrorScene: true, mirrorPlane: 0.05 } };
+    await r.prepare();
+    measured['standard clear mirror'] = await time();
+    r.look = plain;
     // the same water cut 128 by 24, still and then swelling by four waves, so the swells' price is read against the same mesh
     r.setStatic([...standardScene(), { ...lone(FLOW_CLEAR, 0.4, 0.3), mesh: sheet(30, 8, 128, 24) }]);
     await r.prepare();
@@ -437,5 +444,6 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     }
     expect(verdicts.filter((v) => !v.ok).map((v) => `${v.scene}: ${v.why}`)).toEqual([]);
     if (key === REFERENCE) expect(measured.golf - measured.standard, 'the golf field over the standard scene, in ms').toBeLessThanOrEqual(GRASS_BUDGET_MS);
+    if (key === REFERENCE) expect(measured['standard clear mirror'] - measured['standard clear'], 'the water mirroring the scene over the standard clear water, in ms').toBeLessThanOrEqual(MIRROR_BUDGET_MS);
   }, 180_000);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, sceneSource, sceneWith } from '../shaders';
+import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, DEPTH_WGSL, EFFECT_WGSL, FOG_BLEND_WGSL, FOG_MSAA_WGSL, FOG_WGSL, FXAA_WGSL, clearSource, sceneSource, sceneWith } from '../shaders';
 import { DRAW_WGSL, SPRITE_WGSL } from '../particles';
 
 describe('the scene shader is a permutation of itself', () => {
@@ -204,5 +204,44 @@ describe('the flowing build of the scene shader', () => {
   it('refuses another vertex stage, which has no tangents to give it', () => {
     const other = '@vertex fn vsMain(@builtin(vertex_index) v: u32) -> VsOut { var out: VsOut; return out; }\n';
     expect(() => sceneWith(other, { flowing: true })).toThrow(/flowing/);
+  });
+});
+
+describe('the mirrored build of the scene shader', () => {
+  // the words that only the mirror's build has: not one may be in any other build
+  const MIRROR_WORDS = ['MIRRORED', 'frame.spare1'];
+
+  it('is a build of its own with a constant to say so, and a clip under the plane in the frame uniform as its first line', () => {
+    const src = sceneSource({ mirrored: true });
+    expect(src).toContain('const MIRRORED: bool = true;');
+    // the plane is the frame uniform's second spare, and what is under it is thrown away before anything is shaded
+    const open = src.indexOf('@fragment fn fsMain(in: VsOut) -> @location(0) vec4f {\n');
+    expect(open).toBeGreaterThan(0);
+    expect(src.slice(open).split('\n')[1]).toBe('  if (in.world.z < frame.spare1) { discard; }');
+  });
+
+  it('is made over every other build, so a flowing, textured, carded or painted group is clipped too', () => {
+    for (const v of [{ patterned: true }, { flowing: true }, { textured: true }, { carded: true }, { painted: true, toon: true }, { painted: true, toon: true, patterned: true }]) {
+      const src = sceneSource({ ...v, mirrored: true });
+      expect(src, JSON.stringify(v)).toContain('if (in.world.z < frame.spare1) { discard; }');
+      expect(src.match(/frame\.spare1/g)!.length, 'the clip once').toBe(1);
+    }
+  });
+
+  it('is in no other build, not a word of it, whatever the other settings', () => {
+    for (const patterned of [false, true])
+      for (const toon of [false, true])
+        for (const mirrored of [undefined, false]) {
+          const src = sceneSource({ patterned, toon, mirrored });
+          for (const word of MIRROR_WORDS) expect(src, `${word} in a build that did not ask`).not.toContain(word);
+        }
+    for (const v of [{ flowing: true }, { textured: true }, { carded: true }, { carded: true, coverage: true }, { painted: true, toon: true }])
+      for (const word of MIRROR_WORDS) expect(sceneSource(v), `${word} in ${JSON.stringify(v)}`).not.toContain(word);
+  });
+
+  it('leaves every other build as it was to the byte: the same text with or without the setting named', () => {
+    for (const patterned of [false, true]) for (const toon of [false, true]) expect(sceneSource({ patterned, toon, mirrored: false })).toBe(sceneSource({ patterned, toon }));
+    // and the clear pass, which has its own text, is not a mirrored build
+    expect(clearSource(true)).not.toContain('MIRRORED');
   });
 });

@@ -76,6 +76,22 @@ export interface ClearWater {
   /** How strong the mirror is, as a multiple of what it was before this option: one for the same, nought for none. */
   mirror: number;
   /**
+   * Whether the water mirrors the scene as well as the sky. True has `GameRenderer` draw the opaque groups once more
+   * before the scene pass, with the view turned over in `mirrorPlane` and everything under that plane clipped away, into
+   * a half-size frame of its own, and the water shows that where something was drawn and the sky where nothing was. The
+   * shadow maps, the grass, the cards' extra pass, the particles and the clear water itself are not drawn again for it.
+   * False draws no such pass and makes no such frame, and the water is what it was.
+   */
+  mirrorScene: boolean;
+  /** The height of the water's surface, in world units, which the scene is mirrored in and clipped at. Moot while `mirrorScene` is false. */
+  mirrorPlane: number;
+  /**
+   * How far the swells' own normal shifts the mirrored scene, as a share of the screen for a normal tilted all the way
+   * over: nought lies it still. It is the swells' (the Gerstner sum's) and not the fine waves', which fade out with
+   * distance where the mirror shows things. Moot while `mirrorScene` is false.
+   */
+  mirrorDistort: number;
+  /**
    * A colour the body lightens toward on the fine waves' slopes, so a painted lake's streaks of lighter blue are
    * painted into the water and are not the sky's, which a dark `mirrorTint` takes away. Null for none, and nothing is
    * added. The slope is the fine waves' own, `length(slope) / 0.6` held to one: at that, or past it, the wave is on a
@@ -138,6 +154,9 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   mirrorTint: null,
   mirrorNear: 0,
   mirror: 1,
+  mirrorScene: false,
+  mirrorPlane: 0,
+  mirrorDistort: 0.03,
   ripple: null,
   rippleAmount: 0.5,
   rippleCut: 0.3,
@@ -187,6 +206,9 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     mirrorTint: n.mirrorTint ?? d.mirrorTint,
     mirrorNear: Math.min(taken(n.mirrorNear, d.mirrorNear), 1),
     mirror: taken(n.mirror, d.mirror),
+    mirrorScene: n.mirrorScene === true,
+    mirrorPlane: taken(n.mirrorPlane, d.mirrorPlane, -Infinity),
+    mirrorDistort: taken(n.mirrorDistort, d.mirrorDistort),
     ripple: n.ripple ?? d.ripple,
     rippleAmount: Math.min(taken(n.rippleAmount, d.rippleAmount), 1),
     rippleCut: Math.min(taken(n.rippleCut, d.rippleCut), 1),
@@ -196,7 +218,7 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | keyof ClearRipple | keyof ClearFoam>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -219,17 +241,19 @@ export function finishUniform(out: Float32Array, w: ClearFinish): Float32Array {
 }
 
 /** The settings of the sky's reflection in the water, packed last in the frame. */
-type ClearMirror = Pick<ClearWater, 'mirrorTint' | 'mirrorNear' | 'mirror'>;
+type ClearMirror = Pick<ClearWater, 'mirrorTint' | 'mirrorNear' | 'mirror' | 'mirrorScene' | 'mirrorDistort'>;
 
 /** How many floats the mirror is packed into: two vec4s. */
 export const CLEAR_MIRROR_FLOATS = 8;
 
 /**
  * Writes the mirror into `out` as the tint with a one where there is one (a tint of nought and a flag of nought are
- * none, so the sky is not multiplied at all), then the strength and the share the camera keeps. Returns `out`.
+ * none, so the sky is not multiplied at all), then the strength and the share the camera keeps, then the swells'
+ * distortion and a one where the scene is mirrored too. A water that does not mirror the scene writes the last two as
+ * nought whatever the distortion says, so it is packed word for word as it was. Returns `out`.
  */
 export function mirrorUniform(out: Float32Array, w: ClearMirror): Float32Array {
-  out.set([...(w.mirrorTint ?? [0, 0, 0]), w.mirrorTint ? 1 : 0, w.mirror, w.mirrorNear, 0, 0]);
+  out.set([...(w.mirrorTint ?? [0, 0, 0]), w.mirrorTint ? 1 : 0, w.mirror, w.mirrorNear, w.mirrorScene ? w.mirrorDistort : 0, w.mirrorScene ? 1 : 0]);
   return out;
 }
 
@@ -344,7 +368,8 @@ struct ClearFrame {
   field: vec4f,
   // the gap to the second line of foam and its width, and one where there is a shore field
   lines: vec4f,
-  // the sky's tint and a one where there is one; then the mirror's strength and the share of it the camera keeps
+  // the sky's tint and a one where there is one; then the mirror's strength and the share of it the camera keeps, the
+  // swells' distortion of the scene in it and a one where the scene is mirrored too
   tint: vec4f,
   mirror: vec4f,
   // the ripples' colour and a one where there is one; then the amount and the cut
@@ -358,6 +383,10 @@ struct ClearFrame {
 @group(1) @binding(2) var<uniform> cw: ClearFrame;
 @group(1) @binding(3) var shoreField: texture_2d<f32>;
 @group(1) @binding(4) var shoreSampler: sampler;
+// the scene as the water mirrors it, at half the frame: its colour premultiplied by where something was drawn, which is
+// its alpha, since it is cleared to nought and written at one; a texel of nothing while the scene is not mirrored
+@group(1) @binding(5) var sceneMirror: texture_2d<f32>;
+@group(1) @binding(6) var sceneMirrorSampler: sampler;
 ${WAVES_WGSL}
 // How the light through the water is lost, colour by colour: each channel of the deep colour lasts in proportion to how
 // much of it there is, so red goes first and the shallows turn teal of themselves, saturated and not milky, and the deep
@@ -517,6 +546,16 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let rd = reflect(-v, n);
   let folded = vec3f(rd.xy, abs(rd.z));
   var sky = textureSampleLevel(envSpecular, samp, folded, frame.maxLod * CLEAR_SHARP).rgb * frame.exposure;
+  // the scene in the mirror, where it was drawn, stands in for the sky there. Its edge is filtered with the rest of the
+  // texture, which is premultiplied, so where scenery meets sky it is a soft one over a texel of the half-size frame and
+  // not a line of its facets. The swells' own normal shifts where it is read, along the screen's axes, by a share of the
+  // screen; the fine waves' would fade out with the distance at which the mirror shows things
+  if (cw.mirror.w > 0.0) {
+    let lean = (frame.viewProj * vec4f(n0.x, n0.y, 0.0, 0.0)).xy;
+    let look = vec2f(px.x * cw.screen.z, px.y * cw.screen.w) + vec2f(lean.x, -lean.y) * (0.5 * cw.mirror.z);
+    let seen = textureSampleLevel(sceneMirror, sceneMirrorSampler, look, 0.0);
+    sky = sky * (1.0 - seen.a) + seen.rgb;
+  }
   if (cw.tint.w > 0.0) { sky = sky * cw.tint.rgb; }
   let reflectance = CLEAR_RF0 + (1.0 - CLEAR_RF0) * pow(1.0 - ndv, 5.0);
   // eased off by the camera, where there is a near colour, so the water at the feet is seen into and not mirrored

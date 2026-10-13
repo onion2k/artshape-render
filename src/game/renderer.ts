@@ -179,6 +179,8 @@ export interface GameGroup {
 
 /** Where the frame uniform's clock is: the toon light's first spare, after `toonUniform`'s 32 and the finish's 21. */
 const CLOCK_AT = 32 + 21;
+/** The bits of a mirror build's mask (`GameRenderer.mirrorMask`): the rungs it is drawn on, the look's, and the kind of group. */
+const MIRROR_SHADOWS = 1, MIRROR_POINTS = 2, MIRROR_TOON = 4, MIRROR_PATTERNED = 8, MIRROR_FLOWING = 16, MIRROR_TEXTURED = 32, MIRROR_CARDED = 64, MIRROR_PAINTED = 128;
 
 /** Eight floats a placement's pattern: kind, scale, seed and a spare, then the second colour and a spare; a flow kind's seed is its speed and its spare its glow. */
 export const PATTERN_STRIDE = 8;
@@ -918,6 +920,25 @@ export class GameRenderer {
   /** The clear pass's uniform and the camera's inverse it is packed from, made once and written each frame. */
   private readonly clearFrame = new Float32Array(CLEAR_FRAME_FLOATS);
   private readonly clearInverse = new Float32Array(16);
+  /**
+   * Clear water mirroring the scene (`ClearWater.mirrorScene`), all of it made when it is first asked for and none of it
+   * before: the frame uniform with the view turned over in the water's plane and its scene bind group, a half-size frame
+   * and depth to draw the opaque groups into, and a build of the scene shader for each kind of group drawn that way
+   * (`mirrorMask` says which; at most 256, each made once, and kept for as long as the renderer is). The frame and its depth
+   * are let go when the option is turned off, and made again by the next frame that needs them, at half the frame's size
+   * as it then is (so after a resize, the first frame remakes them); nothing is made in a frame that has them.
+   */
+  private mirrorFrameBuffer: GPUBuffer | null = null;
+  private mirrorBind: GPUBindGroup | null = null;
+  private readonly mirrorData = new Float32Array(32 + TOON_FLOATS);
+  private mirrorColour: GPUTexture | null = null;
+  private mirrorColourView: GPUTextureView | null = null;
+  private mirrorDepthTexture: GPUTexture | null = null;
+  private mirrorDepthView: GPUTextureView | null = null;
+  private noMirror: GPUTexture | null = null;
+  private mirrorPipelines = new Map<number, GPURenderPipeline>();
+  private mirrorPending = new Set<number>();
+  private mirrorBuilds: Promise<void>[] = [];
   private resolveLayout: GPUBindGroupLayout | null = null;
   private resolvePipeline: GPURenderPipeline | null = null;
   private resolveBind: GPUBindGroup | null = null;
@@ -1289,7 +1310,7 @@ export class GameRenderer {
   }
 
   private static key(v: SceneVariant, samples = 1) {
-    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.carded ? '-carded' : ''}${v.painted ? '-painted' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
+    return `${v.cullLights === false ? 'naive' : 'culled'}-${v.points === false ? 'sun' : 'points'}-${v.shadows === false ? 'flat' : 'shadowed'}${v.patterned ? '-patterned' : ''}${v.flowing ? '-flowing' : ''}${v.textured ? '-textured' : ''}${v.carded ? '-carded' : ''}${v.painted ? '-painted' : ''}${v.mirrored ? '-mirrored' : ''}${v.toon ? '-toon' : ''}${samples > 1 ? `-x${samples}` : ''}`;
   }
 
   /** A build of the scene shader as a pipeline, at one sample a pixel or several. */
@@ -1373,6 +1394,9 @@ export class GameRenderer {
     this.askSky();
     await this.skyBuild;
     await this.clearBuild;
+    this.askMirror();
+    await Promise.all(this.mirrorBuilds);
+    this.mirrorBuilds.length = 0;
   }
 
   /**
@@ -1392,6 +1416,8 @@ export class GameRenderer {
         { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
     this.clearBuffer = device.createBuffer({ label: 'game clear', size: CLEAR_FRAME_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1446,6 +1472,8 @@ export class GameRenderer {
     const { device } = this.ctx;
     this.noShore ??= device.createTexture({ label: 'game no shore', size: [1, 1], format: 'r16float', usage: GPUTextureUsage.TEXTURE_BINDING });
     this.shoreSampler ??= device.createSampler({ label: 'game shore', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+    // a texel of nothing stands where the scene is not mirrored, which the shader never reads then
+    this.noMirror ??= device.createTexture({ label: 'game no mirror', size: [1, 1], format: HDR, usage: GPUTextureUsage.TEXTURE_BINDING });
     this.clearBind = device.createBindGroup({
       label: 'game clear', layout: this.clearLayout,
       entries: [
@@ -1454,6 +1482,8 @@ export class GameRenderer {
         { binding: 2, resource: { buffer: this.clearBuffer } },
         { binding: 3, resource: (this.shoreTexture ?? this.noShore).createView() },
         { binding: 4, resource: this.shoreSampler },
+        { binding: 5, resource: (this.mirrorColour ?? this.noMirror).createView() },
+        { binding: 6, resource: this.shoreSampler },
       ],
     });
   }
@@ -1489,7 +1519,7 @@ export class GameRenderer {
    * the nearest of them written into the frame's one-sample depth), the frame copied, and the clear groups drawn at
    * one sample into the frame, tested against that depth and writing their own into it.
    */
-  private drawClear(encoder: GPUCommandEncoder, samples: number) {
+  private drawClear(encoder: GPUCommandEncoder, samples: number, settings: ClearWater) {
     const depthPipeline = this.clearDepthPipelines.get(samples);
     const depthBind = this.clearDepthBinds.get(samples);
     const surface = this.clearPipelines.get(this.economy.shadows !== false);
@@ -1505,7 +1535,7 @@ export class GameRenderer {
     read.end();
     encoder.copyTextureToTexture({ texture: this.colour! }, { texture: this.opaque! }, [this.width, this.height]);
     if (invertInto(this.clearInverse, this.camera.viewProjection)) {
-      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, resolveClear(this.look.clear, this.mmPerUnit), GRAVITY_MM / this.mmPerUnit, this.shoreField);
+      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, settings, GRAVITY_MM / this.mmPerUnit, this.shoreField);
       this.ctx.device.queue.writeBuffer(this.clearBuffer!, 0, this.clearFrame);
     }
     const pass = encoder.beginRenderPass({
@@ -2028,12 +2058,18 @@ export class GameRenderer {
   /** The scene's bind group: made with the environment, and again whenever the occlusion's texture is. */
   private bindScene() {
     if (!this.environment) return;
-    const { specular, brdf } = this.environment;
-    this.sceneBind = this.ctx.device.createBindGroup({
-      label: 'game scene',
+    this.sceneBind = this.sceneBindFor(this.frameBuffer, 'game scene');
+    if (this.mirrorFrameBuffer) this.mirrorBind = this.sceneBindFor(this.mirrorFrameBuffer, 'game mirror scene');
+  }
+
+  /** The scene's bind group over a frame uniform: the camera's own, or the one with the view turned over for the water's mirror. */
+  private sceneBindFor(frame: GPUBuffer, label: string): GPUBindGroup {
+    const { specular, brdf } = this.environment!;
+    return this.ctx.device.createBindGroup({
+      label,
       layout: this.sceneLayout,
       entries: [
-        { binding: 0, resource: { buffer: this.frameBuffer } },
+        { binding: 0, resource: { buffer: frame } },
         { binding: 1, resource: specular.createView({ dimension: 'cube' }) },
         { binding: 2, resource: brdf.createView() },
         { binding: 3, resource: this.sampler },
@@ -2575,19 +2611,137 @@ export class GameRenderer {
         if (paintedWant) pass.setBindGroup(1, this.paintBind!);
         on = want;
       }
-      pass.setVertexBuffer(0, g.position);
-      pass.setVertexBuffer(1, g.normal);
-      pass.setVertexBuffer(2, g.instance);
-      pass.setVertexBuffer(3, g.material);
-      pass.setVertexBuffer(4, g.pattern);
-      if (paintedWant) pass.setVertexBuffer(5, g.paint!);
-      else if (want === textured) pass.setVertexBuffer(5, g.texture!);
-      else if (want === carded) {
-        pass.setVertexBuffer(5, g.uv!);
-        pass.setVertexBuffer(6, g.card!);
+      this.drawGroup(pass, g, paintedWant ? 'painted' : want === textured ? 'textured' : want === carded ? 'carded' : null);
+    }
+  }
+
+  /** One group's buffers and its draw, for the build `extra` names (the buffers it reads past the pattern's), shared by the scene pass and the mirror's. */
+  private drawGroup(pass: GPURenderPassEncoder, g: Uploaded, extra: 'painted' | 'textured' | 'carded' | null) {
+    pass.setVertexBuffer(0, g.position);
+    pass.setVertexBuffer(1, g.normal);
+    pass.setVertexBuffer(2, g.instance);
+    pass.setVertexBuffer(3, g.material);
+    pass.setVertexBuffer(4, g.pattern);
+    if (extra === 'painted') pass.setVertexBuffer(5, g.paint!);
+    else if (extra === 'textured') pass.setVertexBuffer(5, g.texture!);
+    else if (extra === 'carded') {
+      pass.setVertexBuffer(5, g.uv!);
+      pass.setVertexBuffer(6, g.card!);
+    }
+    pass.setIndexBuffer(g.index, 'uint32');
+    pass.drawIndexed(g.indexCount, g.count);
+  }
+
+  /**
+   * Which build of the scene shader draws a group into the water's mirror, as a number: the rungs the scene pass is on
+   * (shadows, point lights), the look's, and the group's kind, which `draw` chooses by too. A painted group in a look that
+   * is not toon is drawn plain, as it is there.
+   */
+  private mirrorMask(g: Uploaded): number {
+    const toon = this.look.shading === 'toon';
+    let mask = (this.economy.shadows !== false ? MIRROR_SHADOWS : 0) | (this.economy.points !== false ? MIRROR_POINTS : 0) | (toon ? MIRROR_TOON : 0);
+    if (g.paint && toon && this.paintBind) mask |= MIRROR_PAINTED | (g.patterned ? MIRROR_PATTERNED : 0);
+    else if (g.flowing) mask |= MIRROR_FLOWING | MIRROR_PATTERNED;
+    else if (g.textured) mask |= MIRROR_TEXTURED | MIRROR_PATTERNED;
+    else if (g.carded) mask |= MIRROR_CARDED | MIRROR_PATTERNED;
+    else if (g.patterned) mask |= MIRROR_PATTERNED;
+    return mask;
+  }
+
+  /** The mirror's build for a mask, if it is in; otherwise started, once, for `prepare()` to wait on, and none until it is. */
+  private mirrorPipeline(mask: number): GPURenderPipeline | undefined {
+    const have = this.mirrorPipelines.get(mask);
+    if (have || this.mirrorPending.has(mask)) return have;
+    this.mirrorPending.add(mask);
+    const v: SceneVariant = {
+      shadows: !!(mask & MIRROR_SHADOWS), points: !!(mask & MIRROR_POINTS), toon: !!(mask & MIRROR_TOON), patterned: !!(mask & MIRROR_PATTERNED),
+      flowing: !!(mask & MIRROR_FLOWING), textured: !!(mask & MIRROR_TEXTURED), carded: !!(mask & MIRROR_CARDED), painted: !!(mask & MIRROR_PAINTED), mirrored: true,
+    };
+    const { device } = this.ctx;
+    const module = shader(device, sceneSource(v), `game scene ${GameRenderer.key(v)}`);
+    this.mirrorBuilds.push(device.createRenderPipelineAsync(this.sceneDescriptor(v, module, 1)).then((p) => { this.mirrorPipelines.set(mask, p); }));
+    return undefined;
+  }
+
+  /** Starts the mirror's builds for every group the frame has, if the look asks for the scene in the water's mirror. */
+  private askMirror() {
+    if (this.look.clear?.mirrorScene !== true || !this.clearOn) return;
+    for (const g of this.staticGroups) if (g.count && !g.clear) this.mirrorPipeline(this.mirrorMask(g));
+    for (const g of this.dynamicGroups) if (g.count && !g.clear) this.mirrorPipeline(this.mirrorMask(g));
+  }
+
+  /** The mirror's frame and its depth at half the frame, made if there are none at this size, and the clear pass told where they are. */
+  private makeMirrorTargets() {
+    const w = Math.max(1, Math.ceil(this.width / 2)), h = Math.max(1, Math.ceil(this.height / 2));
+    if (this.mirrorColour && this.mirrorColour.width === w && this.mirrorColour.height === h) return;
+    this.releaseMirror(false);
+    const { device } = this.ctx;
+    this.mirrorColour = device.createTexture({ label: 'game mirror', size: [w, h], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    this.mirrorDepthTexture = device.createTexture({ label: 'game mirror depth', size: [w, h], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    this.mirrorColourView = this.mirrorColour.createView();
+    this.mirrorDepthView = this.mirrorDepthTexture.createView();
+    this.makeClearBind();
+  }
+
+  /** Lets go of the mirror's frame and depth; and, `rebind`, has the clear pass read the texel of nothing in place of the frame. */
+  private releaseMirror(rebind: boolean) {
+    this.mirrorColour?.destroy();
+    this.mirrorDepthTexture?.destroy();
+    this.mirrorColour = this.mirrorDepthTexture = null;
+    this.mirrorColourView = this.mirrorDepthView = null;
+    if (rebind) this.makeClearBind();
+  }
+
+  /**
+   * The opaque groups drawn once more into the water's mirror, before the scene pass: the view turned over in the plane at
+   * `plane` (the camera's matrix with the world's z reflected in it, and its position too, for what is lit from the eye),
+   * and everything under the plane thrown away by the mirrored build's clip, which reads the plane from the frame
+   * uniform's second spare. The frame is cleared to nought, so its alpha says where something was drawn. The sky, the
+   * grass, the particles and the clear water are not drawn into it, and the occlusion, which is the camera's own, is
+   * read by none of it. A group whose build is not in yet is left out until it is.
+   */
+  private drawMirror(encoder: GPUCommandEncoder, plane: number) {
+    const { device } = this.ctx;
+    this.makeMirrorTargets();
+    if (!this.mirrorFrameBuffer) {
+      // COPY_SRC so a test can read back the turned-over view it was given, as the frame before the tone map can be read (`hdr`)
+      this.mirrorFrameBuffer = device.createBuffer({ label: 'game mirror frame', size: this.mirrorData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+      this.mirrorBind = this.sceneBindFor(this.mirrorFrameBuffer, 'game mirror scene');
+    }
+    const f = this.mirrorData, m = this.camera.viewProjection;
+    f.set(this.frameData);
+    for (let i = 0; i < 4; i++) {
+      f[8 + i] = -m[8 + i];
+      f[12 + i] = m[12 + i] + 2 * plane * m[8 + i];
+    }
+    f[18] = 2 * plane - this.camera.position[2];
+    f[29] = 0;
+    f[CLOCK_AT + 1] = plane;
+    device.queue.writeBuffer(this.mirrorFrameBuffer, 0, f);
+    const pass = encoder.beginRenderPass({
+      label: 'game mirror',
+      colorAttachments: [{ view: this.mirrorColourView!, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      depthStencilAttachment: { view: this.mirrorDepthView!, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
+    });
+    pass.setBindGroup(0, this.mirrorBind!);
+    this.mirrorGroups(pass, this.staticGroups);
+    this.mirrorGroups(pass, this.dynamicGroups);
+    pass.end();
+  }
+
+  private mirrorGroups(pass: GPURenderPassEncoder, groups: Uploaded[]) {
+    let on: GPURenderPipeline | null = null;
+    for (const g of groups) {
+      if (!g.count || g.clear) continue;
+      const mask = this.mirrorMask(g);
+      const want = this.mirrorPipeline(mask);
+      if (!want) continue;
+      if (want !== on) {
+        pass.setPipeline(want);
+        if (mask & MIRROR_PAINTED) pass.setBindGroup(1, this.paintBind!);
+        on = want;
       }
-      pass.setIndexBuffer(g.index, 'uint32');
-      pass.drawIndexed(g.indexCount, g.count);
+      this.drawGroup(pass, g, mask & MIRROR_PAINTED ? 'painted' : mask & MIRROR_TEXTURED ? 'textured' : mask & MIRROR_CARDED ? 'carded' : null);
     }
   }
 
@@ -2715,6 +2869,11 @@ export class GameRenderer {
     // no depth, are drawn after it too, against the depth with the water in it, or a splash above the water would be
     // drawn under it. And the fog marches over that depth, at one sample, so the air's haze stops at the water.
     const clear = this.clearOn;
+    const clearSettings = clear ? resolveClear(this.look.clear, this.mmPerUnit) : null;
+    // The water's mirror of the scene, drawn before the scene pass: from the shadow maps the pass above made, and from
+    // none of the occlusion, which is the camera's. While it is not asked for, there is no pass and no frame for it.
+    if (clearSettings?.mirrorScene) this.drawMirror(encoder, clearSettings.mirrorPlane);
+    else if (this.mirrorColour) this.releaseMirror(true);
 
     const pass = encoder.beginRenderPass({
       label: 'game scene',
@@ -2756,7 +2915,7 @@ export class GameRenderer {
 
     // clear water, over what the scene pass drew, before the fog and the post chain see the frame; then what writes no depth
     if (clear) {
-      this.drawClear(encoder, samples);
+      this.drawClear(encoder, samples, clearSettings!);
       const loose = particles && !afterFog;
       if (loose || (layers && this.effectBind)) {
         const over = encoder.beginRenderPass({
@@ -2980,5 +3139,9 @@ export class GameRenderer {
     this.opaqueDepth?.destroy();
     this.shoreTexture?.destroy();
     this.noShore?.destroy();
+    this.mirrorColour?.destroy();
+    this.mirrorDepthTexture?.destroy();
+    this.mirrorFrameBuffer?.destroy();
+    this.noMirror?.destroy();
   }
 }

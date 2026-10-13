@@ -62,6 +62,13 @@ export interface SceneVariant {
    */
   painted?: boolean;
   /**
+   * Whether it is the build that draws the mirror of clear water's scene (`ClearWater.mirrorScene`): the frame
+   * uniform it is given has the view turned over in the water's plane, and the plane's height in `spare1`, under which
+   * a fragment is thrown away, since what is under the water is not in its mirror. A build of its own over any other
+   * build, so every build that is not asked for it is the text it was, to the byte.
+   */
+  mirrored?: boolean;
+  /**
    * Whether it is shaded as a cartoon is rather than as a real surface:
    * the sun in a few flat bands at the surface's own colour, the sky's light
    * tinted by the colour rather than added grey over it, and a hard small
@@ -839,6 +846,19 @@ export const PAINT_SPLICES = {
   },
 };
 
+/**
+ * The mirrored build's clip, put at the top of the fragment stage's body whatever header the stage has been given by the
+ * other builds (the carded one's takes the facing): nothing under the water's plane gets past it, before anything is
+ * shaded or sampled.
+ */
+const MIRROR_CLIP = '  if (in.world.z < frame.spare1) { discard; }\n';
+function clipped(fragment: string): string {
+  const at = fragment.indexOf('fn fsMain(');
+  const open = at < 0 ? -1 : fragment.indexOf('{\n', at);
+  if (open < 0) throw new Error('the mirrored build cannot be made: the scene shader no longer has a fragment stage to clip');
+  return fragment.slice(0, open + 2) + MIRROR_CLIP + fragment.slice(open + 2);
+}
+
 export function sceneSource(variant: SceneVariant = {}): string {
   return sceneWith(SCENE_VERTEX, variant);
 }
@@ -848,7 +868,7 @@ export function sceneSource(variant: SceneVariant = {}): string {
  * vertex stage that fills in a `VsOut` is lit as a group is, in the same
  * build. `sceneSource` is this with a group's own.
  */
-export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false, carded = false, coverage = false, painted = false }: SceneVariant = {}): string {
+export function sceneWith(vertex: string, { cullLights = true, points = true, shadows = true, patterned = false, toon = false, matte = false, flowing = false, textured = false, carded = false, coverage = false, painted = false, mirrored = false }: SceneVariant = {}): string {
   let head = SCENE_HEAD, stage = vertex, material = SCENE_MATERIAL, fragment = SCENE_FRAGMENT;
   let flow = '';
   if (flowing) {
@@ -898,6 +918,10 @@ export function sceneWith(vertex: string, { cullLights = true, points = true, sh
     material += PAINT_UNIFORM_WGSL + PAINT_WGSL + PAINT_NOISE_WGSL;
     fragment = spliced(spliced(fragment, k.measure.from, k.measure.to, 'painted'), k.albedo.from, k.albedo.to, 'painted');
     flow = 'const PAINTED: bool = true;\n';
+  }
+  if (mirrored) {
+    fragment = clipped(fragment);
+    flow += 'const MIRRORED: bool = true;\n';
   }
   return `const CULL_BY_RADIUS: bool = ${cullLights};\nconst POINT_LIGHTS: bool = ${points};\n`
     + `const SHADOWS: bool = ${shadows};\nconst PATTERNED: bool = ${patterned};\nconst TOON: bool = ${toon};\nconst MATTE_ONLY: bool = ${matte};\n`
