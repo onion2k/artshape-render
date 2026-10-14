@@ -96,8 +96,9 @@ A vec2 multiply and two adds a star, twice a pixel (the two lattice levels), ins
 `standard clear drift` against `standard clear finish`, the scene it adds the drift to, in the same runs of the perf
 gate: 1.02 against 1.04 ms, then 0.97 against 0.97, on a machine at other work (every scene read 33 to 50% over its
 baseline that evening, the untouched ones too, so the gate was red on scenes this change does not reach). So the drift
-costs nothing the gate can see. Its baseline is not written: it is to be written on a quiet machine, by editing in its
-one key, as the detail layer's was.
+costs nothing the gate can see. On a quiet machine, later the same evening, the gate was green and the drift read 0.73
+and 0.74 ms against the finish's 0.73 and 0.74 (`standard` 0.62 against 0.60), so its baseline key was written in by
+hand as 0.73.
 
 ## Not done, and not known
 
