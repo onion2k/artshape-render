@@ -264,6 +264,16 @@ What to copy the shape of:
   `cleardetail.gpu.test.ts` the far water moved, as strong far as near, no jump at a moved edge, the post and the bobber
   unsmeared, and the shimmer, on the lake of `clearlake.ts`; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has
   `standard clear detail`. See `docs/specs/clear-water/detail.md`.
+- **Clear water's sparkles drifting, one more option, drawn as before at its default:** `sparkleDrift` (a velocity in
+  world units a second of the renderer's clock, `[0, 0]` for the lattice pinned where it was). `sparkleStar` takes the
+  drift times the clock off the world coordinate before the cell is found and puts it back on the cell's point, so the
+  whole lattice is carried and a glint that comes round again at a point comes round somewhere else; nought taken off and
+  put back is the coordinate exactly, so there is no branch. Packed by `driftUniform` into a vec4 of its own after the
+  foam's options (`CLEAR_DRIFT_FLOATS`, the frame 108 floats), so no earlier offset moved. `clear.test.ts` holds the
+  default, refusals, units and packing; `cleardrift.gpu.test.ts` nought drawn as pinned, a star moved a frame on by the
+  drift's own projection on a flat sheet and not at all pinned, and the lake filmed five seconds with the near water's
+  stars returning in their places pinned and not drifting; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has
+  `standard clear drift`. See `docs/specs/clear-water/drift.md`.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -379,8 +389,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,328 tests in 82 files with the detail layer | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows and its detail layer, cards; 420 tests in 50 files with the detail layer, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,332 tests in 82 files with the sparkles' drift | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer and its sparkles' drift, cards; 424 tests in 51 files with the sparkles' drift, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

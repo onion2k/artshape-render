@@ -154,6 +154,12 @@ export interface ClearWater {
    * nought adds none. Moot while `detailPixels` is nought.
    */
   detailAmount: number;
+  /**
+   * How the sparkles' lattice moves, in world units a second of the renderer's clock: a star's point is carried along
+   * by it, so a glint that comes round again at that point comes round somewhere else, and no star returns in its
+   * place. Nought and nought, the default, pins the lattice where it was.
+   */
+  sparkleDrift: [number, number];
 }
 
 /**
@@ -196,6 +202,7 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   causticLine: 0.16,
   detailPixels: 0,
   detailAmount: 1,
+  sparkleDrift: [0, 0],
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -208,6 +215,12 @@ const LEAST = 1e-4;
 function taken(named: number | undefined, fallback: number, least = 0): number {
   if (named === undefined || !Number.isFinite(named)) return fallback;
   return Math.max(least, named);
+}
+
+/** A pair of numbers a look named, where both are numbers; the default where they are not. */
+function pair(named: [number, number] | undefined, fallback: [number, number]): [number, number] {
+  if (!named || named.length !== 2 || !Number.isFinite(named[0]) || !Number.isFinite(named[1])) return fallback;
+  return [named[0], named[1]];
 }
 
 /** The settings to draw with: what a look names over the defaults, the defaults' lengths in the world's own units. */
@@ -252,6 +265,7 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     causticLine: taken(n.causticLine, d.causticLine, LEAST),
     detailPixels: detailCell(taken(n.detailPixels, d.detailPixels)),
     detailAmount: taken(n.detailAmount, d.detailAmount),
+    sparkleDrift: pair(n.sparkleDrift, d.sparkleDrift),
   };
 }
 
@@ -261,7 +275,7 @@ function detailCell(pixels: number): number {
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam | keyof ClearDrift>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -342,11 +356,27 @@ export function foamUniform(out: Float32Array, w: ClearFoam): Float32Array {
   return out;
 }
 
+/** The setting of the sparkles' motion, packed last in the frame. */
+type ClearDrift = Pick<ClearWater, 'sparkleDrift'>;
+
+/** How many floats the sparkles' drift is packed into: one vec4, its last two words free. */
+export const CLEAR_DRIFT_FLOATS = 4;
+
+/**
+ * Writes the lattice's drift into `out`, and two noughts after it, and returns it. A water that names no drift is
+ * packed as noughts, and the lattice stays where it was to the pixel: taking nought from a coordinate and adding it
+ * back leaves the coordinate exactly as it was.
+ */
+export function driftUniform(out: Float32Array, w: ClearDrift): Float32Array {
+  out.set([w.sparkleDrift[0], w.sparkleDrift[1], 0, 0]);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; and the foam's options.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; the foam's options; and the sparkles' drift.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
@@ -367,10 +397,11 @@ export function packClearFrame(
   clearUniform(out.subarray(20, 20 + CLEAR_STRIDE), w);
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
-  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
-  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS), w);
-  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
-  foamUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
+  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
+  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS), w);
+  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
+  foamUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS), w);
+  driftUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS), w);
   return out;
 }
 
@@ -437,6 +468,8 @@ struct ClearFrame {
   // the foam line's edge softness as a share of its width, and a one where the depth band is drawn in the field too; then
   // the depth of path through which nothing is lost, and the caustic line's width as a share of a cell, nought for CAUSTIC_LINE
   foamOpt: vec4f,
+  // the sparkles' lattice's drift, in world units a second, and two free words
+  drift: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -579,11 +612,14 @@ fn clearMirrored(uv: vec2f, at: vec3f) -> f32 {
 // on the screen.
 fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f32, level: f32, fineScale: f32, perPixel: f32) -> f32 {
   let cellW = least * exp2(level);
-  let at = floor(in.world.xy / cellW);
+  // the lattice carried by its drift, whole, so a star's point moves on and the glint that comes round at it comes
+  // round somewhere else; a drift of nought leaves the world's own coordinates exactly as they are
+  let drift = cw.drift.xy * frame.spare0;
+  let at = floor((in.world.xy - drift) / cellW);
   // the level is in the cell's name, so a doubled cell is not lit as the cell it grew from was
   let name = at + vec2f(level * 1013.0);
   let jitter = vec2f(flowHash(name + 3.1), flowHash(name + 7.7)) * 0.4 + 0.3;
-  let centre = (at + jitter) * cellW;
+  let centre = (at + jitter) * cellW + drift;
   let cs = waterSlope(centre * fineScale, frame.spare0 * in.pattern.z * 1.7, perPixel * fineScale);
   let sn = normalize(n0 + (normalize(in.tx) * -cs.x + normalize(in.ty) * -cs.y) * GLITTER_TILT);
   let gr = reflect(-v, sn);

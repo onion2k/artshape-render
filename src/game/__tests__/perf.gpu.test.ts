@@ -364,6 +364,10 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     };
     await r.prepare();
     measured['standard clear finish'] = await time();
+    // the same, its sparkles' lattice drifting half a unit a second: a vec2 taken off and put back a star, twice a pixel
+    r.look = { ...r.look, clear: { ...r.look.clear, sparkleDrift: [0.3, 0.4] } };
+    await r.prepare();
+    measured['standard clear drift'] = await time();
     r.setShoreField(null);
     r.look = plain;
     // v0.28.0's settings together over the same water: the sky, the sun's map fitted to the view and softened over nine
