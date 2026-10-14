@@ -124,6 +124,21 @@ export interface ClearWater {
    * the field's own lines are, the band is left out, so a shore is not doubled and its line keeps its even width.
    */
   foamEverywhere: boolean;
+  /**
+   * How deep a path through the water is, in world units, before anything along it is lost to the deep colour: the
+   * light is taken over the path less this, so what lies under thin water is seen in its own colour, and the deep is
+   * reached as before only a knee further down. The caustics fade by the same knee, so they stay at their brightest
+   * over that depth of bed. Nought, the default, loses light from the surface down as before. It is the bright bed of
+   * a pale shallow; over a dark one it lets more of the dark through, and the shallows darken.
+   */
+  clearKnee: number;
+  /**
+   * How wide a caustic line is, as a share of a cell: lower is a crisper, finer line, which covers less of the bed and
+   * so wants `caustics` raised to be seen (the sheets of October 2026 chose 0.08 at about three times the strength). The
+   * default, 0.16, is the line as it was drawn before this option. A line much under 0.08 breaks into stair-stepped
+   * dashes into the distance, since it does not widen with the pixel's footprint.
+   */
+  causticLine: number;
 }
 
 /**
@@ -162,6 +177,8 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   rippleCut: 0.3,
   foamSoft: 0.06,
   foamEverywhere: false,
+  clearKnee: 0,
+  causticLine: 0.16,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -214,6 +231,8 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     rippleCut: Math.min(taken(n.rippleCut, d.rippleCut), 1),
     foamSoft: taken(n.foamSoft, d.foamSoft),
     foamEverywhere: n.foamEverywhere ?? d.foamEverywhere,
+    clearKnee: taken(n.clearKnee, mm(d.clearKnee)),
+    causticLine: taken(n.causticLine, d.causticLine, LEAST),
   };
 }
 
@@ -272,15 +291,19 @@ export function rippleUniform(out: Float32Array, w: ClearRipple): Float32Array {
   return out;
 }
 
-/** The settings of the foam's edge and reach, packed after the ripples. */
-type ClearFoam = Pick<ClearWater, 'foamSoft' | 'foamEverywhere'>;
+/** The settings of the foam's edge and reach, and the shallows' knee and caustic line, packed after the ripples. */
+type ClearFoam = Pick<ClearWater, 'foamSoft' | 'foamEverywhere' | 'clearKnee' | 'causticLine'>;
 
 /** How many floats the foam's options are packed into: one vec4. */
 export const CLEAR_FOAM_FLOATS = 4;
 
-/** Writes the foam's edge softness and a one where the depth band is drawn everywhere into `out`, and returns it. */
+/**
+ * Writes the foam's edge softness, a one where the depth band is drawn everywhere, the shallows' knee and the caustic
+ * line into `out`, and returns it. The line at its default is written as nought, which the pass reads as its own
+ * constant, so a water that names neither the knee nor the line is packed word for word as it was before them.
+ */
 export function foamUniform(out: Float32Array, w: ClearFoam): Float32Array {
-  out.set([w.foamSoft, w.foamEverywhere ? 1 : 0, 0, 0]);
+  out.set([w.foamSoft, w.foamEverywhere ? 1 : 0, w.clearKnee, w.causticLine === CLEAR_DEFAULTS_MM.causticLine ? 0 : w.causticLine]);
   return out;
 }
 
@@ -375,7 +398,8 @@ struct ClearFrame {
   // the ripples' colour and a one where there is one; then the amount and the cut
   ripple: vec4f,
   ripples: vec4f,
-  // the foam line's edge softness as a share of its width, and a one where the depth band is drawn in the field too
+  // the foam line's edge softness as a share of its width, and a one where the depth band is drawn in the field too; then
+  // the depth of path through which nothing is lost, and the caustic line's width as a share of a cell, nought for CAUSTIC_LINE
   foamOpt: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
@@ -421,7 +445,7 @@ const GLITTER_TILT: f32 = 0.7;
 // The caustics: how sharp a line of light is (its width, as a share of a cell), how fast the two layers drift, in cells
 // a second, how fast they fade with the depth of water over the bed (half by this many clarities), and how much of the
 // sun's light they are, at their brightest.
-const CAUSTIC_LINE: f32 = 0.16;
+const CAUSTIC_LINE: f32 = ${CLEAR_DEFAULTS_MM.causticLine};
 const CAUSTIC_DRIFT: f32 = 0.12;
 const CAUSTIC_FADE: f32 = 0.6;
 const CAUSTIC_SUN: f32 = 0.7;
@@ -509,8 +533,10 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     let drift = frame.spare0 * CAUSTIC_DRIFT;
     let a = flowVoro(cell + vec2f(drift, drift * 0.6));
     let b = flowVoro(cell * 1.3 + vec2f(-drift * 0.8, drift) + 17.0);
-    let line = (1.0 - smoothstep(0.0, CAUSTIC_LINE, a.y)) * 0.6 + (1.0 - smoothstep(0.0, CAUSTIC_LINE, b.y)) * 0.4;
-    let over = max(in.world.z - floor1.z, 0.0);
+    let lineW = select(cw.foamOpt.w, CAUSTIC_LINE, cw.foamOpt.w <= 0.0);
+    let line = (1.0 - smoothstep(0.0, lineW, a.y)) * 0.6 + (1.0 - smoothstep(0.0, lineW, b.y)) * 0.4;
+    // the depth over the bed less the knee, so they fade only below it
+    let over = max(in.world.z - floor1.z - cw.foamOpt.z, 0.0);
     var sun = 1.0;
     if (SHADOWS && shadows.sunParams.z > 0.5) {
       let sp = shadows.sun * vec4f(floor1, 1.0);
@@ -532,7 +558,8 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let deep = body * lightOn * frame.exposure;
   let share = body / max(max(body.x, body.y), max(body.z, 1.0e-4));
   let lasts = cw.water.x * mix(vec3f(CLEAR_LEAST), vec3f(CLEAR_MOST), share);
-  let kept = exp2(-through / lasts);
+  // nothing is lost in the first knee of the path, and from there on as before
+  let kept = exp2(-max(through - cw.foamOpt.z, 0.0) / lasts);
   var colour = below * kept + deep * (1.0 - kept);
 
   // the ripples, painted into the body: lightened toward a colour of their own by the fine waves' slope, over a cut

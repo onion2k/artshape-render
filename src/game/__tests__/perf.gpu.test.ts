@@ -305,6 +305,13 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard clear mirror'] = await time();
     r.look = plain;
+    // the same water with the shallows' options on: nothing lost to the deep colour in the first half of a clarity (0.8
+    // of the default's 1.6, in the golf's tenths of a metre), and the caustics' line at half its width at three times
+    // their strength, as the sheets of October 2026 chose
+    r.look = { ...plain, clear: { clearKnee: 0.8, causticLine: 0.08, caustics: 1.8 } };
+    await r.prepare();
+    measured['standard clear shallows'] = await time();
+    r.look = plain;
     // the same water cut 128 by 24, still and then swelling by four waves, so the swells' price is read against the same mesh
     r.setStatic([...standardScene(), { ...lone(FLOW_CLEAR, 0.4, 0.3), mesh: sheet(30, 8, 128, 24) }]);
     await r.prepare();

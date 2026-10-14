@@ -210,6 +210,58 @@ describe("clear water's foam", () => {
   });
 });
 
+describe("clear water's shallows", () => {
+  it('lose light from the surface down and draw today\'s caustic line by default, packed into the foam\'s two free words as noughts', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.clearKnee, w.causticLine]).toEqual([0, 0.16]);
+    // a water naming neither is packed word for word as it was before them: the line at its default is a nought, which
+    // the shader reads as its own constant
+    expect([...foamUniform(new Float32Array(CLEAR_FOAM_FLOATS).fill(-1), w)]).toEqual([Math.fround(0.06), 0, 0, 0]);
+  });
+
+  it('take a knee and a line, and pack them after the foam\'s edge and flag, where the shader reads them', () => {
+    const w = resolveClear({ clearKnee: 0.4, causticLine: 0.08, foamSoft: 0.01, foamEverywhere: true }, 100);
+    expect([w.clearKnee, w.causticLine]).toEqual([0.4, 0.08]);
+    expect([...foamUniform(new Float32Array(CLEAR_FOAM_FLOATS).fill(-1), w)]).toEqual([Math.fround(0.01), 1, Math.fround(0.4), Math.fround(0.08)]);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([Math.fround(0.01), 1, Math.fround(0.4), Math.fround(0.08)]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+    // and no struct grew for them
+    expect(CLEAR_FOAM_FLOATS).toBe(4);
+  });
+
+  it('refuse what is not a number, and hold the knee to nought or more and the line to a width that can be drawn', () => {
+    expect(resolveClear({ clearKnee: NaN, causticLine: NaN }, 100)).toMatchObject({ clearKnee: 0, causticLine: 0.16 });
+    expect(resolveClear({ clearKnee: Infinity, causticLine: -Infinity }, 100)).toMatchObject({ clearKnee: 0, causticLine: 0.16 });
+    expect(resolveClear({ clearKnee: -1 }, 100).clearKnee).toBe(0);
+    // a line of no width is a smoothstep from nought to nought, which WGSL leaves undefined
+    expect(resolveClear({ causticLine: 0 }, 100).causticLine).toBeGreaterThan(0);
+    expect(resolveClear({ causticLine: -2 }, 100).causticLine).toBeGreaterThan(0);
+  });
+
+  it('turn the knee\'s millimetre default into the world\'s own units, and not the line, which is a share of a cell', () => {
+    // the default knee is nought, which no unit turns; one of half a metre is put in its place for the length of this test
+    const was = CLEAR_DEFAULTS_MM.clearKnee;
+    CLEAR_DEFAULTS_MM.clearKnee = 500;
+    try {
+      expect(resolveClear(undefined, 100).clearKnee).toBeCloseTo(5, 10);
+      expect(resolveClear(undefined, 1).clearKnee).toBe(500);
+      expect(resolveClear(undefined, 1000).clearKnee).toBeCloseTo(0.5, 10);
+    } finally {
+      CLEAR_DEFAULTS_MM.clearKnee = was;
+    }
+    for (const mmPerUnit of [1, 100, 1000]) expect(resolveClear(undefined, mmPerUnit).causticLine).toBe(0.16);
+    // a knee a game names is in its own units and is taken as it is
+    expect(resolveClear({ clearKnee: 0.25 }, 1).clearKnee).toBe(0.25);
+    expect(resolveClear({ clearKnee: 0.25 }, 1000).clearKnee).toBe(0.25);
+  });
+
+  it('pack a line named at its default as the nought it was, so it draws as before to the pixel', () => {
+    expect([...foamUniform(new Float32Array(CLEAR_FOAM_FLOATS).fill(-1), resolveClear({ causticLine: 0.16 }, 100))]).toEqual([Math.fround(0.06), 0, 0, 0]);
+  });
+});
+
 describe("clear water's shader", () => {
   it('is its own text: not a word of it in any build of the scene shader, and the waves and the scene head in it', async () => {
     const { clearSource, sceneSource } = await import('../shaders');

@@ -241,6 +241,16 @@ What to copy the shape of:
   (`CLEAR_FOAM_FLOATS`, so no earlier offset moved). `clear.test.ts` holds the defaults, clamp and packing;
   `clearfoam.gpu.test.ts` the edge's crispness, the ring round a mound through the surface and the shore's lines left as
   they were; `cleargolden.gpu.test.ts` is unchanged.
+- **Clear water's shallows, two more options, drawn as before at their defaults:** `clearKnee` (a depth of path, in world
+  units, in which nothing is lost to the deep colour, `exp2(-max(through - knee, 0) / lasts)`, and the same knee off the
+  caustics' fade; nought, a millimetre default turned by `mmPerUnit`) and `causticLine` (the caustic line's width as a
+  share of a cell, 0.16, the old `CAUSTIC_LINE`, which the WGSL now builds from the default). Packed by `foamUniform` into
+  the two free words of `foamOpt`, so no struct grew; the line at its default is packed as nought, which the pass reads
+  as `CAUSTIC_LINE`, so a water naming neither is packed word for word as before. `clear.test.ts` holds the defaults,
+  refusals, units and packing; `clearshallows.gpu.test.ts` the shallow box its own colour under a knee past its depth
+  with the deep box still lost, the caustics' share unfaded under the knee by the fade's own sum, and a row's contrast
+  higher at a narrower line; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has `standard clear shallows`. See
+  `docs/specs/clear-water/shallows.md`.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -356,8 +366,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,317 tests in 82 files with the cards | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples and its foam, cards; 411 tests in 48 files with the opt-out, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,322 tests in 82 files with the shallows | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam and its shallows, cards; 414 tests in 49 files with the shallows, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

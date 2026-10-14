@@ -290,6 +290,23 @@ What the measurements settled, so nobody has to re-argue it:
     (`cleargolden.gpu.test.ts`). It costs about 0.03 ms over `standard clear`
     on the standard scene (`standard clear mirror`); what it costs is the
     scenery it draws again, so a lake with a wood round it costs more.
+  - `clearKnee` and `causticLine` (from 0.40.0), for a pale bed seen bright
+    through thin water and sharp lines of light on it. `clearKnee` is a depth
+    of path through the water, in world units, in which nothing is lost to the
+    deep colour: the light is taken over the path less the knee, so what lies
+    under thinner water than that is seen in its own colour, and the deep is
+    reached as before only a knee further down. The caustics fade by the same
+    knee. Nought, the default, loses light from the surface down as before.
+    Over a dark bed it lets more of the dark through, so the shallows darken;
+    it is the option for a pale one. `causticLine` is the width of a caustic
+    line as a share of a cell (0.16 by default, the line as it was): narrower
+    is crisper, covers less of the bed, and so wants `caustics` raised to be
+    seen (the sheets of October 2026 chose 0.08 at about three times the
+    strength); much under that it breaks into dashes far off, since it does not
+    widen with the pixel. Both ride in the foam's uniform, which did not grow,
+    and a water that names neither draws as 0.39.0's did, to the pixel
+    (`cleargolden.gpu.test.ts`). What they cost a frame is measured by
+    `standard clear shallows`.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in
