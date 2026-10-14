@@ -21,6 +21,8 @@
     "standard painted": 0.733,
     "shore": 0.67,
     "shore painted": 0.907,
-    "standard clear mirror": 0.73
+    "standard clear mirror": 0.73,
+    "standard clear shallows": 0.71,
+    "standard clear detail": 0.73
   }
 }
