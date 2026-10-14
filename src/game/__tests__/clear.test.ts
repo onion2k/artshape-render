@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_FINISH_FLOATS, CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FRAGMENT, CLEAR_FINISH_FLOATS, WAVE_FADE_FROM, CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform } from '../clear';
 import { WAVE_FLOATS } from '../waves';
 import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
@@ -262,11 +262,66 @@ describe("clear water's shallows", () => {
   });
 });
 
+describe("clear water's detail layer", () => {
+  it('is none by default: no cell, a first guess of one for the amount, and the ripples\' two spare words packed as the noughts they were', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.detailPixels, w.detailAmount]).toEqual([0, 1]);
+    expect([...rippleUniform(new Float32Array(CLEAR_RIPPLE_FLOATS).fill(-1), w)]).toEqual([0, 0, 0, 0, 0.5, Math.fround(0.3), 0, 0]);
+  });
+
+  it('takes a cell in pixels and an amount, and packs them into the ripples\' spare words, where the shader reads them, growing nothing', () => {
+    const w = resolveClear({ detailPixels: 8, detailAmount: 0.75, ripple: [0.25, 0.5, 1], rippleAmount: 0.75, rippleCut: 0.125 }, 100);
+    expect([w.detailPixels, w.detailAmount]).toEqual([8, 0.75]);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 8, 0.75]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+    // no struct grew for it: the frame is the hundred and four floats it was at 0.40.0
+    expect([CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS]).toEqual([8, 104]);
+  });
+
+  it('is packed only when asked: a cell of nought, or an amount of nought, writes the noughts a water naming neither does', () => {
+    const spare = (named: Parameters<typeof resolveClear>[0]) => [...rippleUniform(new Float32Array(CLEAR_RIPPLE_FLOATS).fill(-1), resolveClear(named, 100))].slice(6);
+    expect(spare({ detailAmount: 0.5 }), 'an amount with no cell').toEqual([0, 0]);
+    expect(spare({ detailPixels: 0, detailAmount: 0.5 })).toEqual([0, 0]);
+    expect(spare({ detailPixels: 8, detailAmount: 0 }), 'a cell with no amount').toEqual([0, 0]);
+    expect(spare({ detailPixels: 8 }), 'a cell at the default amount').toEqual([8, 1]);
+  });
+
+  it('refuses what is not a number, holds the amount to nought or more and a cell to a pixel at the least, and a negative cell is none', () => {
+    expect(resolveClear({ detailPixels: NaN, detailAmount: NaN }, 100)).toMatchObject({ detailPixels: 0, detailAmount: 1 });
+    expect(resolveClear({ detailPixels: Infinity, detailAmount: -Infinity }, 100)).toMatchObject({ detailPixels: 0, detailAmount: 1 });
+    expect(resolveClear({ detailPixels: -4 }, 100).detailPixels).toBe(0);
+    // a cell under a pixel would be read finer than the screen can show, and alias: it is held at one
+    expect(resolveClear({ detailPixels: 0.25 }, 100).detailPixels).toBe(1);
+    expect(resolveClear({ detailAmount: -1 }, 100).detailAmount).toBe(0);
+    expect(resolveClear({ detailAmount: 2 }, 100).detailAmount).toBe(2);
+  });
+
+  it('turns nothing by the world\'s units: a cell is pixels on the screen and the amount a share of the steepness', () => {
+    // the default cell is nought, which no unit turns; one of eight is put in its place for the length of this test
+    const was = CLEAR_DEFAULTS_MM.detailPixels;
+    CLEAR_DEFAULTS_MM.detailPixels = 8;
+    try {
+      for (const mmPerUnit of [1, 100, 1000]) expect(resolveClear(undefined, mmPerUnit)).toMatchObject({ detailPixels: 8, detailAmount: 1 });
+    } finally {
+      CLEAR_DEFAULTS_MM.detailPixels = was;
+    }
+    for (const mmPerUnit of [1, 100, 1000]) expect(resolveClear({ detailPixels: 8, detailAmount: 0.6 }, mmPerUnit)).toMatchObject({ detailPixels: 8, detailAmount: 0.6 });
+  });
+
+  it('moves the fine waves\' own fade down from where flow.ts begins it, which is said in both and held equal here', async () => {
+    const { FLOW_WGSL } = await import('../flow');
+    expect(FLOW_WGSL).toContain(`smoothstep(${WAVE_FADE_FROM}, 0.7, pixel * k)`);
+    expect(CLEAR_FRAGMENT).toContain(`const DETAIL_FADE: f32 = ${WAVE_FADE_FROM / (2 * Math.PI)};`);
+  });
+});
+
 describe("clear water's shader", () => {
   it('is its own text: not a word of it in any build of the scene shader, and the waves and the scene head in it', async () => {
     const { clearSource, sceneSource } = await import('../shaders');
     const text = clearSource();
-    for (const word of ['ClearFrame', 'opaqueDepth', 'clearWorld', 'FOAM_CORE', 'CAUSTIC_LINE'])
+    for (const word of ['ClearFrame', 'opaqueDepth', 'clearWorld', 'FOAM_CORE', 'CAUSTIC_LINE', 'clearDetail', 'clearFootprint', 'DETAIL_FADE'])
       for (const toon of [false, true])
         for (const flowing of [false, true])
           for (const shadows of [false, true]) expect(sceneSource({ toon, flowing, shadows }), `${word} in a scene build`).not.toContain(word);

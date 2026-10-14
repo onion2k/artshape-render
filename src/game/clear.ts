@@ -139,6 +139,21 @@ export interface ClearWater {
    * dashes into the distance, since it does not widen with the pixel's footprint.
    */
   causticLine: number;
+  /**
+   * The detail layer's cell, in pixels on the screen: the fine waves read once more at a scale chosen pixel by pixel,
+   * so their finest wave is this many pixels across near and far, and never fades out with the distance as the twelve
+   * do. Its slope is added to the normal (and so to the bend, the light and the sky's reflection) and to the mirrored
+   * scene's read, and never to the height, so what floats is not moved. Nought, the default, is none, and none of its
+   * sums are done. It is pixels and not a length, so no unit turns it; a cell under a pixel is held at one, since a
+   * finer one would only alias. The films of October 2026 chose eight: four reads as grain and sixteen hardly shows.
+   */
+  detailPixels: number;
+  /**
+   * How much of the layer's slope is added, as a share of the water's own steepness: one (the default, and the
+   * films' choice) adds it at the steepness the fine waves have, 0.6 is the cautious choice if that reads busy, and
+   * nought adds none. Moot while `detailPixels` is nought.
+   */
+  detailAmount: number;
 }
 
 /**
@@ -179,6 +194,8 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   foamEverywhere: false,
   clearKnee: 0,
   causticLine: 0.16,
+  detailPixels: 0,
+  detailAmount: 1,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -233,7 +250,14 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     foamEverywhere: n.foamEverywhere ?? d.foamEverywhere,
     clearKnee: taken(n.clearKnee, mm(d.clearKnee)),
     causticLine: taken(n.causticLine, d.causticLine, LEAST),
+    detailPixels: detailCell(taken(n.detailPixels, d.detailPixels)),
+    detailAmount: taken(n.detailAmount, d.detailAmount),
   };
+}
+
+/** A detail cell as it can be drawn: nought or less is none, and anything over nought is a pixel at the least. */
+function detailCell(pixels: number): number {
+  return pixels > 0 ? Math.max(pixels, 1) : 0;
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
@@ -276,20 +300,31 @@ export function mirrorUniform(out: Float32Array, w: ClearMirror): Float32Array {
   return out;
 }
 
-/** The settings of the ripples' lightening, packed last in the frame. */
-type ClearRipple = Pick<ClearWater, 'ripple' | 'rippleAmount' | 'rippleCut'>;
+/** The settings of the ripples' lightening, and the detail layer in the two words they leave free, packed after the mirror. */
+type ClearRipple = Pick<ClearWater, 'ripple' | 'rippleAmount' | 'rippleCut' | 'detailPixels' | 'detailAmount'>;
 
 /** How many floats the ripples are packed into: two vec4s. */
 export const CLEAR_RIPPLE_FLOATS = 8;
 
 /**
  * Writes the ripples into `out` as the colour with a one where there is one (a flag of nought is none, so nothing is
- * mixed at all), then the amount and the cut. Returns `out`.
+ * mixed at all), then the amount and the cut, then the detail layer's cell and amount. The layer is written only when
+ * it is asked for, a cell and an amount both over nought; otherwise both words are the noughts they were before it,
+ * which the pass reads as none, so a water that names neither is packed word for word as it was. Returns `out`.
  */
 export function rippleUniform(out: Float32Array, w: ClearRipple): Float32Array {
-  out.set([...(w.ripple ?? [0, 0, 0]), w.ripple ? 1 : 0, w.rippleAmount, w.rippleCut, 0, 0]);
+  const detail = w.detailPixels > 0 && w.detailAmount > 0;
+  out.set([...(w.ripple ?? [0, 0, 0]), w.ripple ? 1 : 0, w.rippleAmount, w.rippleCut, detail ? w.detailPixels : 0, detail ? w.detailAmount : 0]);
   return out;
 }
+
+/**
+ * Where the twelve fine waves' own fade begins, in waves a pixel: `waterWave` in `flow.ts` eases a wave out from 0.3 to
+ * 0.7 of a wave across a pixel, so a wave is gone before it can alias. The detail layer moves that fade down by a cell,
+ * so its finest kept wave is a cell across and not some nine to twenty pixels, which is what made the layer as first
+ * specified show nothing. Said here and in `flow.ts`'s WGSL, and held equal by a test.
+ */
+export const WAVE_FADE_FROM = 0.3;
 
 /** The settings of the foam's edge and reach, and the shallows' knee and caustic line, packed after the ripples. */
 type ClearFoam = Pick<ClearWater, 'foamSoft' | 'foamEverywhere' | 'clearKnee' | 'causticLine'>;
@@ -395,7 +430,8 @@ struct ClearFrame {
   // swells' distortion of the scene in it and a one where the scene is mirrored too
   tint: vec4f,
   mirror: vec4f,
-  // the ripples' colour and a one where there is one; then the amount and the cut
+  // the ripples' colour and a one where there is one; then the amount and the cut, then the detail layer's cell in pixels
+  // and its amount, both nought for none
   ripple: vec4f,
   ripples: vec4f,
   // the foam line's edge softness as a share of its width, and a one where the depth band is drawn in the field too; then
@@ -411,6 +447,9 @@ struct ClearFrame {
 // its alpha, since it is cleared to nought and written at one; a texel of nothing while the scene is not mirrored
 @group(1) @binding(5) var sceneMirror: texture_2d<f32>;
 @group(1) @binding(6) var sceneMirrorSampler: sampler;
+// the mirror's depth, cleared to one where nothing was drawn; a texel of nought while the scene is not mirrored, which
+// the shader never reads then
+@group(1) @binding(7) var sceneMirrorDepth: texture_depth_2d;
 ${WAVES_WGSL}
 // How the light through the water is lost, colour by colour: each channel of the deep colour lasts in proportion to how
 // much of it there is, so red goes first and the shallows turn teal of themselves, saturated and not milky, and the deep
@@ -451,6 +490,17 @@ const CAUSTIC_FADE: f32 = 0.6;
 const CAUSTIC_SUN: f32 = 0.7;
 // How deep what is below is when the refraction's bend is at its full, in world units: less where it is shallower.
 const BEND_DEPTH: f32 = 3.0;
+// The detail layer: its fade, a share of the cell, so its finest kept wave is a cell across (see WAVE_FADE_FROM); how far
+// apart its levels are laid, in the waves' own units, so one level's crests do not line up with the next's; and the
+// widest a pixel's footprint is taken to be, in world units, so a ray all but along the water does not overflow.
+const DETAIL_FADE: f32 = ${WAVE_FADE_FROM / (2 * Math.PI)};
+const DETAIL_APART: f32 = 37.0;
+const DETAIL_WIDEST: f32 = 1.0e6;
+// The least share of the depth the fine waves' own bend shows that the layer's bend may land at, under the surface, and
+// of the distance from the water of what their mirror shows that the layer's mirror may show; and how near the water,
+// as a share of the camera's distance, a thing must be for the layer's mirror to be kept off it.
+const DETAIL_LANDING: f32 = 0.5;
+const DETAIL_NEAR: f32 = 0.1;
 // The foam lines, with a shore field: how wide the rim of the edge's colour is beyond the line, as a share of its
 // width, and how thin water has to be, as a share of the width, for the foam the depth gives round what the field does
 // not know (the bobber, a boat), which is kept away from the shores the field already rings.
@@ -474,6 +524,54 @@ fn clearWorld(px: vec2f, depth: f32) -> vec3f {
   let ndc = vec2f(px.x * cw.screen.z * 2.0 - 1.0, 1.0 - px.y * cw.screen.w * 2.0);
   let w = cw.inverse * vec4f(ndc, depth, 1.0);
   return w.xyz / w.w;
+}
+
+// Where the ray through a point of the screen meets the still water's plane at the height h. The camera's own
+// position and the inverse of its view and projection give the ray, so the point comes from the lens alone.
+fn clearOnPlane(px: vec2f, h: f32) -> vec2f {
+  let d = clearWorld(px, 0.0) - frame.camPos;
+  let dz = select(d.z, select(-1.0e-6, 1.0e-6, d.z >= 0.0), abs(d.z) < 1.0e-6);
+  return frame.camPos.xy + d.xy * abs((h - frame.camPos.z) / dz);
+}
+
+// How wide the pixel at px is on the still water's plane at the height h, in world units, as length(fwidth(world.xy))
+// measures it on a flat plane: from where the rays through its edges meet the plane. It is worked out from the lens and
+// the pixel's place, and not from the triangle being drawn, so it is the same either side of a triangle's edge however
+// far the swells have moved and tilted the triangles; fwidth over the moved surface jumps there.
+fn clearFootprint(px: vec2f, h: f32) -> f32 {
+  let across = clearOnPlane(px + vec2f(0.5, 0.0), h) - clearOnPlane(px - vec2f(0.5, 0.0), h);
+  let down = clearOnPlane(px + vec2f(0.0, 0.5), h) - clearOnPlane(px - vec2f(0.0, 0.5), h);
+  return min(length(abs(across) + abs(down)), DETAIL_WIDEST);
+}
+
+// The detail layer's slope at this pixel: the fine waves read at the scale that makes their cell cw.ripples.z pixels
+// across here, the two nearest powers of two of the waves' own unit blended by where the wanted scale lies between
+// them, as the sparkles' lattice is, so each level is fixed in the world and the scale is continuous as the camera
+// moves. The blend is divided by its own length, so two unrelated slopes mixed half and half are as rough as either
+// and the layer shows no band midway between levels. The scale is taken from the still surface under the pixel, before
+// the swells move it.
+fn clearDetail(in: VsOut, px: vec2f) -> vec2f {
+  let cells = cw.ripples.z;
+  let foot = clearFootprint(px, in.world.z - in.swell);
+  let wanted = log2(max(cells * foot * in.pattern.y, 1.0e-30));
+  let level = floor(wanted);
+  let up = wanted - level;
+  let cellA = exp2(level) / in.pattern.y;
+  let cellB = cellA * 2.0;
+  let t = frame.spare0 * in.pattern.z;
+  let sa = waterSlope(in.world.xy / cellA + vec2f(level * DETAIL_APART), t, foot / cellA * cells * DETAIL_FADE);
+  let sb = waterSlope(in.world.xy / cellB + vec2f((level + 1.0) * DETAIL_APART), t, foot / cellB * cells * DETAIL_FADE);
+  return (sa * (1.0 - up) + sb * up) / sqrt((1.0 - up) * (1.0 - up) + up * up);
+}
+
+// How far from the water point at what the mirrored scene shows at uv is, in world units, as far as can be where
+// nothing was drawn. The mirror's frame is the camera's view turned over in the water's plane, so the point its depth
+// gives through the camera's own inverse is the thing's image under the plane, as far from a point on the plane as the
+// thing is.
+fn clearMirrored(uv: vec2f, at: vec3f) -> f32 {
+  let size = vec2f(textureDimensions(sceneMirrorDepth));
+  let d = textureLoad(sceneMirrorDepth, vec2i(clamp(uv * size, vec2f(0.0), size - 1.0)), 0);
+  return select(distance(clearWorld(uv * cw.screen.xy, d), at), 1.0e30, d >= 1.0);
 }
 
 // One lattice's sparkle at this pixel: the point of the pixel's cell, lit where the fine waves there mirror the glint
@@ -504,7 +602,17 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let perPixel = length(fwidth(in.world.xy));
   let slope = waterSlope(in.world.xy * in.pattern.y, frame.spare0 * in.pattern.z, perPixel * in.pattern.y);
   let n0 = normalize(in.normal);
-  let n = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w);
+  let np = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w);
+  // the detail layer, where it is asked for: its slope added to the normal, and so to the bend and the light, and to the
+  // mirrored scene's read through nm; never to the height, so what floats is not moved. np is the normal without it
+  var n = np;
+  var nm = n0;
+  if (cw.ripples.z > 0.0) {
+    let d = clearDetail(in, px);
+    let dn = (normalize(in.tx) * -d.x + normalize(in.ty) * -d.y) * in.pattern.w * cw.ripples.w;
+    n = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w + dn);
+    nm = normalize(n0 + dn);
+  }
   let ndv = max(dot(n, v), 0.0);
 
   // what is straight under the water at this pixel, and how deep the water stands over it
@@ -515,8 +623,26 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   // the waves' own slope, whatever their steepness, times the refraction, which is how far in the world it moves what is below at the most
   let tilt = (n.xy - n0.xy) / max(in.pattern.w, 0.05);
   let bend = tilt * cw.water.y * min(stand / BEND_DEPTH, 1.0) / max(perPixel, 1.0e-5);
-  let moved = clamp(px + bend, vec2f(0.5), cw.screen.xy - vec2f(0.5));
-  let movedDepth = textureLoad(opaqueDepth, vec2i(moved), 0).r;
+  var moved = clamp(px + bend, vec2f(0.5), cw.screen.xy - vec2f(0.5));
+  var movedDepth = textureLoad(opaqueDepth, vec2i(moved), 0).r;
+  // the detail layer's bend, kept only where it lands at least DETAIL_LANDING as deep under the surface as what the fine
+  // waves' own bend shows there: their landing where it is under the water, and what is straight under where it is not.
+  // The bend is sized by the water standing straight under the pixel, and a ray cannot be bent that far onto something
+  // just under the surface; the layer's fine, steep tilt sent scattered pixels beside a post or a bobber onto its side
+  // there, and the water showed flecks and smears of its colour. A landing that deep has lost most of its colour to the
+  // water anyway. Short of it, the fine waves' landing is taken whole: shortening the layer's bend instead still crossed
+  // a thin thing's last pixel onto it
+  if (cw.ripples.z > 0.0) {
+    let tilt0 = (np.xy - n0.xy) / max(in.pattern.w, 0.05);
+    let at0 = clamp(px + tilt0 * cw.water.y * min(stand / BEND_DEPTH, 1.0) / max(perPixel, 1.0e-5), vec2f(0.5), cw.screen.xy - vec2f(0.5));
+    let depth0 = textureLoad(opaqueDepth, vec2i(at0), 0).r;
+    let deep0 = in.world.z - clearWorld(at0, depth0).z;
+    let shown = select(stand, deep0, deep0 > 0.0);
+    if (in.world.z - clearWorld(moved, movedDepth).z < shown * DETAIL_LANDING) {
+      moved = at0;
+      movedDepth = depth0;
+    }
+  }
   let under = clearWorld(moved, movedDepth).z < in.world.z;
   let at = select(px, moved, under);
   let depth = select(straight, movedDepth, under);
@@ -578,8 +704,18 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   // not a line of its facets. The swells' own normal shifts where it is read, along the screen's axes, by a share of the
   // screen; the fine waves' would fade out with the distance at which the mirror shows things
   if (cw.mirror.w > 0.0) {
-    let lean = (frame.viewProj * vec4f(n0.x, n0.y, 0.0, 0.0)).xy;
-    let look = vec2f(px.x * cw.screen.z, px.y * cw.screen.w) + vec2f(lean.x, -lean.y) * (0.5 * cw.mirror.z);
+    let lean = (frame.viewProj * vec4f(nm.x, nm.y, 0.0, 0.0)).xy;
+    var look = vec2f(px.x * cw.screen.z, px.y * cw.screen.w) + vec2f(lean.x, -lean.y) * (0.5 * cw.mirror.z);
+    // the detail layer's shift of the read is a share of the screen, which is how a far bank's reflection moves; a
+    // thing standing in the water by this point hardly moves in it, and the shift pulled a bobber's red out beside it.
+    // So where the layer's read lands on something near the water here that the swells' own read does not show, the
+    // swells' read is taken whole
+    if (cw.ripples.z > 0.0) {
+      let lean0 = (frame.viewProj * vec4f(n0.x, n0.y, 0.0, 0.0)).xy;
+      let look0 = vec2f(px.x * cw.screen.z, px.y * cw.screen.w) + vec2f(lean0.x, -lean0.y) * (0.5 * cw.mirror.z);
+      let near = min(clearMirrored(look0, in.world) * DETAIL_LANDING, distance(frame.camPos, in.world) * DETAIL_NEAR);
+      if (clearMirrored(look, in.world) < near) { look = look0; }
+    }
     let seen = textureSampleLevel(sceneMirror, sceneMirrorSampler, look, 0.0);
     sky = sky * (1.0 - seen.a) + seen.rgb;
   }

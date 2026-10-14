@@ -936,6 +936,7 @@ export class GameRenderer {
   private mirrorDepthTexture: GPUTexture | null = null;
   private mirrorDepthView: GPUTextureView | null = null;
   private noMirror: GPUTexture | null = null;
+  private noMirrorDepth: GPUTexture | null = null;
   private mirrorPipelines = new Map<number, GPURenderPipeline>();
   private mirrorPending = new Set<number>();
   private mirrorBuilds: Promise<void>[] = [];
@@ -1418,6 +1419,8 @@ export class GameRenderer {
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        // the mirror's depth, which the detail layer reads to keep a near thing's reflection where it meets the water
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
       ],
     });
     this.clearBuffer = device.createBuffer({ label: 'game clear', size: CLEAR_FRAME_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1474,6 +1477,7 @@ export class GameRenderer {
     this.shoreSampler ??= device.createSampler({ label: 'game shore', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
     // a texel of nothing stands where the scene is not mirrored, which the shader never reads then
     this.noMirror ??= device.createTexture({ label: 'game no mirror', size: [1, 1], format: HDR, usage: GPUTextureUsage.TEXTURE_BINDING });
+    this.noMirrorDepth ??= device.createTexture({ label: 'game no mirror depth', size: [1, 1], format: DEPTH, usage: GPUTextureUsage.TEXTURE_BINDING });
     this.clearBind = device.createBindGroup({
       label: 'game clear', layout: this.clearLayout,
       entries: [
@@ -1484,6 +1488,7 @@ export class GameRenderer {
         { binding: 4, resource: this.shoreSampler },
         { binding: 5, resource: (this.mirrorColour ?? this.noMirror).createView() },
         { binding: 6, resource: this.shoreSampler },
+        { binding: 7, resource: (this.mirrorDepthTexture ?? this.noMirrorDepth).createView() },
       ],
     });
   }
@@ -2677,7 +2682,8 @@ export class GameRenderer {
     this.releaseMirror(false);
     const { device } = this.ctx;
     this.mirrorColour = device.createTexture({ label: 'game mirror', size: [w, h], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-    this.mirrorDepthTexture = device.createTexture({ label: 'game mirror depth', size: [w, h], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    // kept and readable, so the detail layer can tell how far from the water what the mirror shows is
+    this.mirrorDepthTexture = device.createTexture({ label: 'game mirror depth', size: [w, h], format: DEPTH, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
     this.mirrorColourView = this.mirrorColour.createView();
     this.mirrorDepthView = this.mirrorDepthTexture.createView();
     this.makeClearBind();
@@ -2721,7 +2727,7 @@ export class GameRenderer {
     const pass = encoder.beginRenderPass({
       label: 'game mirror',
       colorAttachments: [{ view: this.mirrorColourView!, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-      depthStencilAttachment: { view: this.mirrorDepthView!, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
+      depthStencilAttachment: { view: this.mirrorDepthView!, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
     pass.setBindGroup(0, this.mirrorBind!);
     this.mirrorGroups(pass, this.staticGroups);
@@ -3143,5 +3149,6 @@ export class GameRenderer {
     this.mirrorDepthTexture?.destroy();
     this.mirrorFrameBuffer?.destroy();
     this.noMirror?.destroy();
+    this.noMirrorDepth?.destroy();
   }
 }

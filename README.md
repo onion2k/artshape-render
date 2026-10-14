@@ -307,6 +307,28 @@ What the measurements settled, so nobody has to re-argue it:
     and a water that names neither draws as 0.39.0's did, to the pixel
     (`cleargolden.gpu.test.ts`). What they cost a frame is measured by
     `standard clear shallows`.
+  - `detailPixels` and `detailAmount` (from 0.41.0), for a surface that holds
+    its detail far off: the fine waves read once more at a scale chosen pixel by
+    pixel, so their cell is `detailPixels` across on the screen near and far and
+    never fades out with the distance as the twelve do, the two nearest powers
+    of two blended so the scale is continuous as the camera moves. The scale is
+    taken from the still surface under the pixel, worked out from the lens, so
+    the swells do not facet it. Its slope is added to the normal, and so to the
+    light, the sky's reflection and the bend, and to the mirrored scene's read,
+    never to the height, so what floats is not moved; `detailAmount` is how
+    much, as a share of the water's steepness (one by default). The films of
+    October 2026 chose a cell of eight pixels at one: the reflections break into
+    short wavy bands that re-form as the water moves, where four reads as grain
+    and sixteen hardly shows. Where the layer's bend or its mirror would land on
+    something standing in the water by the pixel (a post, a bobber), the fine
+    waves' own landing is taken instead, so no fleck of its colour comes out
+    beside it. Nought, the default, is none, and a water that names neither
+    draws as 0.40.0's did, to the pixel (`cleargolden.gpu.test.ts`); they ride
+    in the ripples' two free words, so no uniform grew, and the mirror's depth
+    is kept for it while the scene is mirrored. It costs about a quarter of a
+    millisecond at 1280 by 800 with water over the whole frame, and 0.18 ms on
+    a lake seen from its shore (`standard clear detail` holds it on the
+    standard scene). See `docs/specs/clear-water/detail.md`.
   - `sparkles`, `sparkleCut`, `sparkleBright` and `sparkleSize`: round soft
     stars where the fine waves catch the glint ahead of the camera, as the
     glitter does, brighter than one so the bloom haloes them, a radius in

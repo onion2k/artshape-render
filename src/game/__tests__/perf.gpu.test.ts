@@ -312,6 +312,12 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard clear shallows'] = await time();
     r.look = plain;
+    // the same water with the detail layer at the films' choice, a cell of eight pixels at an amount of one: the fine
+    // waves read twice more a pixel, and the bend's landing read once more to keep it off what stands in the water
+    r.look = { ...plain, clear: { detailPixels: 8, detailAmount: 1 } };
+    await r.prepare();
+    measured['standard clear detail'] = await time();
+    r.look = plain;
     // the same water cut 128 by 24, still and then swelling by four waves, so the swells' price is read against the same mesh
     r.setStatic([...standardScene(), { ...lone(FLOW_CLEAR, 0.4, 0.3), mesh: sheet(30, 8, 128, 24) }]);
     await r.prepare();

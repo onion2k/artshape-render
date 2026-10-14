@@ -251,6 +251,19 @@ What to copy the shape of:
   with the deep box still lost, the caustics' share unfaded under the knee by the fade's own sum, and a row's contrast
   higher at a narrower line; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has `standard clear shallows`. See
   `docs/specs/clear-water/shallows.md`.
+- **Clear water's detail layer, two more options, drawn as before at their defaults:** `detailPixels` (the layer's cell in
+  pixels on the screen, nought for none, at least one) and `detailAmount` (a share of the steepness, one). `clearDetail`
+  reads the fine waves twice more at the two powers of two either side of the scale that makes their cell that many pixels,
+  blended and divided by the blend's length; the footprint is `clearFootprint`, the rays through the pixel's edges met
+  with the still plane (the lens, not `fwidth` over the swell-moved triangles, which facets it); their fade is moved down
+  by `DETAIL_FADE`, built from `WAVE_FADE_FROM` and held equal to `flow.ts`'s. Added to the normal and the mirror's read,
+  never the height. Two guards keep a thing standing in the water from being smeared beside it: the layer's bend landing
+  and its mirror read are each dropped for the fine waves' own where they land on something nearer the surface (the
+  mirror's depth, now kept and bound at 7 while the scene is mirrored). Packed into the ripples' two free words only when
+  both are over nought. `clear.test.ts` holds the defaults, refusals, packing and the fade's constant;
+  `cleardetail.gpu.test.ts` the far water moved, as strong far as near, no jump at a moved edge, the post and the bobber
+  unsmeared, and the shimmer, on the lake of `clearlake.ts`; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has
+  `standard clear detail`. See `docs/specs/clear-water/detail.md`.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -366,8 +379,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,322 tests in 82 files with the shallows | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam and its shallows, cards; 414 tests in 49 files with the shallows, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,328 tests in 82 files with the detail layer | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows and its detail layer, cards; 420 tests in 50 files with the detail layer, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**
