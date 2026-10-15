@@ -160,6 +160,36 @@ export interface ClearWater {
    * place. Nought and nought, the default, pins the lattice where it was.
    */
   sparkleDrift: [number, number];
+  /**
+   * The sun's lane (crystal-2, October 2026): a specular lobe toward the true sun, `max(dot(r, sun), 0)` to the power
+   * `sunLaneWidth`, with `r` the mirror direction off the surface as the water is drawn, the detail layer's slope in
+   * it (so the lane breaks into the fine waves), times the sun's colour and this strength, from nought to one. In the
+   * sun only (it is not drawn in the sun's shadow where there are shadows), and faded by the sun's height, so a sun
+   * below the horizon draws none. Nought, the default, draws no lane. Moot while `sunLaneWidth` is nought, since a
+   * power of nought is one everywhere. The sheets chose 0.6 at a power of 60.
+   */
+  sunLane: number;
+  /**
+   * The lane's power: higher is a tighter path of crisper flecks, lower a broader glow (60 is a lane, 15 a wash, 200
+   * sparse flecks). Nought, the default, draws no lane whatever the strength, and what is under nought is held at
+   * nought. Moot while `sunLane` is nought.
+   */
+  sunLaneWidth: number;
+  /**
+   * The caustics' glow, from nought to one: the sun's own light added along the caustic lines in proportion to this,
+   * beside the old term, which scales the bed's own colour and so shows nothing over a dark bed. A line has a bright
+   * core on any bed. It is the caustics' and rides their strength, their fade with depth and the sun's shadow and
+   * height, so it is moot while `caustics` is nought. Nought, the default, adds none. The sheets chose between 0.3 and
+   * 0.6 with the cell at twice the default.
+   */
+  causticGlow: number;
+  /**
+   * The foam's grain, from nought to one: the foam's white is multiplied by a finer noise, thresholded so that more
+   * grain is more holes, so the line is frayed like froth and not a solid ribbon. Its water outside the foam is not
+   * touched. It reaches the shore field's lines and the depth band's white core alike. Nought, the default, holes
+   * nothing. The sheets chose 0.3, which breaks the line into dashes; 0.6 is froth.
+   */
+  foamGrain: number;
 }
 
 /**
@@ -203,6 +233,10 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   detailPixels: 0,
   detailAmount: 1,
   sparkleDrift: [0, 0],
+  sunLane: 0,
+  sunLaneWidth: 0,
+  causticGlow: 0,
+  foamGrain: 0,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -266,6 +300,10 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     detailPixels: detailCell(taken(n.detailPixels, d.detailPixels)),
     detailAmount: taken(n.detailAmount, d.detailAmount),
     sparkleDrift: pair(n.sparkleDrift, d.sparkleDrift),
+    sunLane: Math.min(taken(n.sunLane, d.sunLane), 1),
+    sunLaneWidth: taken(n.sunLaneWidth, d.sunLaneWidth),
+    causticGlow: Math.min(taken(n.causticGlow, d.causticGlow), 1),
+    foamGrain: Math.min(taken(n.foamGrain, d.foamGrain), 1),
   };
 }
 
@@ -275,7 +313,7 @@ function detailCell(pixels: number): number {
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam | keyof ClearDrift>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam | keyof ClearDrift | keyof ClearExtra>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -372,11 +410,29 @@ export function driftUniform(out: Float32Array, w: ClearDrift): Float32Array {
   return out;
 }
 
+/** The sun's lane, the caustics' glow and the foam's grain (crystal-2), packed last in the frame. */
+type ClearExtra = Pick<ClearWater, 'sunLane' | 'sunLaneWidth' | 'causticGlow' | 'foamGrain'>;
+
+/** How many floats round two's options are packed into: one vec4, after the drift. */
+export const CLEAR_EXTRA_FLOATS = 4;
+
+/**
+ * Writes the lane's strength and power, the glow and the grain into `out`, and returns it. A lane is written only when
+ * it has both a strength and a power over nought, as the detail layer is: otherwise both words are nought, which the
+ * pass reads as none, so a power named alone (a lobe of one everywhere) can wash nothing. A water that names none of
+ * the four is packed as noughts and drawn as it was.
+ */
+export function extraUniform(out: Float32Array, w: ClearExtra): Float32Array {
+  const lane = w.sunLane > 0 && w.sunLaneWidth > 0;
+  out.set([lane ? w.sunLane : 0, lane ? w.sunLaneWidth : 0, w.causticGlow, w.foamGrain]);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; the foam's options; and the sparkles' drift.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; the foam's options; the sparkles' drift; and round two's options.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
@@ -397,11 +453,17 @@ export function packClearFrame(
   clearUniform(out.subarray(20, 20 + CLEAR_STRIDE), w);
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
-  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS), field, w);
-  mirrorUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS), w);
-  rippleUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_FOAM_FLOATS), w);
-  foamUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS), w);
-  driftUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS), w);
+  // each block's end, counted back from the frame's end, so that no earlier offset moves when a later block is added
+  const driftAt = CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS - CLEAR_DRIFT_FLOATS;
+  const foamAt = driftAt - CLEAR_FOAM_FLOATS;
+  const rippleAt = foamAt - CLEAR_RIPPLE_FLOATS;
+  const mirrorAt = rippleAt - CLEAR_MIRROR_FLOATS;
+  fieldUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS, mirrorAt), field, w);
+  mirrorUniform(out.subarray(mirrorAt, rippleAt), w);
+  rippleUniform(out.subarray(rippleAt, foamAt), w);
+  foamUniform(out.subarray(foamAt, driftAt), w);
+  driftUniform(out.subarray(driftAt, driftAt + CLEAR_DRIFT_FLOATS), w);
+  extraUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS), w);
   return out;
 }
 
@@ -470,6 +532,8 @@ struct ClearFrame {
   foamOpt: vec4f,
   // the sparkles' lattice's drift, in world units a second, and two free words
   drift: vec4f,
+  // round two: the sun's lane (its strength, 0 for none, and its power), the caustics' glow and the foam's grain
+  extra: vec4f,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -509,6 +573,11 @@ const FOAM_DRIFT: f32 = 0.25;
 // few of its own widths as a painted one does, and a finer second layer of this share.
 const FOAM_LINE_CELL: f32 = 8.0;
 const FOAM_LINE_FINE: f32 = 0.35;
+// The foam's grain: its noise is this many times finer than the lines' own, and a hole is where it falls below the grain's
+// share of this, eased over this much.
+const FOAM_GRAIN_CELL: f32 = 6.1;
+const FOAM_GRAIN_MOST: f32 = 0.6;
+const FOAM_GRAIN_SOFT: f32 = 0.08;
 // The glitter: open water's glint lobe on waves of its own, finer and steeper than the surface's (which are kept gentle
 // so the bed reads through them), cut to dashes where it is at least this bright.
 const GLITTER_CUT: f32 = 0.6;
@@ -551,6 +620,24 @@ const SPARKLE_CELLS: f32 = 1.0;
 const SPARKLE_HALO: f32 = 0.3;
 const SPARKLE_ROOM: f32 = 7.0;
 const SPARKLE_POWER: f32 = 80.0;
+
+// how much of the sun reaches a point of the world: all of it where there are no shadows or no sun map, else the map's share
+fn sunReaches(world: vec3f) -> f32 {
+  if (SHADOWS && shadows.sunParams.z > 0.5) {
+    let sp = shadows.sun * vec4f(world, 1.0);
+    let uv = vec2f(sp.x, -sp.y) * 0.5 + 0.5;
+    if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)) && sp.z >= 0.0 && sp.z <= 1.0) {
+      return sunLit(uv, sp.z - shadows.sunParams.y * 2.0);
+    }
+  }
+  return 1.0;
+}
+
+// the foam's white left once its grain has holed it: one where there is no grain
+fn foamHoles(q: vec2f) -> f32 {
+  let cut = cw.extra.w * FOAM_GRAIN_MOST;
+  return smoothstep(cut - FOAM_GRAIN_SOFT, cut + FOAM_GRAIN_SOFT, flowNoise(q * FOAM_GRAIN_CELL));
+}
 
 // where a pixel of the opaque frame is in the world, from its depth
 fn clearWorld(px: vec2f, depth: f32) -> vec3f {
@@ -709,6 +796,8 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     }
     let strength = cw.foam.w * exp2(-over / (cw.water.x * CAUSTIC_FADE)) * sun * max(frame.sunDir.z, 0.0);
     below += below * line * strength * CAUSTIC_SUN * frame.sunColour;
+    // round two: the sun's own light along the line as well, so a line has a bright core over a dark bed too
+    if (cw.extra.z > 0.0) { below += line * strength * cw.extra.z * CAUSTIC_SUN * frame.sunColour * frame.exposure; }
   }
 
   // the light lost to the deep colour along the way, channel by channel
@@ -784,6 +873,13 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     colour += frame.sunColour / max(max(frame.sunColour.x, frame.sunColour.y), max(frame.sunColour.z, 1.0e-4)) * dash * cw.water.w * frame.exposure;
   }
 
+  // the sun's lane: a specular lobe toward the true sun on the surface as it is drawn, the detail layer's slope in it, so it
+  // breaks into the fine waves; in the sun only, and faded by the sun's height so a sun below the horizon draws none
+  if (cw.extra.x > 0.0) {
+    let lobe = pow(max(dot(rd, normalize(frame.sunDir)), 0.0), cw.extra.y);
+    colour += frame.sunColour * lobe * cw.extra.x * sunReaches(in.world) * max(frame.sunDir.z, 0.0) * frame.exposure;
+  }
+
   // the sparkles: the nearest cell's point, lit where the fine waves there catch the glint and drawn as a soft round star
   // on the screen, past one so the bloom haloes it; in the sun only, where there are shadows to say where that is
   if (cw.sparkle.x > 0.0) {
@@ -843,7 +939,10 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     let ringed = select(thin, band, cw.foamOpt.y > 0.5);
     let lit = lightOn * frame.exposure;
     colour = mix(colour, cw.edge.rgb * lit, select(rim, max(rim, bandRim), cw.foamOpt.y > 0.5));
-    colour = mix(colour, cw.foam.rgb * lit, max(max(line, second), ringed));
+    var froth = max(max(line, second), ringed);
+    // round two: the froth holed by a finer noise
+    if (cw.extra.w > 0.0) { froth = froth * foamHoles(q); }
+    colour = mix(colour, cw.foam.rgb * lit, froth);
   } else if (width > 0.0) {
     let noise = flowNoise(in.world.xy / (width * FOAM_CELL * 10.0) + vec2f(frame.spare0 * FOAM_DRIFT, 0.0));
     let reach = stand + (noise - 0.5) * width * FOAM_BREAK;
@@ -852,7 +951,10 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
     let core = 1.0 - smoothstep(width * FOAM_CORE - soft, width * FOAM_CORE + soft, reach);
     let lit = lightOn * frame.exposure;
     colour = mix(colour, cw.edge.rgb * lit, edge);
-    colour = mix(colour, cw.foam.rgb * lit, core);
+    // round two: the core holed by the same finer noise, on the lines' own scale
+    var white = core;
+    if (cw.extra.w > 0.0) { white = white * foamHoles(in.world.xy / (width * FOAM_LINE_CELL) + vec2f(frame.spare0 * FOAM_DRIFT, 0.0)); }
+    colour = mix(colour, cw.foam.rgb * lit, white);
   }
   return vec4f(finite(colour), 1.0);
 }

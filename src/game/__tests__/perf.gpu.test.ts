@@ -368,6 +368,21 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     r.look = { ...r.look, clear: { ...r.look.clear, sparkleDrift: [0.3, 0.4] } };
     await r.prepare();
     measured['standard clear drift'] = await time();
+    // round two's options (crystal-2), each on the finish's water, so each is read against `standard clear finish`: the sun's
+    // lane (a dot and a pow a pixel, and the sun map's read), the caustics' glow (a multiply-add in the caustics' branch)
+    // and the foam's grain (a noise and a smoothstep on the foam lines), at the figures the sheets chose
+    const finish = r.look.clear;
+    r.look = { ...r.look, clear: { ...finish, sunLane: 0.6, sunLaneWidth: 60 } };
+    await r.prepare();
+    measured['standard clear lane'] = await time();
+    r.look = { ...r.look, clear: { ...finish, causticGlow: 0.6 } };
+    await r.prepare();
+    measured['standard clear caustic glow'] = await time();
+    r.look = { ...r.look, clear: { ...finish, foamGrain: 0.3 } };
+    await r.prepare();
+    measured['standard clear grain'] = await time();
+    console.log(['lane', 'caustic glow', 'grain'].map((n) => `crystal-2 ${n}: ${(measured[`standard clear ${n}`] - measured['standard clear finish']).toFixed(3)} ms over finish`).join('; '));
+    r.look = { ...r.look, clear: finish };
     r.setShoreField(null);
     r.look = plain;
     // v0.28.0's settings together over the same water: the sky, the sun's map fitted to the view and softened over nine

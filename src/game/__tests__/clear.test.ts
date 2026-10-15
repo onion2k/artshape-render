@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_FRAGMENT, CLEAR_FINISH_FLOATS, WAVE_FADE_FROM, CLEAR_FOAM_FLOATS, CLEAR_DRIFT_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform, driftUniform } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FRAGMENT, CLEAR_FINISH_FLOATS, WAVE_FADE_FROM, CLEAR_FOAM_FLOATS, CLEAR_DRIFT_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform, driftUniform, extraUniform, CLEAR_EXTRA_FLOATS } from '../clear';
+
+/** Where the sparkles' drift is in the frame: round two's options come after it, so it is counted back from them. */
+const DRIFT_AT = CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS - CLEAR_DRIFT_FLOATS;
 import { WAVE_FLOATS } from '../waves';
 import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
@@ -81,7 +84,7 @@ describe("clear water's finish", () => {
   });
 
   it('comes after the waves in the frame and before the shore field, which is every part packed and no more', () => {
-    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS);
+    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, resolveClear({ near: [0.25, 0.5, 0.75], nearDistance: 3 }, 100), 98.1);
     expect([...out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS, 24 + CLEAR_STRIDE + WAVE_FLOATS)]).toEqual([0.25, 0.5, 0.75, 3]);
@@ -103,7 +106,7 @@ describe("clear water's mirror", () => {
     // and in the frame, after the shore field, which keeps the place it had
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
+    expect([...out.subarray(DRIFT_AT - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS, DRIFT_AT - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0.25, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -131,7 +134,7 @@ describe("clear water's scene in the mirror", () => {
     expect([...mirrorUniform(new Float32Array(CLEAR_MIRROR_FLOATS).fill(-1), w)]).toEqual([0, 0.5, 1, 1, 0.5, 0, Math.fround(0.08), 1]);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    const at = CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS;
+    const at = DRIFT_AT - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS - CLEAR_MIRROR_FLOATS;
     expect([...out.subarray(at, at + CLEAR_MIRROR_FLOATS)]).toEqual([0, 0.5, 1, 1, 0.5, 0, Math.fround(0.08), 1]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
@@ -172,7 +175,7 @@ describe("clear water's ripples", () => {
     expect(CLEAR_RIPPLE_FLOATS).toBe(8);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 0, 0]);
+    expect([...out.subarray(DRIFT_AT - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, DRIFT_AT - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -198,7 +201,7 @@ describe("clear water's foam", () => {
     expect(CLEAR_FOAM_FLOATS).toBe(4);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS)]).toEqual([Math.fround(0.01), 1, 0, 0]);
+    expect([...out.subarray(DRIFT_AT - CLEAR_FOAM_FLOATS, DRIFT_AT)]).toEqual([Math.fround(0.01), 1, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -225,7 +228,7 @@ describe("clear water's shallows", () => {
     expect([...foamUniform(new Float32Array(CLEAR_FOAM_FLOATS).fill(-1), w)]).toEqual([Math.fround(0.01), 1, Math.fround(0.4), Math.fround(0.08)]);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS)]).toEqual([Math.fround(0.01), 1, Math.fround(0.4), Math.fround(0.08)]);
+    expect([...out.subarray(DRIFT_AT - CLEAR_FOAM_FLOATS, DRIFT_AT)]).toEqual([Math.fround(0.01), 1, Math.fround(0.4), Math.fround(0.08)]);
     expect(out.includes(-1), 'every float written').toBe(false);
     // and no struct grew for them
     expect(CLEAR_FOAM_FLOATS).toBe(4);
@@ -274,10 +277,10 @@ describe("clear water's detail layer", () => {
     expect([w.detailPixels, w.detailAmount]).toEqual([8, 0.75]);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 8, 0.75]);
+    expect([...out.subarray(DRIFT_AT - CLEAR_FOAM_FLOATS - CLEAR_RIPPLE_FLOATS, DRIFT_AT - CLEAR_FOAM_FLOATS)]).toEqual([0.25, 0.5, 1, 1, 0.75, 0.125, 8, 0.75]);
     expect(out.includes(-1), 'every float written').toBe(false);
     // no struct grew for it: the frame was the hundred and four floats it was at 0.40.0, before the sparkles' drift
-    expect([CLEAR_RIPPLE_FLOATS, CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS]).toEqual([8, 104]);
+    expect([CLEAR_RIPPLE_FLOATS, DRIFT_AT]).toEqual([8, 104]);
   });
 
   it('is packed only when asked: a cell of nought, or an amount of nought, writes the noughts a water naming neither does', () => {
@@ -322,8 +325,9 @@ describe("clear water's sparkles' drift", () => {
     const w = resolveClear(undefined, 100);
     expect(w.sparkleDrift).toEqual([0, 0]);
     expect([...driftUniform(new Float32Array(CLEAR_DRIFT_FLOATS).fill(-1), w)]).toEqual([0, 0, 0, 0]);
-    // a vec4 of its own, after the foam's options, so no earlier offset moved: the frame is a hundred and eight floats
-    expect([CLEAR_DRIFT_FLOATS, CLEAR_FRAME_FLOATS]).toEqual([4, 108]);
+    // a vec4 of its own, after the foam's options, so no earlier offset moved: the frame was a hundred and eight floats
+    // before round two's options came after it
+    expect([CLEAR_DRIFT_FLOATS, DRIFT_AT + CLEAR_DRIFT_FLOATS]).toEqual([4, 108]);
   });
 
   it('takes a velocity in the world\'s own units a second, and packs it where the shader reads it, its two spare words nought', () => {
@@ -331,7 +335,7 @@ describe("clear water's sparkles' drift", () => {
     expect(w.sparkleDrift).toEqual([0.25, -0.5]);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, w, 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_DRIFT_FLOATS)]).toEqual([0.25, -0.5, 0, 0]);
+    expect([...out.subarray(DRIFT_AT, DRIFT_AT + CLEAR_DRIFT_FLOATS)]).toEqual([0.25, -0.5, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
   });
 
@@ -350,6 +354,66 @@ describe("clear water's sparkles' drift", () => {
       expect(resolveClear(undefined, mmPerUnit).sparkleDrift).toEqual([0, 0]);
       expect(resolveClear({ sparkleDrift: [0.5, 0.25] }, mmPerUnit).sparkleDrift).toEqual([0.5, 0.25]);
     }
+  });
+});
+
+describe("clear water's round two options: the sun's lane, the caustics' glow and the foam's grain", () => {
+  const NAMED = { sunLane: 0.6, sunLaneWidth: 60, causticGlow: 0.3, foamGrain: 0.3 };
+
+  it('are nought by default, so a water that names none is packed as noughts and drawn as v0.42.0 drew it', () => {
+    const w = resolveClear(undefined, 100);
+    expect([w.sunLane, w.sunLaneWidth, w.causticGlow, w.foamGrain]).toEqual([0, 0, 0, 0]);
+    expect([...extraUniform(new Float32Array(CLEAR_EXTRA_FLOATS).fill(-1), w)]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('are one vec4 after the drift, which makes the frame a hundred and twelve floats and moves no earlier offset', () => {
+    expect(CLEAR_EXTRA_FLOATS).toBe(4);
+    expect(CLEAR_FRAME_FLOATS).toBe(112);
+    expect(DRIFT_AT).toBe(104);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    packClearFrame(out, new Float32Array(16), 100, 50, resolveClear(NAMED, 100), 98.1);
+    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS)]).toEqual([Math.fround(0.6), 60, Math.fround(0.3), Math.fround(0.3)]);
+    // the drift before it is as it was, and nothing was left unwritten
+    expect([...out.subarray(DRIFT_AT, DRIFT_AT + CLEAR_DRIFT_FLOATS)]).toEqual([0, 0, 0, 0]);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('packs a lane as nought unless it has a width and a strength both, since a power of nought is one everywhere', () => {
+    const packed = (named: Parameters<typeof resolveClear>[0]) => [...extraUniform(new Float32Array(CLEAR_EXTRA_FLOATS), resolveClear(named, 100))];
+    expect(packed({ sunLane: 0.6 }).slice(0, 2), 'a strength with no width').toEqual([0, 0]);
+    expect(packed({ sunLaneWidth: 60 }).slice(0, 2), 'a width with no strength').toEqual([0, 0]);
+    expect(packed({ sunLane: 0.6, sunLaneWidth: 60 }).slice(0, 2)).toEqual([Math.fround(0.6), 60]);
+    // the other two do not wait on it
+    expect(packed({ causticGlow: 0.5, foamGrain: 0.25 })).toEqual([0, 0, 0.5, 0.25]);
+  });
+
+  it('holds the strengths to nought and one and the width to at least nought', () => {
+    const w = resolveClear({ sunLane: 3, causticGlow: 9, foamGrain: 2, sunLaneWidth: 500 }, 100);
+    expect([w.sunLane, w.causticGlow, w.foamGrain, w.sunLaneWidth]).toEqual([1, 1, 1, 500]);
+    const l = resolveClear({ sunLane: -1, causticGlow: -0.5, foamGrain: -3, sunLaneWidth: -60 }, 100);
+    expect([l.sunLane, l.causticGlow, l.foamGrain, l.sunLaneWidth]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('keeps the default for what is not a number, and names nothing it does not know', () => {
+    for (const bad of [NaN, Infinity, -Infinity, '0.5' as unknown as number, null as unknown as number, {} as unknown as number]) {
+      const w = resolveClear({ sunLane: bad, sunLaneWidth: bad, causticGlow: bad, foamGrain: bad }, 100);
+      expect([w.sunLane, w.sunLaneWidth, w.causticGlow, w.foamGrain], `${String(bad)}`).toEqual([0, 0, 0, 0]);
+    }
+    // a bad one among good ones spoils only itself
+    const w = resolveClear({ sunLane: NaN, sunLaneWidth: 60, causticGlow: 0.5, foamGrain: Infinity }, 100);
+    expect([w.sunLane, w.sunLaneWidth, w.causticGlow, w.foamGrain]).toEqual([0, 60, 0.5, 0]);
+  });
+
+  it('turns nothing by the world\'s units: a power and two shares are not lengths', () => {
+    for (const mmPerUnit of [1, 100, 1000]) {
+      expect(resolveClear(undefined, mmPerUnit).sunLane).toBe(0);
+      const w = resolveClear(NAMED, mmPerUnit);
+      expect([w.sunLane, w.sunLaneWidth, w.causticGlow, w.foamGrain]).toEqual([0.6, 60, 0.3, 0.3]);
+    }
+  });
+
+  it('are read in the shader from a vec4 that follows the drift in the frame\'s struct', () => {
+    expect(CLEAR_FRAGMENT).toMatch(/drift: vec4f,\s*(\/\/[^\n]*\n\s*)*extra: vec4f,\s*\};/);
   });
 });
 

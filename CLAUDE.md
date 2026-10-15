@@ -274,6 +274,18 @@ What to copy the shape of:
   drift's own projection on a flat sheet and not at all pinned, and the lake filmed five seconds with the near water's
   stars returning in their places pinned and not drifting; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has
   `standard clear drift`. See `docs/specs/clear-water/drift.md`.
+- **Clear water's sun lane, caustic glow and foam grain, four more options, drawn as before at their defaults:**
+  `sunLane` (nought to one) and `sunLaneWidth` (the lobe's power) are a specular lobe toward the true sun on the surface
+  with the detail layer's slope, in the sun only and faded as the sun nears the horizon, drawn only where both are over
+  nought; `causticGlow` (nought to one) adds the sun's own light along the caustic lines beside the old term, so they
+  show on a dark bed; `foamGrain` (nought to one) holes the foam's white with a finer noise, on the shore field's lines
+  and the plain band alike. Packed by `extraUniform` into one vec4 after the drift (`CLEAR_EXTRA_FLOATS`, the frame 112
+  floats), each block of the frame counted back from its end by name. `clear.test.ts` holds the defaults, refusals,
+  units and packing; `clearcrystal2.gpu.test.ts` the lane where the sun's reflection lies and nowhere from a sun behind,
+  below the horizon or in shadow, the glow lighting lines on a black bed beside the old term, and the grain holing the
+  line and not the water outside it; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has `standard clear lane`,
+  `standard clear caustic glow` and `standard clear grain`. Chosen from round two's sheet (`crystal-2-experiments.md`);
+  see `docs/specs/clear-water/crystal-2.md`.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -389,8 +401,8 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,332 tests in 82 files with the sparkles' drift | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer and its sparkles' drift, cards; 424 tests in 51 files with the sparkles' drift, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,339 tests in 82 files with the sun lane, the caustic glow and the foam grain | none | exact |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer, its sparkles' drift, its sun lane, caustic glow and foam grain, cards; 434 tests in 52 files with the sun lane, the caustic glow and the foam grain, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**
