@@ -24,6 +24,9 @@
     "standard clear mirror": 0.73,
     "standard clear shallows": 0.71,
     "standard clear detail": 0.73,
-    "standard clear drift": 0.73
+    "standard clear drift": 0.73,
+    "standard clear lane": 0.74,
+    "standard clear caustic glow": 0.74,
+    "standard clear grain": 0.74
   }
 }
