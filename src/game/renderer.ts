@@ -40,7 +40,7 @@ import { STILL, checkField, type GrassField, type GrassOptions, type Wind } from
 import { GrassPass } from './grass-pass';
 import { MAX_GLOSS, MAX_SHEEN } from './toon';
 import { FLOW_CLEAR, usesClear, usesFlow } from './flow';
-import { CLEAR_FRAME_FLOATS, clearDepthSource, packClearFrame, resolveClear, type ClearWater } from './clear';
+import { CLEAR_FRAME_FLOATS, RING_FLOATS, RING_SLOTS, clearDepthSource, packRings, packClearFrame, resolveClear, type ClearWater } from './clear';
 import { GRAVITY_MM } from './waves';
 import { checkShoreField, packShoreField, type ShoreField } from './shore';
 import { invertInto } from '../geom/transform';
@@ -919,6 +919,9 @@ export class GameRenderer {
   private opaqueDepth: GPUTexture | null = null;
   /** The clear pass's uniform and the camera's inverse it is packed from, made once and written each frame. */
   private readonly clearFrame = new Float32Array(CLEAR_FRAME_FLOATS);
+  /** The splash rings the clear water draws, as `setRings` last took them, and how many. */
+  private readonly clearRings = new Float32Array(RING_SLOTS * RING_FLOATS);
+  private clearRingCount = 0;
   private readonly clearInverse = new Float32Array(16);
   /**
    * Clear water mirroring the scene (`ClearWater.mirrorScene`), all of it made when it is first asked for and none of it
@@ -1540,7 +1543,7 @@ export class GameRenderer {
     read.end();
     encoder.copyTextureToTexture({ texture: this.colour! }, { texture: this.opaque! }, [this.width, this.height]);
     if (invertInto(this.clearInverse, this.camera.viewProjection)) {
-      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, settings, GRAVITY_MM / this.mmPerUnit, this.shoreField);
+      packClearFrame(this.clearFrame, this.clearInverse, this.width, this.height, settings, GRAVITY_MM / this.mmPerUnit, this.shoreField, this.clearRings, this.clearRingCount);
       this.ctx.device.queue.writeBuffer(this.clearBuffer!, 0, this.clearFrame);
     }
     const pass = encoder.beginRenderPass({
@@ -2421,6 +2424,18 @@ export class GameRenderer {
    */
   setWash(washes: readonly Wash[]): boolean {
     return this.particles.setWash(washes);
+  }
+
+  /**
+   * The splash rings the clear water draws from now on, `RING_FLOATS` floats each: where something landed (x, y), how
+   * long ago in seconds of the game's own clock, and how big, which the game hands over each frame as the ages move on.
+   * They are drawn only where `look.clear.ringStrength` asks for them, as ripples in the water's normal, and kept until
+   * set again. At most `RING_SLOTS` are taken, and a ring that is not numbers or has no size is refused; says whether
+   * all `count` were taken. Nothing is made.
+   */
+  setRings(data: Float32Array, count: number): boolean {
+    this.clearRingCount = packRings(this.clearRings, data, count);
+    return this.clearRingCount === Math.max(0, Math.floor(count));
   }
 
   /** A burst of particles this frame: smoke, spray, sparks. See `particles.ts`. */

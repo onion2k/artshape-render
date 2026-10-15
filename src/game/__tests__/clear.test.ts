@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_DEFAULTS_MM, CLEAR_FRAGMENT, CLEAR_FINISH_FLOATS, WAVE_FADE_FROM, CLEAR_FOAM_FLOATS, CLEAR_DRIFT_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform, driftUniform, extraUniform, CLEAR_EXTRA_FLOATS } from '../clear';
+import { CLEAR_DEFAULTS_MM, CLEAR_FRAGMENT, CLEAR_FINISH_FLOATS, WAVE_FADE_FROM, CLEAR_FOAM_FLOATS, CLEAR_DRIFT_FLOATS, CLEAR_FRAME_FLOATS, CLEAR_MIRROR_FLOATS, CLEAR_RIPPLE_FLOATS, CLEAR_STRIDE, clearUniform, finishUniform, mirrorUniform, foamUniform, packClearFrame, resolveClear, rippleUniform, driftUniform, extraUniform, CLEAR_EXTRA_FLOATS, CLEAR_RINGS_FLOATS, RING_SLOTS, packRings, ringsUniform } from '../clear';
 
+/** Where the splash rings are in the frame: last of all. */
+const RINGS_AT = CLEAR_FRAME_FLOATS - CLEAR_RINGS_FLOATS;
+/** Where round two's options are: just before the rings. */
+const EXTRA_AT = RINGS_AT - CLEAR_EXTRA_FLOATS;
 /** Where the sparkles' drift is in the frame: round two's options come after it, so it is counted back from them. */
-const DRIFT_AT = CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS - CLEAR_DRIFT_FLOATS;
+const DRIFT_AT = EXTRA_AT - CLEAR_DRIFT_FLOATS;
 import { WAVE_FLOATS } from '../waves';
 import { SHORE_FIELD_FLOATS } from '../shore';
 import { FLOW_CLEAR, FLOW_GLOW, FLOW_WATER, isFlowKind, packFlow, usesClear, usesFlow } from '../flow';
@@ -84,7 +88,7 @@ describe("clear water's finish", () => {
   });
 
   it('comes after the waves in the frame and before the shore field, which is every part packed and no more', () => {
-    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS);
+    expect(CLEAR_FRAME_FLOATS).toBe(16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS + CLEAR_RINGS_FLOATS);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, resolveClear({ near: [0.25, 0.5, 0.75], nearDistance: 3 }, 100), 98.1);
     expect([...out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS, 24 + CLEAR_STRIDE + WAVE_FLOATS)]).toEqual([0.25, 0.5, 0.75, 3]);
@@ -368,11 +372,11 @@ describe("clear water's round two options: the sun's lane, the caustics' glow an
 
   it('are one vec4 after the drift, which makes the frame a hundred and twelve floats and moves no earlier offset', () => {
     expect(CLEAR_EXTRA_FLOATS).toBe(4);
-    expect(CLEAR_FRAME_FLOATS).toBe(112);
+    expect(EXTRA_AT).toBe(108);
     expect(DRIFT_AT).toBe(104);
     const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
     packClearFrame(out, new Float32Array(16), 100, 50, resolveClear(NAMED, 100), 98.1);
-    expect([...out.subarray(CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS)]).toEqual([Math.fround(0.6), 60, Math.fround(0.3), Math.fround(0.3)]);
+    expect([...out.subarray(EXTRA_AT, RINGS_AT)]).toEqual([Math.fround(0.6), 60, Math.fround(0.3), Math.fround(0.3)]);
     // the drift before it is as it was, and nothing was left unwritten
     expect([...out.subarray(DRIFT_AT, DRIFT_AT + CLEAR_DRIFT_FLOATS)]).toEqual([0, 0, 0, 0]);
     expect(out.includes(-1), 'every float written').toBe(false);
@@ -413,7 +417,106 @@ describe("clear water's round two options: the sun's lane, the caustics' glow an
   });
 
   it('are read in the shader from a vec4 that follows the drift in the frame\'s struct', () => {
-    expect(CLEAR_FRAGMENT).toMatch(/drift: vec4f,\s*(\/\/[^\n]*\n\s*)*extra: vec4f,\s*\};/);
+    expect(CLEAR_FRAGMENT).toMatch(/drift: vec4f,\s*(\/\/[^\n]*\n\s*)*extra: vec4f,/);
+  });
+});
+
+describe("clear water's splash rings", () => {
+  /** A ring in the four floats a game hands over: where it landed, how long ago in seconds, and how big. */
+  const ring = (x: number, y: number, age: number, size: number) => [x, y, age, size];
+  const NAMED = { ringStrength: 2.5, ringWavelength: 0.5, ringSpeed: 3, ringTrain: 0.5, ringGrowth: 0.6, ringLife: 3.5, ringPixels: 6 };
+
+  it('are none by default: no strength, so a water that hands rings over draws as v0.43.0 drew it', () => {
+    const w = resolveClear(undefined, 100);
+    expect(w.ringStrength).toBe(0);
+    const out = new Float32Array(CLEAR_RINGS_FLOATS).fill(-1);
+    const rings = new Float32Array(ring(1, 2, 0.5, 1));
+    ringsUniform(out, w, rings, 1);
+    // no strength, so no count: the pass reads a count of nought and does nothing
+    expect(out[0], 'the count').toBe(0);
+    expect(out[1], 'the strength').toBe(0);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('are a vec4 of their shape, another of their motion and twelve of rings, after round two, moving no earlier offset', () => {
+    expect(RING_SLOTS).toBe(12);
+    expect(CLEAR_RINGS_FLOATS).toBe(8 + 12 * 4);
+    expect(CLEAR_FRAME_FLOATS).toBe(112 + CLEAR_RINGS_FLOATS);
+    expect(RINGS_AT).toBe(112);
+    const out = new Float32Array(CLEAR_FRAME_FLOATS).fill(-1);
+    const rings = new Float32Array([...ring(1, 2, 0.25, 1), ...ring(-3, 4, 1.5, 0.6)]);
+    packClearFrame(out, new Float32Array(16), 100, 50, resolveClear(NAMED, 100), 98.1, null, rings, 2);
+    const at = out.subarray(RINGS_AT);
+    // the count, the strength, the wavelength and the least pixels; then the speed, the train, its growth and the life
+    expect([...at.subarray(0, 8)]).toEqual([2, 2.5, 0.5, 6, 3, 0.5, Math.fround(0.6), 3.5]);
+    expect([...at.subarray(8, 16)]).toEqual([1, 2, 0.25, 1, -3, 4, 1.5, Math.fround(0.6)]);
+    expect([...at.subarray(16)].every((v) => v === 0), 'the slots not used are nought').toBe(true);
+    expect(out.includes(-1), 'every float written').toBe(false);
+  });
+
+  it('take no more than the twelve slots, and say how many they took', () => {
+    const many = new Float32Array(20 * 4);
+    for (let i = 0; i < 20; i++) many.set(ring(i, 0, 0.1, 1), i * 4);
+    const store = new Float32Array(RING_SLOTS * 4);
+    expect(packRings(store, many, 20)).toBe(12);
+    expect(store[11 * 4], 'the twelfth kept').toBe(11);
+    // a count past the data is the data's
+    expect(packRings(store, many, 99)).toBe(12);
+    expect(packRings(store, many.subarray(0, 8), 2), 'two handed, two taken').toBe(2);
+    expect(packRings(store, many, 0)).toBe(0);
+    expect(packRings(store, many, -3)).toBe(0);
+  });
+
+  it('refuse a ring that is not numbers or has no size, keeping the others in order, and clear what is left', () => {
+    const data = new Float32Array([
+      ...ring(1, 1, 0.1, 1),
+      ...ring(NaN, 1, 0.1, 1),
+      ...ring(2, Infinity, 0.1, 1),
+      ...ring(3, 3, NaN, 1),
+      ...ring(4, 4, 0.1, 0),
+      ...ring(5, 5, 0.1, -1),
+      ...ring(6, 6, 0.2, 0.5),
+    ]);
+    const store = new Float32Array(RING_SLOTS * 4).fill(7);
+    expect(packRings(store, data, 7)).toBe(2);
+    expect([...store.subarray(0, 8)]).toEqual([1, 1, Math.fround(0.1), 1, 6, 6, Math.fround(0.2), 0.5]);
+    expect([...store.subarray(8)].every((v) => v === 0), 'the rest cleared').toBe(true);
+  });
+
+  it('turn their lengths and speeds from millimetres into the world\'s units, and not the life, the strength or the pixels', () => {
+    const d = resolveClear(undefined, 100);
+    expect(d.ringWavelength).toBeCloseTo(CLEAR_DEFAULTS_MM.ringWavelength / 100, 10);
+    expect(d.ringSpeed).toBeCloseTo(CLEAR_DEFAULTS_MM.ringSpeed / 100, 10);
+    expect(d.ringTrain).toBeCloseTo(CLEAR_DEFAULTS_MM.ringTrain / 100, 10);
+    expect(d.ringGrowth).toBeCloseTo(CLEAR_DEFAULTS_MM.ringGrowth / 100, 10);
+    for (const mmPerUnit of [1, 100, 1000]) {
+      const w = resolveClear(undefined, mmPerUnit);
+      expect([w.ringStrength, w.ringLife, w.ringPixels]).toEqual([CLEAR_DEFAULTS_MM.ringStrength, CLEAR_DEFAULTS_MM.ringLife, CLEAR_DEFAULTS_MM.ringPixels]);
+      // what a game names is already in its units
+      expect(resolveClear(NAMED, mmPerUnit).ringWavelength).toBe(0.5);
+    }
+    // a pebble's at a hundred millimetres a unit: half a unit across, out at three units a second, gone by three and a half
+    expect([d.ringWavelength, d.ringSpeed, d.ringLife]).toEqual([0.5, 3, 3.5]);
+  });
+
+  it('hold what cannot be drawn: a strength and a growth at nought or more, a wavelength, speed, train and life over nought', () => {
+    const w = resolveClear({ ringStrength: -1, ringWavelength: 0, ringSpeed: -2, ringTrain: 0, ringGrowth: -1, ringLife: 0, ringPixels: -4 }, 100);
+    expect(w.ringStrength).toBe(0);
+    expect(w.ringGrowth).toBe(0);
+    expect(w.ringPixels).toBe(0);
+    for (const k of ['ringWavelength', 'ringSpeed', 'ringTrain', 'ringLife'] as const) expect(w[k], k).toBeGreaterThan(0);
+  });
+
+  it('keep the default for what is not a number', () => {
+    const d = resolveClear(undefined, 100);
+    for (const bad of [NaN, Infinity, '1' as unknown as number, null as unknown as number]) {
+      const w = resolveClear({ ringStrength: bad, ringWavelength: bad, ringLife: bad }, 100);
+      expect([w.ringStrength, w.ringWavelength, w.ringLife], String(bad)).toEqual([d.ringStrength, d.ringWavelength, d.ringLife]);
+    }
+  });
+
+  it('are read in the shader from the frame\'s last fields, after round two\'s', () => {
+    expect(CLEAR_FRAGMENT).toMatch(/extra: vec4f,\s*(\/\/[^\n]*\n\s*)*ringShape: vec4f,\s*(\/\/[^\n]*\n\s*)*ringMotion: vec4f,\s*(\/\/[^\n]*\n\s*)*rings: array<vec4f, 12>,\s*\};/);
   });
 });
 

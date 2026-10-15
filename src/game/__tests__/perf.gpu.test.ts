@@ -382,6 +382,16 @@ describe.skipIf(!import.meta.env.VITE_PERF)('the game path, timed', () => {
     await r.prepare();
     measured['standard clear grain'] = await time();
     console.log(['lane', 'caustic glow', 'grain'].map((n) => `crystal-2 ${n}: ${(measured[`standard clear ${n}`] - measured['standard clear finish']).toFixed(3)} ms over finish`).join('; '));
+    // twelve splash rings over the finish's water, the most the pass draws, spread along the strip and well out, so each
+    // pixel tries every ring and many are inside one: ooerfish's figures at a hundred millimetres a unit
+    const rings = new Float32Array(12 * 4);
+    for (let i = 0; i < 12; i++) rings.set([-13.5 + i * 2.5, (i % 2 ? 1.5 : -1.5), 0.4 + (i % 4) * 0.4, 1], i * 4);
+    r.setRings(rings, 12);
+    r.look = { ...r.look, clear: { ...finish, ringStrength: 2.5, ringWavelength: 0.5, ringSpeed: 3, ringTrain: 0.5, ringGrowth: 0.6, ringLife: 3.5, ringPixels: 6 } };
+    await r.prepare();
+    measured['standard clear rings'] = await time();
+    console.log(`splash rings, twelve: ${(measured['standard clear rings'] - measured['standard clear finish']).toFixed(3)} ms over finish`);
+    r.setRings(rings, 0);
     r.look = { ...r.look, clear: finish };
     r.setShoreField(null);
     r.look = plain;

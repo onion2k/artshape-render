@@ -286,6 +286,18 @@ What to copy the shape of:
   line and not the water outside it; `cleargolden.gpu.test.ts` is unchanged. `perf:gpu` has `standard clear lane`,
   `standard clear caustic glow` and `standard clear grain`. Chosen from round two's sheet (`crystal-2-experiments.md`);
   see `docs/specs/clear-water/crystal-2.md`.
+- **Clear water's splash rings, seven more options and a setter, drawn as before at their defaults:** a game hands over
+  up to `RING_SLOTS` (12) rings a frame with `GameRenderer.setRings(data, count)`, each `(x, y, age, size)` with the age
+  in seconds of the game's own clock (the renderer reads none), refused by `packRings` where not numbers or of no size;
+  `ringStrength` (nought, none) tilts the water's normal by each ring's train of ripples (`clearRings` in the fragment),
+  the bend, the light and the mirror alike and never the height; `ringWavelength`, `ringSpeed`, `ringTrain` and
+  `ringGrowth` are lengths (millimetres by default), `ringLife` seconds and `ringPixels` the least a wavelength may be on
+  the screen. Packed by `ringsUniform` last in the frame (`CLEAR_RINGS_FLOATS`, 56; the frame 168), the count written as
+  nought with no strength, so the pass's branch is skipped and every sum is the one it was. `clear.test.ts` holds the
+  defaults, refusals, units and packing; `clearrings.gpu.test.ts` the water bent within the train and nowhere outside,
+  nothing past a ring's life, before its age or of no size, a far fine ring kept at its least pixels and faded with
+  none, the edge of the water, and twelve drawn and the thirteenth not; `cleargolden.gpu.test.ts` is unchanged.
+  `perf:gpu` has `standard clear rings`. See `docs/specs/clear-water/rings.md`.
 
 - **Builds compiled when first handed a thing that wants them, cut by an image:** cards (`cards.ts`,
   `GameGroup.card {layer, cut}`, `setCardImages`). `cards.ts` is the pure side: `checkCards` (refusals by name),
@@ -402,7 +414,7 @@ For anything new on the game path, say what it does:
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
 | node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,339 tests in 82 files with the sun lane, the caustic glow and the foam grain | none | exact |
-| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer, its sparkles' drift, its sun lane, caustic glow and foam grain, cards; 434 tests in 52 files with the sun lane, the caustic glow and the foam grain, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
+| GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer, its sparkles' drift, its sun lane, caustic glow and foam grain, its splash rings, cards; 440 tests in 53 files with the splash rings, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 
 **Missing, and each is a house rule this project does not yet meet:**

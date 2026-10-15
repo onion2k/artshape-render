@@ -190,6 +190,29 @@ export interface ClearWater {
    * nothing. The sheets chose 0.3, which breaks the line into dashes; 0.6 is froth.
    */
   foamGrain: number;
+  /**
+   * The splash rings' strength (October 2026, for ooerfish): how far a ring's slope tilts the water's normal, as a share
+   * of a full slope. Each ring a game hands over (`GameRenderer.setRings`) is a train of ripples going out from where
+   * something landed, read by the surface itself, so the light, the bed seen through the water and the mirror are bent
+   * as it passes and nothing is painted. The height is not moved, so what floats is where it was. Nought, the default,
+   * draws no rings whatever is handed over; ooerfish's lake asks for 2.5.
+   */
+  ringStrength: number;
+  /** A ring's wavelength for a splash of size one, a length (a splash of size `s` has `sqrt(s)` of it). */
+  ringWavelength: number;
+  /** How fast a ring's front goes out, a length a second. */
+  ringSpeed: number;
+  /** How long the train of ripples behind the front is when it lands, a length (also by `sqrt(size)`). */
+  ringTrain: number;
+  /** How much the train lengthens a second, a length a second, as a ring's ripples spread apart on a pond. */
+  ringGrowth: number;
+  /** How long a ring lasts, in seconds of the ages handed over, fading to nothing at the end. */
+  ringLife: number;
+  /**
+   * The least a ring's wavelength may be on the screen, in pixels, so a ring far off is drawn broader and not lost;
+   * nought keeps the wavelength as it is everywhere, and a ring too fine for the screen then fades and does not shimmer.
+   */
+  ringPixels: number;
 }
 
 /**
@@ -237,6 +260,15 @@ export const CLEAR_DEFAULTS_MM: ClearWater = {
   sunLaneWidth: 0,
   causticGlow: 0,
   foamGrain: 0,
+  // the rings' shape: none, and a pebble's on a pond, five centimetres from crest to crest, out at thirty a second in
+  // a train five long that grows six a second, gone by three and a half seconds, and never under six pixels
+  ringStrength: 0,
+  ringWavelength: 50,
+  ringSpeed: 300,
+  ringTrain: 50,
+  ringGrowth: 60,
+  ringLife: 3.5,
+  ringPixels: 6,
 };
 
 /** How many floats the packed settings are: three vec4s. */
@@ -304,6 +336,13 @@ export function resolveClear(named: Partial<ClearWater> | undefined, mmPerUnit: 
     sunLaneWidth: taken(n.sunLaneWidth, d.sunLaneWidth),
     causticGlow: Math.min(taken(n.causticGlow, d.causticGlow), 1),
     foamGrain: Math.min(taken(n.foamGrain, d.foamGrain), 1),
+    ringStrength: taken(n.ringStrength, d.ringStrength),
+    ringWavelength: taken(n.ringWavelength, mm(d.ringWavelength), LEAST),
+    ringSpeed: taken(n.ringSpeed, mm(d.ringSpeed), LEAST),
+    ringTrain: taken(n.ringTrain, mm(d.ringTrain), LEAST),
+    ringGrowth: taken(n.ringGrowth, mm(d.ringGrowth)),
+    ringLife: taken(n.ringLife, d.ringLife, LEAST),
+    ringPixels: taken(n.ringPixels, d.ringPixels),
   };
 }
 
@@ -313,7 +352,7 @@ function detailCell(pixels: number): number {
 }
 
 /** Writes the settings into `out` as the clear pass reads them, and returns it. */
-export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam | keyof ClearDrift | keyof ClearExtra>): Float32Array {
+export function clearUniform(out: Float32Array, w: Omit<ClearWater, 'waves' | 'foamGap' | 'foamWidth2' | keyof ClearFinish | keyof ClearMirror | 'mirrorPlane' | keyof ClearRipple | keyof ClearFoam | keyof ClearDrift | keyof ClearExtra | keyof ClearRings>): Float32Array {
   out.set([w.clarity, w.refraction, w.foamWidth, w.glitter, ...w.foam, w.caustics, ...w.foamEdge, w.causticScale]);
   return out;
 }
@@ -428,16 +467,65 @@ export function extraUniform(out: Float32Array, w: ClearExtra): Float32Array {
   return out;
 }
 
+/** The splash rings' shape and motion, packed last in the frame with the rings themselves. */
+type ClearRings = Pick<ClearWater, 'ringStrength' | 'ringWavelength' | 'ringSpeed' | 'ringTrain' | 'ringGrowth' | 'ringLife' | 'ringPixels'>;
+
+/** How many splash rings the clear pass draws at once: ooerfish's pool of splashes. */
+export const RING_SLOTS = 12;
+
+/** How many floats a ring is handed over in: where it landed (x, y), its age in seconds, and its size. */
+export const RING_FLOATS = 4;
+
+/** How many floats the rings are packed into: a vec4 of their shape, one of their motion, and the slots. */
+export const CLEAR_RINGS_FLOATS = 8 + RING_SLOTS * RING_FLOATS;
+
+/**
+ * Copies up to `RING_SLOTS` of the `count` rings in `data` into `out`, in order, and clears the slots left; a ring
+ * whose place, age or size is not a number, or whose size is nought or less, is refused and the next takes its slot.
+ * Says how many it took. A game hands its rings over each frame, so this makes nothing.
+ */
+export function packRings(out: Float32Array, data: Float32Array, count: number): number {
+  const asked = Math.max(0, Math.min(Math.floor(count), Math.floor(data.length / RING_FLOATS)));
+  let n = 0;
+  for (let i = 0; i < asked && n < RING_SLOTS; i++) {
+    const o = i * RING_FLOATS;
+    const x = data[o], y = data[o + 1], age = data[o + 2], size = data[o + 3];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(age) || !Number.isFinite(size) || size <= 0) continue;
+    out[n * RING_FLOATS] = x;
+    out[n * RING_FLOATS + 1] = y;
+    out[n * RING_FLOATS + 2] = age;
+    out[n * RING_FLOATS + 3] = size;
+    n++;
+  }
+  out.fill(0, n * RING_FLOATS, RING_SLOTS * RING_FLOATS);
+  return n;
+}
+
+/**
+ * Writes the rings' shape, motion and slots into `out` and returns it: the count, the strength, the wavelength and the
+ * least pixels; then the speed, the train, its growth and the life; then the `count` rings of `rings` as `packRings`
+ * left them. The count is written as nought where there is no strength, which the pass reads as none, so a water that
+ * asks for no rings is drawn as it was whatever a game hands over.
+ */
+export function ringsUniform(out: Float32Array, w: ClearRings, rings: Float32Array | null, count: number): Float32Array {
+  const n = w.ringStrength > 0 && rings ? Math.max(0, Math.min(Math.floor(count), RING_SLOTS)) : 0;
+  out.set([n, w.ringStrength, w.ringWavelength, w.ringPixels, w.ringSpeed, w.ringTrain, w.ringGrowth, w.ringLife]);
+  out.fill(0, 8);
+  if (n > 0) out.set(rings!.subarray(0, n * RING_FLOATS), 8);
+  return out;
+}
+
 /**
  * How many floats the clear pass's own uniform is: the camera's inverse view and projection, which carries a pixel and
- * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; the foam's options; the sparkles' drift; and round two's options.
+ * its depth back into the world; the frame's size; the settings; the waves; the finish; where the shore field lies; the mirror; the ripples; the foam's options; the sparkles' drift; round two's options; and the splash rings.
  */
-export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS;
+export const CLEAR_FRAME_FLOATS = 16 + 4 + CLEAR_STRIDE + WAVE_FLOATS + CLEAR_FINISH_FLOATS + SHORE_FIELD_FLOATS + CLEAR_MIRROR_FLOATS + CLEAR_RIPPLE_FLOATS + CLEAR_FOAM_FLOATS + CLEAR_DRIFT_FLOATS + CLEAR_EXTRA_FLOATS + CLEAR_RINGS_FLOATS;
 
 /**
  * Writes the clear pass's uniform into `out`: `inverse` (the inverse of the camera's view and projection), the frame's
  * width and height and their reciprocals, the settings, then the waves under `gravity`, in world units a second
- * squared, the finish, and where `field` lies, if there is one. Returns `out`.
+ * squared, the finish, where `field` lies, if there is one, and the first `ringCount` splash rings of `rings` (as
+ * `packRings` writes them). Returns `out`.
  */
 export function packClearFrame(
   out: Float32Array,
@@ -447,6 +535,8 @@ export function packClearFrame(
   w: ClearWater,
   gravity: number,
   field: ShoreField | null = null,
+  rings: Float32Array | null = null,
+  ringCount = 0,
 ): Float32Array {
   out.set(inverse, 0);
   out.set([width, height, 1 / width, 1 / height], 16);
@@ -454,7 +544,9 @@ export function packClearFrame(
   packWaves(out.subarray(20 + CLEAR_STRIDE), w.waves, gravity);
   finishUniform(out.subarray(20 + CLEAR_STRIDE + WAVE_FLOATS), w);
   // each block's end, counted back from the frame's end, so that no earlier offset moves when a later block is added
-  const driftAt = CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS - CLEAR_DRIFT_FLOATS;
+  const ringsAt = CLEAR_FRAME_FLOATS - CLEAR_RINGS_FLOATS;
+  const extraAt = ringsAt - CLEAR_EXTRA_FLOATS;
+  const driftAt = extraAt - CLEAR_DRIFT_FLOATS;
   const foamAt = driftAt - CLEAR_FOAM_FLOATS;
   const rippleAt = foamAt - CLEAR_RIPPLE_FLOATS;
   const mirrorAt = rippleAt - CLEAR_MIRROR_FLOATS;
@@ -463,7 +555,8 @@ export function packClearFrame(
   rippleUniform(out.subarray(rippleAt, foamAt), w);
   foamUniform(out.subarray(foamAt, driftAt), w);
   driftUniform(out.subarray(driftAt, driftAt + CLEAR_DRIFT_FLOATS), w);
-  extraUniform(out.subarray(CLEAR_FRAME_FLOATS - CLEAR_EXTRA_FLOATS), w);
+  extraUniform(out.subarray(extraAt, ringsAt), w);
+  ringsUniform(out.subarray(ringsAt), w, rings, ringCount);
   return out;
 }
 
@@ -534,6 +627,11 @@ struct ClearFrame {
   drift: vec4f,
   // round two: the sun's lane (its strength, 0 for none, and its power), the caustics' glow and the foam's grain
   extra: vec4f,
+  // the splash rings: how many, their strength, their wavelength and the least pixels it may be; then their speed, their
+  // train, its growth a second and their life; then each ring's place, age and size
+  ringShape: vec4f,
+  ringMotion: vec4f,
+  rings: array<vec4f, ${RING_SLOTS}>,
 };
 @group(1) @binding(0) var opaque: texture_2d<f32>;
 @group(1) @binding(1) var opaqueDepth: texture_2d<f32>;
@@ -592,6 +690,8 @@ const CAUSTIC_FADE: f32 = 0.6;
 const CAUSTIC_SUN: f32 = 0.7;
 // How deep what is below is when the refraction's bend is at its full, in world units: less where it is shallower.
 const BEND_DEPTH: f32 = 3.0;
+// How far out a splash ring's front is as it lands, as a share of its own wavelength: the hole the splash made.
+const RING_START: f32 = 0.3;
 // The detail layer: its fade, a share of the cell, so its finest kept wave is a cell across (see WAVE_FADE_FROM); how far
 // apart its levels are laid, in the waves' own units, so one level's crests do not line up with the next's; and the
 // widest a pixel's footprint is taken to be, in world units, so a ray all but along the water does not overflow.
@@ -718,6 +818,38 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   return (exp(-3.0 * r * r) + SPARKLE_HALO * exp(-0.7 * r * r)) * smoothstep(cw.sparkle.y, mix(cw.sparkle.y, 1.0, 0.5), facing) * chosen;
 }
 
+// The splash rings' slope at a point of the water: each a train of ripples going out from where something landed, its
+// front a share of a wavelength out at the landing and then at the speed, its train lengthening behind it, eased in at
+// the front and out at the back, fading with its age and as it spreads; and faded where its wavelength is near a
+// pixel's footprint, so it never aliases. A ring's wavelength is never under the least pixels on the screen, so a far
+// one is drawn broader and not lost. A slot past the count is not read.
+fn clearRings(p: vec2f, perPixel: f32) -> vec2f {
+  var s = vec2f(0.0);
+  let n = u32(cw.ringShape.x);
+  for (var i = 0u; i < ${RING_SLOTS}u; i++) {
+    if (i >= n) { break; }
+    let ring = cw.rings[i];
+    let age = ring.z;
+    let size = ring.w;
+    if (age < 0.0 || age >= cw.ringMotion.w || size <= 0.0) { continue; }
+    let grow = sqrt(size);
+    let own = cw.ringShape.z * grow;
+    let lambda = max(own, perPixel * cw.ringShape.w);
+    let front = RING_START * own + cw.ringMotion.x * age;
+    let train = (cw.ringMotion.y + cw.ringMotion.z * age) * grow;
+    let d = p - ring.xy;
+    let r = max(length(d), 1.0e-4);
+    let behind = front - r;
+    if (behind < -lambda || behind > train + lambda) { continue; }
+    let eased = smoothstep(-lambda, lambda * 0.5, behind) * (1.0 - smoothstep(train * 0.3, train + lambda, behind));
+    let life = age / cw.ringMotion.w;
+    let fade = (1.0 - life) * (1.0 - life) * inverseSqrt(1.0 + r / own);
+    let seen = 1.0 - smoothstep(lambda * 0.3, lambda * 0.5, perPixel);
+    s += d / r * (cos(behind * 6.2831853 / lambda) * eased * fade * seen * grow);
+  }
+  return s;
+}
+
 @fragment fn fsMain(in: VsOut) -> @location(0) vec4f {
   let px = in.pos.xy;
   let v = normalize(frame.camPos - in.world);
@@ -725,16 +857,25 @@ fn sparkleStar(in: VsOut, px: vec2f, n0: vec3f, v: vec3f, ahead: vec3f, least: f
   let perPixel = length(fwidth(in.world.xy));
   let slope = waterSlope(in.world.xy * in.pattern.y, frame.spare0 * in.pattern.z, perPixel * in.pattern.y);
   let n0 = normalize(in.normal);
-  let np = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w);
+  // the splash rings, where there are any: their slope added to the normal everywhere it goes, the bend, the light and
+  // the mirror alike; never to the height. With none, rn is nought and every sum below is the one it was, to the bit
+  var rn = vec3f(0.0);
+  let ringing = cw.ringShape.x > 0.0;
+  if (ringing) {
+    let rs = clearRings(in.world.xy, perPixel);
+    rn = (normalize(in.tx) * -rs.x + normalize(in.ty) * -rs.y) * cw.ringShape.y;
+  }
+  let np = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w + rn);
   // the detail layer, where it is asked for: its slope added to the normal, and so to the bend and the light, and to the
   // mirrored scene's read through nm; never to the height, so what floats is not moved. np is the normal without it
   var n = np;
   var nm = n0;
+  if (ringing) { nm = normalize(n0 + rn); }
   if (cw.ripples.z > 0.0) {
     let d = clearDetail(in, px);
     let dn = (normalize(in.tx) * -d.x + normalize(in.ty) * -d.y) * in.pattern.w * cw.ripples.w;
-    n = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w + dn);
-    nm = normalize(n0 + dn);
+    n = normalize(n0 + (normalize(in.tx) * -slope.x + normalize(in.ty) * -slope.y) * in.pattern.w + dn + rn);
+    nm = normalize(n0 + dn + rn);
   }
   let ndv = max(dot(n, v), 0.0);
 
