@@ -28,6 +28,7 @@ import { PAINT_UNIFORM_WGSL, PAINT_WGSL } from './paint';
 import { CARD_COVERAGE_SPLICES, CARD_SPLICES, DEPTH_CUT_SPLICES } from './cards';
 import { CLEAR_FRAGMENT, CLEAR_STRUCT_SPLICE, CLEAR_VERTEX_SPLICES } from './clear';
 import { SOFT_TONE_WGSL, TOON_MID, TOON_RAMP_WGSL, TOON_SHADE, TOON_SUN } from './toon';
+import { DITHER_WGSL } from './dither';
 
 /** What a permutation of the scene shader may leave out. */
 export interface SceneVariant {
@@ -1065,7 +1066,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
  * and the source's texel size for the bright pass to sample around.
  */
 const POST_STRUCT = `
-struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32, tone: f32, _p0: f32, _p1: f32, _p2: f32 };
+struct Post { bloom: f32, threshold: f32, knee: f32, vignette: f32, grain: f32, time: f32, texelX: f32, texelY: f32, tone: f32, dither: f32, _p1: f32, _p2: f32 };
 `;
 
 export const BRIGHT_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + `
@@ -1472,7 +1473,7 @@ export const FOG_BLEND_WGSL = POST_VERT + `
 `;
 
 /** Tonemap one source to the canvas, with the bloom, the vignette and the grain. */
-export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + SOFT_TONE_WGSL + `
+export const COMPOSITE_WGSL = POST_VERT + POST_STRUCT + FINITE_WGSL + SOFT_TONE_WGSL + DITHER_WGSL + `
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var bloom: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
@@ -1511,6 +1512,11 @@ fn hash(p: vec2f) -> f32 {
   let g = hash(in.pos.xy + vec2f(post.time * 60.0, post.time * 37.0)) - 0.5;
   let l = dot(d, vec3f(0.2126, 0.7152, 0.0722));
   d += vec3f(g * post.grain * 4.0 * l * (1.0 - l));
+  // the dither, a step or so of the screen's eight bits from the pixel alone, so a gentle gradient is not drawn in bands
+  // (dither.ts); with none asked the branch is skipped and the value is what it was
+  if (post.dither > 0.0) {
+    d += vec3f(post.dither * ditherAt(vec2u(in.pos.xy)) / DITHER_STEPS);
+  }
   return vec4f(clamp(d, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 `;

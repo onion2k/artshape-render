@@ -71,7 +71,7 @@ each pins today:
 | --- | --- | --- |
 | bearing | v0.22.1 | game |
 | ooerfish | v0.34.0 | game |
-| ooergolf | v0.28.0 | game |
+| ooergolf | v0.45.0 | game |
 | chopdrop | v0.24.0 | game |
 | pushminer | v0.16.1 | game |
 | coinpush, artshape-game-template | v0.16.0 | game |
@@ -336,6 +336,17 @@ What to copy the shape of:
   the perf gate and the golden share are in `__tests__/scenes.ts`, and `perf:gpu` has `standard painted`, `shore` and
   `shore painted`.
 
+- **A setting of the post chain, off to the pixel:** the dither (`dither.ts`, `Post.dither`, v0.45.0). The composite writes
+  eight bits a channel, and a gradient gentler than a step over many pixels (a long lawn in a gentle light, asked for by
+  ooergolf after banding was seen across a fairway on a phone) was drawn as flat bands a step apart; `dither` adds
+  triangular noise of that many steps, from the pixel alone (a PCG hash, the same every frame, so a still frame does not
+  shimmer and a picture is the same every run), before the rounding. Nought or left out skips the branch, so the frame is
+  the bytes it was; the post rung does not turn it off, since it is the screen's rounding and not an effect. Packed into the
+  `Post` uniform's spare word after `tone`, so no offset moved. `dither.test.ts` holds the sums (range, mean, a triangle's
+  variance, no pattern between neighbours) and the WGSL's constants; `post.gpu.test.ts` holds nought and none the same
+  bytes, a flat frame between two steps dithered to its mean within a tenth of a step and no further than a step out, the
+  same bytes a frame on, and the rung off.
+
 ## The test API
 
 A library's test API is its own constructors, run headless:
@@ -413,7 +424,7 @@ For anything new on the game path, say what it does:
 | Gate | Holds | Baseline | Tolerance |
 | --- | --- | --- | --- |
 | typecheck | every source compiles, GPU tests included | none | exact |
-| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,339 tests in 82 files with the sun lane, the caustic glow and the foam grain | none | exact |
+| node suite | the maths, meshes, parts and DSL, and the game path's arithmetic; 1,352 tests in 83 files with the dither | none | exact |
 | GPU suite | pixel properties: it draws, the look, the rungs, fog, shadows, occlusion, overflow, grass, antialiasing, the toon light, the toy finish, particles fogged by their own distance, clear water, its finish, its mirror, its ripples, its foam, its shallows, its detail layer, its sparkles' drift, its sun lane, caustic glow and foam grain, its splash rings, cards; 440 tests in 53 files with the splash rings, and the perf gate skipped unless asked, ~25 s on an M4 Pro | none: no golden pictures, but clear water with nothing new asked is held to v0.29.0's pixel hashes (`clear-golden.json`) and a game asking for no cards to v0.30.0's (`cards-golden.json`) | per test |
 | perf:gpu | each scene's frame, by adapter; `standard` was 0.60 ms on an M4 Pro (`apple/metal-3`) | `src/game/__tests__/perf-baseline.json` | ±15% both ways: five runs of the unchanged tree spread 0.59–0.64 ms, and it failed a frame with the occlusion off (40% quicker) and one with four times the fog's steps (51% slower). An adapter with no baseline passes and says so. Run it on a quiet machine: another app on the GPU (an image generator was seen to) moves it 10–30%, and then a change is judged against its parent commit run alternately instead. |
 

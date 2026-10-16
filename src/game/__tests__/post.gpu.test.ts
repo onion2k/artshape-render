@@ -171,4 +171,55 @@ describe('post-processing on the game renderer', () => {
     expect(moved).toBeGreaterThan(3);
     renderer.post = { ...DEFAULT_POST };
   });
+
+  /** The green channel of every pixel of a square patch: the background is grey, so one channel says it all. */
+  const greens = (f: { px: Uint8Array; row: number }, x0: number, y0: number, n: number) => {
+    const out: number[] = [];
+    for (let y = y0; y < y0 + n; y++) for (let x = x0; x < x0 + n; x++) out.push(f.px[y * f.row + x * 4 + 1]);
+    return out;
+  };
+  /** A flat frame whose shown value lies half way between two steps of the screen, `step` and the next, with the colour shown straight. */
+  function between(step: number) {
+    flat(((step + 0.5) / 255) ** 2.2);
+  }
+
+  it('dithers nothing with none asked: no dither and a dither of nought are the same bytes', async () => {
+    between(100);
+    renderer.post = { bloom: 0, threshold: 1, knee: 0.5, vignette: 0, grain: 0, tone: 'clamp' };
+    renderer.frame(view());
+    const none = await read();
+    renderer.post = { ...renderer.post, dither: 0 };
+    renderer.frame(view());
+    const nought = await read();
+    expect(nought.px).toEqual(none.px);
+    renderer.post = { ...DEFAULT_POST };
+  });
+
+  it('takes the rounding out of a value between two steps with a dither of one, the same at a pixel every frame', async () => {
+    between(100);
+    renderer.post = { bloom: 0, threshold: 1, knee: 0.5, vignette: 0, grain: 0, tone: 'clamp' };
+    renderer.frame(view());
+    const plain = greens(await read(), 64, 64, 64);
+    // undithered, every pixel is rounded to one of the two steps, the same one: the frame is a step off where it means
+    expect(new Set(plain).size).toBe(1);
+    renderer.post = { ...renderer.post, dither: 1 };
+    renderer.frame(view(), 'redraw', 1 / 60);
+    const a = await read();
+    renderer.frame(view(), 'redraw', 1 / 60);
+    const b = await read();
+    const g = greens(a, 64, 64, 64);
+    const mean = g.reduce((x, y) => x + y, 0) / g.length;
+    // the mean is where the value is, half way, to a tenth of a step; and no pixel is moved past a step either side of it
+    expect(Math.abs(mean - 100.5)).toBeLessThan(0.1);
+    for (const v of g) expect(v).toBeGreaterThanOrEqual(99), expect(v).toBeLessThanOrEqual(102);
+    // and it does not shimmer: a still frame is the same bytes from one frame to the next
+    expect(b.px).toEqual(a.px);
+    // the post rung does not turn it off: it is the screen's rounding and not an effect
+    renderer.economy = { ...renderer.economy, post: false };
+    renderer.frame(view());
+    const off = greens(await read(), 64, 64, 64);
+    expect(off).toEqual(g);
+    renderer.economy = { ...renderer.economy, post: true };
+    renderer.post = { ...DEFAULT_POST };
+  });
 });

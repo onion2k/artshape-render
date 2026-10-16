@@ -633,6 +633,13 @@ export interface Post {
    * bright plastic keeps its shape in the light with it. Left out, filmic.
    */
   tone?: 'filmic' | 'clamp' | 'soft';
+  /**
+   * How much the shown frame is dithered, in steps of the screen's eight bits a channel: noise from -1 to 1 times this,
+   * the same at a pixel every frame, added before the frame is rounded to them, so a gradient gentler than a step over
+   * many pixels is not drawn as bands (see dither.ts). One takes the bands out; left out, or nought, none, and the frame
+   * is the pixels it was. It is the screen's rounding and not an effect, so the post rung does not turn it off.
+   */
+  dither?: number;
 }
 
 export const DEFAULT_POST: Post = { bloom: 0.35, threshold: 1.0, knee: 0.5, vignette: 0.3, grain: 0.03 };
@@ -3038,6 +3045,7 @@ export class GameRenderer {
     pd[0] = bloomOn ? this.post.bloom : 0; pd[1] = this.post.threshold; pd[2] = this.post.knee;
     pd[3] = doPost ? this.post.vignette : 0; pd[4] = doPost ? this.post.grain : 0; pd[5] = this.postTime;
     pd[6] = 1 / this.width; pd[7] = 1 / this.height; pd[8] = this.post.tone === 'clamp' ? 1 : this.post.tone === 'soft' ? 2 : 0;
+    pd[9] = Number.isFinite(this.post.dither) ? Math.max(0, this.post.dither!) : 0;
     device.queue.writeBuffer(this.postBuffer, 0, pd);
     if (bloomOn) {
       const steps: [GPURenderPipeline, GPUBindGroup, GPUTexture, string][] = [
